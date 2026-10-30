@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="HammerTime — Top-down physics action game where a warrior wields a heavy chain-tethered warhammer across a vast grassy battlefield." />
+  <title>HammerTime — Chain &amp; Warhammer Physics Game</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800&amp;family=Inter:wght@400;500;600;700&amp;family=JetBrains+Mono:wght@500;700&amp;display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css?v=20261030f" />
+</head>
+<body>
+  <main id="game-container">
+    <canvas id="game-canvas" aria-label="HammerTime top-down battlefield"></canvas>
+
+    <!-- Top-left HUD: Warrior Vital Stats & Chain Physics Readout -->
+    <header id="hud-top-left" class="hud-panel">
+      <div class="title-row">
+        <h1>HAMMERTIME</h1>
+        <span id="wave-badge" class="badge">FIELD ACTIVE</span>
+      </div>
+
+      <div class="stat-group">
+        <div class="stat-label-row">
+          <span class="stat-label">WARRIOR HEALTH</span>
+          <span id="hp-text" class="stat-value">100 / 100</span>
+        </div>
+        <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
+          <div id="hp-bar-fill" class="progress-fill hp-fill"></div>
+        </div>
+      </div>
+
+      <div id="mount-stat-group" class="stat-group hidden">
+        <div class="stat-label-row">
+          <span id="mount-label" class="stat-label">WARHORSE HP</span>
+          <span id="mount-hp-text" class="stat-value">100 / 100</span>
+        </div>
+        <div class="progress-track">
+          <div id="mount-hp-bar-fill" class="progress-fill mount-hp-fill"></div>
+        </div>
+      </div>
+
+      <div class="stat-grid">
+        <div class="stat-box">
+          <span class="stat-caption">CHAIN LINKS</span>
+          <span id="chain-links-val" class="stat-num">3</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-caption">CHAIN LENGTH</span>
+          <span id="chain-length-val" class="stat-num">1.9m</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-caption">HAMMER SPEED</span>
+          <span id="hammer-speed-val" class="stat-num">0.0 m/s</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-caption">ENEMIES SLAIN</span>
+          <span id="kills-val" class="stat-num">0</span>
+        </div>
+      </div>
+
+      <div class="tension-row">
+        <div class="stat-label-row">
+          <span class="stat-caption">CHAIN TENSION</span>
+          <span id="players-online-text" class="mono-small">1 / 1 ALIVE</span>
+        </div>
+        <div class="progress-track tension-track">
+          <div id="tension-bar-fill" class="progress-fill tension-fill"></div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Observer Mode Banner (shown when local player dies until all players have died) -->
+    <div id="observer-banner" class="hud-panel observer-banner hidden" role="status" aria-live="polite">
+      <div class="observer-title" id="observer-title">OBSERVER MODE</div>
+      <div class="observer-subtitle" id="observer-subtitle">You have fallen! Spectating surviving warriors until all players fall...</div>
+    </div>
+
+    <!-- Top-right HUD: Minimap & Camera / Utility Controls -->
+    <aside id="hud-top-right" class="hud-panel">
+      <div class="minimap-header">
+        <span class="stat-caption">GRASSLANDS RADAR</span>
+        <span id="coords-text" class="mono-small">(0, 0)</span>
+      </div>
+      <canvas id="minimap-canvas" width="164" height="164" aria-label="Field minimap"></canvas>
+      <div class="minimap-legend">
+        <span><i class="dot dot-warrior"></i>Warrior</span>
+        <span><i class="dot dot-hammer"></i>Hammer</span>
+        <span><i class="dot dot-enemy"></i>Enemy</span>
+        <span><i class="dot dot-link"></i>Link</span>
+      </div>
+      <div class="hud-actions">
+        <button id="toggle-deadzone-btn" class="hud-btn" type="button" title="Toggle visual indicator for the center 1/3 viewport camera boundary">
+          Show 1/3 Viewport Box
+        </button>
+        <button id="reset-game-btn" class="hud-btn" type="button" title="Restart battle">
+          Reset Field
+        </button>
+      </div>
+      <div id="leaderboard-section" class="leaderboard-section" aria-label="Top 10 Enemies Killed Leaderboard">
+        <div class="leaderboard-header">
+          <span class="stat-caption">TOP 10 LEADERBOARD</span>
+          <span class="mono-small">SLAIN</span>
+        </div>
+        <ol id="leaderboard-list" class="leaderboard-list">
+          <li class="leaderboard-empty">No enemies slain yet</li>
+        </ol>
+      </div>
+    </aside>
+
+    <!-- Bottom Controls Bar -->
+    <footer id="hud-bottom" class="hud-panel">
+      <div class="control-item">
+        <kbd>Mouse</kbd>
+        <span>Move to Track Cursor</span>
+      </div>
+      <div class="control-divider"></div>
+      <div class="control-item">
+        <kbd>&larr;</kbd> <kbd>&rarr;</kbd>
+        <span>Turn</span>
+      </div>
+      <div class="control-divider"></div>
+      <div class="control-item">
+        <kbd>&uarr;</kbd> / <kbd>&darr;</kbd>
+        <span>Run / Slow Down</span>
+      </div>
+      <div class="control-divider"></div>
+      <div class="control-item hint-item">
+        <span>Pickups: <strong>Link</strong> (+chain), <strong>Weight</strong> (+mass), <strong>Health</strong> (+20% HP), <strong>Bomb</strong> (10x blast), <strong>Flame</strong> (flaming mace), <strong>Speed</strong> (+5% speed), <strong>Friction</strong> (+5% grip), <strong>Hammer</strong> (rare +1 mace for 120s), <strong>Horse</strong> (rare 2x speed, 5x grip), <strong>Tortoise</strong> (rare 1/4x speed, 20x grip), <strong>Elephant</strong> (ultra-rare 1x speed, 10x grip), <strong>Earthquake</strong> (rare 5s quake + 5s knockdown), <strong>Fear</strong> (rare 20s 4x panic contagion), <strong>Disco</strong> (rare 20s disco ball + 30s zombie dance contagion), <strong>Jack-o'-Lantern</strong> (rare 60s glowing pumpkin mace), <strong>Rats</strong> (rare swarm of 10 zombie-biting rats), <strong>Spider</strong> (rare spider mace + 30s zombie web wrap), <strong>Bulldozer</strong> (very rare 20s invincible zombie-crusher &amp; column-pusher)</span>
+      </div>
+    </footer>
+
+    <!-- Initial Click-to-Enter Modal (prevents idle open tabs from consuming server CPU) -->
+    <section id="enter-modal" class="modal" aria-hidden="false">
+      <div class="modal-card enter-card">
+        <span class="badge victory-badge">2.5D MULTIPLAYER ARENA</span>
+        <h2>HAMMERTIME</h2>
+        <p id="enter-modal-subtitle">
+          Enter a nickname to wield your chain-tethered spikey mace across the grasslands.
+        </p>
+        <div class="nickname-field">
+          <label for="nickname-input" class="stat-caption">ENTER YOUR NICKNAME</label>
+          <input
+            id="nickname-input"
+            class="nickname-input"
+            type="text"
+            maxlength="20"
+            placeholder="Warrior nickname..."
+            autocomplete="off"
+            spellcheck="false"
+          />
+        </div>
+        <button id="enter-game-btn" class="primary-btn" type="button">
+          Enter Battlefield
+        </button>
+      </div>
+    </section>
+
+    <!-- Game Over Modal -->
+    <section id="game-over-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-card">
+        <h2>THE WARRIOR HAS FALLEN</h2>
+        <p id="game-over-summary">You fought bravely across the grasslands.</p>
+        <div class="modal-stats">
+          <div>
+            <span class="stat-caption">ENEMIES DEFEATED</span>
+            <strong id="final-kills">0</strong>
+          </div>
+          <div>
+            <span class="stat-caption">FINAL CHAIN LINKS</span>
+            <strong id="final-links">3</strong>
+          </div>
+          <div>
+            <span class="stat-caption">PEAK BLOW DAMAGE</span>
+            <strong id="final-max-hit">0</strong>
+          </div>
+        </div>
+        <button id="play-again-btn" class="primary-btn" type="button">Fight Again</button>
+      </div>
+    </section>
+
+    <!-- Victory Page Modal -->
+    <section id="victory-modal" class="modal hidden" aria-hidden="true">
+      <div class="modal-card victory-card">
+        <span id="victory-badge" class="badge victory-badge">ARENA VICTORY</span>
+        <h2 id="victory-title">VICTORY!</h2>
+        <p id="victory-subtitle">Over 1,000 zombies have been vanquished across the battlefield!</p>
+        <div class="modal-stats">
+          <div>
+            <span id="victory-stat-1-label" class="stat-caption">TEAM SLAIN</span>
+            <strong id="victory-stat-1-val">1001</strong>
+          </div>
+          <div>
+            <span id="victory-stat-2-label" class="stat-caption">YOUR KILLS</span>
+            <strong id="victory-stat-2-val">0</strong>
+          </div>
+          <div>
+            <span id="victory-stat-3-label" class="stat-caption">PEAK BLOW DAMAGE</span>
+            <strong id="victory-stat-3-val">0</strong>
+          </div>
+        </div>
+        <p id="victory-countdown-text" class="victory-countdown">Starting new round in 5.0s...</p>
+        <button id="victory-next-btn" class="primary-btn" type="button">Start Next Round Now</button>
+      </div>
+    </section>
+  </main>
+
+  <script src="dist/game.js?v=20261030f"></script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "hammertime",
+  "version": "1.0.0",
+  "description": "Top-view HTML hammer game",
+  "scripts": {
+    "build": "./node_modules/.bin/tsc",
+    "dev": "./node_modules/.bin/tsc && node --watch dist/server.js",
+    "start": "node dist/server.js",
+    "test": "./node_modules/.bin/tsc && node test/run.js"
+  },
+  "private": true
+}
