@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Production build artifacts
+dist/
+
+# Persistent dynamic server runtime state
+leaderboard.json
+*.tmp
+
+# Logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment and secrets
+.env
+.env.*
+
+# OS and Editor metadata
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
