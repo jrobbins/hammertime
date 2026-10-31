@@ -8,7 +8,6 @@ const srv = require('../dist/server.js');
 function resetTestWorld() {
   srv.players.clear();
   srv.enemies.length = 0;
-  srv.rats.length = 0;
   srv.blackCircles.length = 0;
   srv.clearLeaderboard();
   srv.initStoneColumns();
@@ -17,7 +16,6 @@ function resetTestWorld() {
     spawnTimer: 0,
     earthquakeTimer: 0,
     roundRestartTimer: 0,
-    gameMode: 'coop',
     roundState: 'playing',
     teamKills: 0,
     victoryInfo: null,
@@ -50,7 +48,7 @@ function addTestEnemy(x = 2200, y = 2100, hp = 100) {
   e.radius = 19;
   e.mass = 1.45;
   e.moveForce = 210;
-  e.friction = 4.6;
+  e.traction = 4.6;
   e.contactDamage = 6;
   e.contactPush = 260;
   e.hitCooldown = 0;
@@ -72,7 +70,8 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.WORLD_HEIGHT, 4200);
     assert.equal(srv.STONE_COLUMN_COUNT, 4);
     assert.equal(srv.INITIAL_CHAIN_LINKS, 3);
-    assert.equal(srv.MAX_HAMMERS_PER_PLAYER, 3);
+    assert.equal(srv.MAX_CHAIN_LINKS, 9);
+    assert.equal(srv.MAX_HAMMERS_PER_PLAYER, 2);
     assert.equal(srv.EXTRA_HAMMER_DURATION, 120.0);
     assert.equal(srv.EXPLOSION_RADIUS, 420);
   });
@@ -87,7 +86,6 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.RARE_FEAR_DROP_CHANCE, 0.0016);
     assert.equal(srv.RARE_DISCO_DROP_CHANCE, 0.0016);
     assert.equal(srv.RARE_JACKOLANTERN_DROP_CHANCE, 0.0016);
-    assert.equal(srv.RARE_RATS_DROP_CHANCE, 0.0016);
     assert.equal(srv.RARE_SPIDER_DROP_CHANCE, 0.0016);
   });
 
@@ -96,8 +94,6 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.ZOMBIE_DANCE_DURATION, 30.0);
     assert.equal(srv.ZOMBIE_DANCE_IMMUNE_DURATION, 45.0);
     assert.equal(srv.JACKOLANTERN_HAMMER_DURATION, 60.0);
-    assert.equal(srv.RAT_SWARM_COUNT, 10);
-    assert.equal(srv.RAT_DAMAGE, 35);
     assert.equal(srv.ZOMBIE_WEB_DURATION, 30.0);
     assert.equal(srv.BULLDOZER_DURATION, 20.0);
     assert.equal(srv.BULLDOZER_RADIUS, 34);
@@ -111,11 +107,22 @@ describe('Server Constants & Configuration', () => {
 describe('World Initialization, Stone Columns & Player Creation', () => {
   beforeEach(resetTestWorld);
 
-  it('initializes 4 stone columns and detects column collisions', () => {
+  it('initializes 4 hard-coded stone columns, detects column collisions, and omits stoneColumns from game state JSON', () => {
     assert.equal(srv.stoneColumns.length, 4);
+    assert.deepEqual(srv.stoneColumns, [
+      { x: 2637, y: 2637, radius: 34, height: 76 },
+      { x: 1563, y: 2637, radius: 34, height: 76 },
+      { x: 1563, y: 1563, radius: 34, height: 76 },
+      { x: 2637, y: 1563, radius: 34, height: 76 },
+    ]);
+    assert.deepEqual(srv.STONE_COLUMNS, srv.stoneColumns);
     const col = srv.stoneColumns[0];
     assert.equal(srv.touchesStoneColumn(col.x, col.y, 10), true);
     assert.equal(srv.touchesStoneColumn(2100, 2100, 10), false);
+
+    const statePayload = srv.buildGameStatePayload();
+    assert.equal(statePayload.type, 'state');
+    assert.equal('stoneColumns' in statePayload, false, 'stoneColumns should not be in game state JSON');
   });
 
   it('creates player with 0 automatic HP regeneration and 3 chain links', () => {
@@ -155,10 +162,10 @@ describe('World Initialization, Stone Columns & Player Creation', () => {
   });
 });
 
-describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed, Friction)', () => {
+describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed, Traction)', () => {
   beforeEach(resetTestWorld);
 
-  it('collects link, weight, speed, friction, and health pickups', () => {
+  it('collects link, weight, speed, traction, and health pickups', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     p.hp = 60;
 
@@ -167,6 +174,25 @@ describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed, Friction)',
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(p.hammer.chainLinks, 4);
     assert.equal(p.hammer.chainNodes.length, 5);
+    assert.equal(p.hammer.linkLength, srv.LENGTH_PER_LINK);
+
+    // Collect links up to the maximum of 9 links
+    for (let i = 0; i < 5; i++) {
+      srv.blackCircles.push({ id: 100 + i, x: p.x, y: p.y, type: 'link' });
+      srv.stepPlayerPhysics(p, 0.016);
+    }
+    assert.equal(p.hammer.chainLinks, 9);
+    assert.equal(p.hammer.chainNodes.length, 10);
+    assert.equal(p.hammer.linkLength, srv.LENGTH_PER_LINK);
+    const restLenAt9 = srv.getChainRestLength(p.hammer.chainLinks, p.hammer.linkLength);
+
+    // Collecting another link powerup after all hammers have 9 links increases linkLength instead of chainLinks
+    srv.blackCircles.push({ id: 200, x: p.x, y: p.y, type: 'link' });
+    srv.stepPlayerPhysics(p, 0.016);
+    assert.equal(p.hammer.chainLinks, 9);
+    assert.equal(p.hammer.chainNodes.length, 10);
+    assert.ok(p.hammer.linkLength > srv.LENGTH_PER_LINK);
+    assert.ok(srv.getChainRestLength(p.hammer.chainLinks, p.hammer.linkLength) > restLenAt9);
 
     // Weight
     const prevMass = p.hammer.mass;
@@ -176,21 +202,15 @@ describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed, Friction)',
     assert.ok(p.hammer.mass > prevMass);
     assert.ok(p.hammer.radius > prevRadius);
 
-    // Speed & Friction
+    // Speed & Traction
     srv.blackCircles.push({ id: 3, x: p.x, y: p.y, radius: 10, type: 'speed' });
-    srv.blackCircles.push({ id: 4, x: p.x, y: p.y, radius: 10, type: 'friction' });
+    srv.blackCircles.push({ id: 4, x: p.x, y: p.y, radius: 10, type: 'traction' });
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(p.speedMultiplier, 1.05);
-    assert.equal(p.frictionMultiplier, 1.05);
+    assert.equal(p.tractionMultiplier, 1.05);
 
-    // Health (+20% in coop)
+    // Health (+20%)
     srv.blackCircles.push({ id: 5, x: p.x, y: p.y, radius: 10, type: 'health' });
-    srv.stepPlayerPhysics(p, 0.016);
-    assert.equal(p.hp, 80);
-
-    // Health blocked in PvP
-    srv.setState({ gameMode: 'pvp' });
-    srv.blackCircles.push({ id: 6, x: p.x, y: p.y, radius: 10, type: 'health' });
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(p.hp, 80);
   });
@@ -222,35 +242,77 @@ describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed, Friction)',
     assert.ok(e.fireproofTimer > 0);
     assert.equal(srv.igniteEnemy(e, p), false);
   });
+
+  it('limits pickups in the world to 40, removing oldest common pickup first or oldest of any type if none, and omits radius from state JSON', () => {
+    assert.equal(srv.PICKUP_RADIUS, 10);
+    assert.equal(srv.MAX_PICKUP_COUNT, 40);
+
+    // Seed 2 rare pickups and 38 common pickups (with rare-1 oldest, then common-1, then rare-2)
+    srv.addPickupToWorld({ id: 'rare-1', x: 100, y: 100, type: 'elephant' });
+    srv.addPickupToWorld({ id: 'common-1', x: 110, y: 100, type: 'link' });
+    srv.addPickupToWorld({ id: 'rare-2', x: 120, y: 100, type: 'bulldozer' });
+    srv.addPickupToWorld({ id: 'common-2', x: 130, y: 100, type: 'weight' });
+    for (let i = 0; i < 36; i++) {
+      srv.addPickupToWorld({ id: `common-fill-${i}`, x: 200 + i, y: 100, type: 'speed' });
+    }
+    assert.equal(srv.blackCircles.length, 40);
+
+    // Defeating an enemy spawns a 41st pickup -> evicts 'common-1' (oldest common), preserving 'rare-1' and 'rare-2'
+    addTestEnemy(500, 500, 50);
+    srv.defeatEnemy(srv.enemies.length - 1, null);
+    assert.equal(srv.blackCircles.length, 40);
+    assert.equal(srv.blackCircles[0].id, 'rare-1');
+    assert.equal(srv.blackCircles[1].id, 'rare-2');
+    assert.equal(srv.blackCircles[2].id, 'common-2');
+    assert.equal(srv.blackCircles.some((c) => c.id === 'common-1'), false);
+
+    // Verify pickups do not include 'radius' in memory or in serialized state JSON
+    const serialized = srv.serializePickups();
+    assert.equal(serialized.length, 40);
+    for (const pk of serialized) {
+      assert.equal('radius' in pk, false);
+    }
+    assert.equal(JSON.stringify(serialized).includes('"radius"'), false);
+
+    // When all 40 pickups in the world are non-common (rare), adding a new pickup removes the oldest pickup (index 0)
+    srv.blackCircles.length = 0;
+    for (let i = 0; i < 40; i++) {
+      srv.addPickupToWorld({ id: `rare-only-${i}`, x: 300 + i, y: 100, type: 'hammer' });
+    }
+    assert.equal(srv.blackCircles.length, 40);
+
+    srv.addPickupToWorld({ id: 'newest-pickup', x: 900, y: 100, type: 'link' });
+    assert.equal(srv.blackCircles.length, 40);
+    assert.equal(srv.blackCircles[0].id, 'rare-only-1');
+    assert.equal(srv.blackCircles.some((c) => c.id === 'rare-only-0'), false);
+    assert.equal(srv.blackCircles[39].id, 'newest-pickup');
+  });
 });
 
 describe('Rare Powerups: Extra Hammer (120s), Mounts (Horse, Tortoise, Elephant), Earthquake, Fear', () => {
   beforeEach(resetTestWorld);
 
-  it('adds extra hammers up to 3 and expires them after 120 seconds', () => {
+  it('adds extra hammers up to 2 and expires them after 120 seconds', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'hammer' });
+    srv.stepPlayerPhysics(p, 0.016);
+    assert.equal(p.hammers.length, 2);
+    assert.ok(p.hammers[1].extraTimer > 119 && p.hammers[1].extraTimer <= 120);
+
+    // 3rd hammer pickup is ignored when already at max (2)
     srv.blackCircles.push({ id: 2, x: p.x, y: p.y, radius: 10, type: 'hammer' });
     srv.stepPlayerPhysics(p, 0.016);
-    assert.equal(p.hammers.length, 3);
-    assert.ok(p.hammers[1].extraTimer > 119 && p.hammers[1].extraTimer <= 120);
-    assert.ok(p.hammers[2].extraTimer > 119 && p.hammers[2].extraTimer <= 120);
-
-    // 4th hammer pickup is ignored when already at max (3)
-    srv.blackCircles.push({ id: 3, x: p.x, y: p.y, radius: 10, type: 'hammer' });
-    srv.stepPlayerPhysics(p, 0.016);
-    assert.equal(p.hammers.length, 3);
+    assert.equal(p.hammers.length, 2);
     assert.equal(srv.blackCircles.length, 1);
     srv.blackCircles.length = 0;
 
-    // Advance 120 seconds -> extra hammers expire and disappear, primary hammer remains
+    // Advance 120 seconds -> extra hammer expires and disappears, primary hammer remains
     p.hammers[1].extraTimer = 0.01;
-    p.hammers[2].extraTimer = 0.01;
     srv.stepPlayerPhysics(p, 0.05);
     assert.equal(p.hammers.length, 1);
   });
 
-  it('handles Warhorse, Giant Tortoise (1/4 speed, 20x friction), and War Elephant (1x speed, 10x friction) mounts', () => {
+  it('handles Warhorse, Giant Tortoise (1/4 speed, 20x traction), and War Elephant (1x speed, 10x traction) mounts', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     p.hp = 85;
 
@@ -351,7 +413,7 @@ describe('Rare Powerups: Extra Hammer (120s), Mounts (Horse, Tortoise, Elephant)
   });
 });
 
-describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Rat Swarm, Spider Hammer, Bulldozer', () => {
+describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', () => {
   beforeEach(resetTestWorld);
 
   it('Disco Ball Hammer passes through zombies without damage, starts 30s dance + contagion + 45s immunity', () => {
@@ -400,28 +462,6 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Rat Swarm, Spider Hammer, B
     assert.ok(e.hp < 200, 'Jack-o-lantern hammer should deal normal impact damage');
   });
 
-  it('Rat Swarm spawns 10 rats that run in straight lines, damage zombies, and despawn at map edges', () => {
-    const p = addTestPlayer('p1', 2100, 2100);
-    srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'rats' });
-    srv.stepPlayerPhysics(p, 0.016);
-    assert.equal(srv.rats.length, 10);
-
-    // Move rat #0 away from the other 9 rats and place an enemy on top of rat #0
-    const r0 = srv.rats[0];
-    r0.x = 2500;
-    r0.y = 2500;
-    const e = addTestEnemy(r0.x, r0.y, 100);
-    srv.stepWorldPhysics(0.016);
-    assert.equal(e.hp, 100 - srv.RAT_DAMAGE);
-
-    // Move all rats to map boundary and verify they disappear
-    for (const r of srv.rats) {
-      r.x = srv.WORLD_WIDTH + 50;
-    }
-    srv.stepWorldPhysics(0.016);
-    assert.equal(srv.rats.length, 0);
-  });
-
   it('Spider Hammer deals normal damage and wraps zombies in white webbing for 30s so they cannot move', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'spider' });
@@ -458,7 +498,7 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Rat Swarm, Spider Hammer, B
     assert.equal(e.vy, 0);
   });
 
-  it('Bulldozer mode grants 20s invincibility, crushes zombies, pushes stone columns, and blocks other pickups', () => {
+  it('Bulldozer mode grants 20s invincibility, crushes zombies, cannot move fixed stone columns, and blocks other pickups', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     // Place bulldozer pickup and a speed pickup at the same spot
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'speed' });
@@ -481,17 +521,20 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Rat Swarm, Spider Hammer, B
     assert.equal(srv.enemies.includes(e), false);
     assert.equal(p.kills, 1);
 
-    // Pushes stone columns
+    // Stone columns are fixed in location and cannot be moved by bulldozer
     const col = srv.stoneColumns[0];
     const origColX = col.x;
+    const origColY = col.y;
     p.x = col.x - (p.radius + col.radius - 8);
     p.y = col.y;
     srv.stepPlayerPhysics(p, 0.016);
-    assert.ok(col.x > origColX, 'Bulldozer should push stone column');
+    assert.equal(col.x, origColX, 'Stone column X should remain fixed');
+    assert.equal(col.y, origColY, 'Stone column Y should remain fixed');
+    assert.ok(Math.hypot(p.x - col.x, p.y - col.y) >= p.radius + col.radius - 0.01);
   });
 });
 
-describe('Enemy Production Scaling (>2 Players) & PvP / Victory Modes', () => {
+describe('Enemy Production Scaling (>2 Players) & Cooperative Victory Mode', () => {
   beforeEach(resetTestWorld);
 
   it('increases enemy production rate by 25% for each additional player beyond 2', () => {
@@ -512,21 +555,29 @@ describe('Enemy Production Scaling (>2 Players) & PvP / Victory Modes', () => {
     assert.equal(srv.enemies.length, 1);
   });
 
-  it('alternates between coop and pvp when > 3 players and triggers PvP victory for last player standing', () => {
+  it('keeps players cooperative (separating without damage) and continues round when 1 survivor remains', () => {
     const p1 = addTestPlayer('p1', 1500, 1500);
-    const p2 = addTestPlayer('p2', 1700, 1500);
+    const p2 = addTestPlayer('p2', 1510, 1500);
     const p3 = addTestPlayer('p3', 1900, 1500);
     const p4 = addTestPlayer('p4', 2100, 1500);
 
-    assert.equal(srv.getState().gameMode, 'coop');
-    srv.resetGameWorld(true);
-    assert.equal(srv.getState().gameMode, 'pvp');
+    // Players colliding should separate without taking damage
+    srv.tickServer(0.016);
+    assert.equal(p1.hp, p1.maxHp);
+    assert.equal(p2.hp, p2.maxHp);
+    assert.ok(Math.hypot(p2.x - p1.x, p2.y - p1.y) >= p1.radius + p2.radius - 0.01);
 
-    // If 3 players fall in PvP, last survivor wins immediately on tickServer
+    // If 3 players fall, the round continues in cooperative mode while 1 survivor remains
     p2.alive = false;
     p3.alive = false;
     p4.alive = false;
     srv.tickServer(0.016);
+    assert.equal(srv.getState().roundState, 'playing');
+
+    // Cooperative victory triggers via triggerCoopVictory
+    p1.kills = 1001;
+    srv.setState({ teamKills: 1001 });
+    srv.triggerCoopVictory();
     assert.equal(srv.getState().roundState, 'victory');
     assert.equal(srv.getState().victoryInfo.championName, p1.name);
   });

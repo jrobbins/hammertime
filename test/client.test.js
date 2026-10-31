@@ -185,7 +185,6 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     elements = loaded.elements;
     api.initGame();
     api.enemies.length = 0;
-    api.rats.length = 0;
     api.blackCircles.length = 0;
     api.warrior.x = 2100;
     api.warrior.y = 2100;
@@ -197,6 +196,14 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     const c = api.constants;
     assert.equal(c.WORLD_WIDTH, srv.WORLD_WIDTH);
     assert.equal(c.WORLD_HEIGHT, srv.WORLD_HEIGHT);
+    assert.equal(c.PICKUP_RADIUS, srv.PICKUP_RADIUS);
+    assert.equal(c.PICKUP_RADIUS, 10);
+    assert.equal(c.MAX_PICKUP_COUNT, srv.MAX_PICKUP_COUNT);
+    assert.equal(c.MAX_PICKUP_COUNT, 40);
+    assert.equal(c.MAX_CHAIN_LINKS, srv.MAX_CHAIN_LINKS);
+    assert.equal(c.MAX_CHAIN_LINKS, 9);
+    assert.equal(c.MAX_HAMMERS_PER_PLAYER, srv.MAX_HAMMERS_PER_PLAYER);
+    assert.equal(c.MAX_HAMMERS_PER_PLAYER, 2);
     assert.equal(c.EXTRA_HAMMER_DURATION, srv.EXTRA_HAMMER_DURATION);
     assert.equal(c.RARE_HAMMER_DROP_CHANCE, srv.RARE_HAMMER_DROP_CHANCE);
     assert.equal(c.RARE_HORSE_DROP_CHANCE, srv.RARE_HORSE_DROP_CHANCE);
@@ -207,21 +214,21 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.RARE_FEAR_DROP_CHANCE, srv.RARE_FEAR_DROP_CHANCE);
     assert.equal(c.RARE_DISCO_DROP_CHANCE, srv.RARE_DISCO_DROP_CHANCE);
     assert.equal(c.RARE_JACKOLANTERN_DROP_CHANCE, srv.RARE_JACKOLANTERN_DROP_CHANCE);
-    assert.equal(c.RARE_RATS_DROP_CHANCE, srv.RARE_RATS_DROP_CHANCE);
     assert.equal(c.RARE_SPIDER_DROP_CHANCE, srv.RARE_SPIDER_DROP_CHANCE);
     assert.equal(c.ZOMBIE_WEB_DURATION, srv.ZOMBIE_WEB_DURATION);
-    assert.equal(c.RAT_SWARM_COUNT, srv.RAT_SWARM_COUNT);
-    assert.equal(c.RAT_DAMAGE, srv.RAT_DAMAGE);
     assert.equal(c.BULLDOZER_DURATION, srv.BULLDOZER_DURATION);
+    assert.equal(c.BULLDOZER_TRACTION_MULT, srv.BULLDOZER_TRACTION_MULT);
     assert.equal(c.BULLDOZER_RADIUS, srv.BULLDOZER_RADIUS);
+    assert.deepEqual(JSON.parse(JSON.stringify(c.STONE_COLUMNS)), srv.STONE_COLUMNS);
+    assert.deepEqual(JSON.parse(JSON.stringify(api.stoneColumns)), srv.STONE_COLUMNS);
   });
 
-  it('handles all 18 standalone pickups, extra hammer 120s expiration, rats, spider web, disco, and bulldozer', () => {
+  it('handles all 17 standalone pickups, extra hammer 120s expiration, spider web, disco, and bulldozer', () => {
     const w = api.warrior;
 
-    // Common pickups: link, weight, health, bomb, flame, speed, friction
+    // Common pickups: link, weight, health, bomb, flame, speed, traction
     w.hp = 60;
-    const commonPickups = ['link', 'weight', 'health', 'bomb', 'flame', 'speed', 'friction'];
+    const commonPickups = ['link', 'weight', 'health', 'bomb', 'flame', 'speed', 'traction'];
     for (const pType of commonPickups) {
       api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: pType });
       api.stepPhysics(0.016);
@@ -232,7 +239,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(w.hammers[0].bombCharges, 1);
     assert.equal(w.hammers[0].flameCharges, 1);
     assert.equal(w.speedMultiplier, 1.05);
-    assert.equal(w.frictionMultiplier, 1.05);
+    assert.equal(w.tractionMultiplier, 1.05);
 
     // Mounts: horse, tortoise, elephant
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'horse' });
@@ -260,14 +267,33 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     w.hammers[0].discoTimer = 0;
     api.setState({ earthquakeTimer: 0, localKnockdownTimer: 0 });
 
-    // Extra hammer pickup + 120s expiration
+    // Extra hammer pickup (capped at 2) + 120s expiration
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'hammer' });
     api.stepPhysics(0.016);
     assert.equal(w.hammers.length, 2);
     assert.ok(w.hammers[1].extraTimer > 119);
+    // 3rd hammer pickup is ignored when already at max 2
+    api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'hammer' });
+    api.stepPhysics(0.016);
+    assert.equal(w.hammers.length, 2);
+    assert.equal(api.blackCircles.length, 1);
+    api.blackCircles.length = 0;
+
     w.hammers[1].extraTimer = 0.01;
     api.stepPhysics(0.05);
     assert.equal(w.hammers.length, 1);
+
+    // Link pickups cap at 9 links and then increase linkLength
+    for (let i = 0; i < 5; i++) {
+      api.blackCircles.push({ x: w.x, y: w.y, pulse: 0, type: 'link' });
+      api.stepPhysics(0.016);
+    }
+    assert.equal(w.hammers[0].chainLinks, 9);
+    assert.equal(w.hammers[0].linkLength, api.constants.LENGTH_PER_LINK);
+    api.blackCircles.push({ x: w.x, y: w.y, pulse: 0, type: 'link' });
+    api.stepPhysics(0.016);
+    assert.equal(w.hammers[0].chainLinks, 9);
+    assert.ok(w.hammers[0].linkLength > api.constants.LENGTH_PER_LINK);
 
     // Spider pickup + webbing zombie on hit
     w.hammers[0].bombCharges = 0;
@@ -291,11 +317,6 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     api.stepPhysics(0.016);
     assert.ok(e.webTimer > 29.9);
 
-    // Rat swarm pickup
-    api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'rats' });
-    api.stepPhysics(0.016);
-    assert.equal(api.rats.length, 10);
-
     // Bulldozer pickup & same-tick pickup guard
     w.speedMultiplier = 1.0;
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'speed' });
@@ -304,6 +325,46 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.ok(w.bulldozerTimer > 19.9);
     assert.equal(w.radius, api.constants.BULLDOZER_RADIUS);
     assert.equal(w.speedMultiplier, 1.0);
+
+    // Stone columns remain fixed in location when collided with by bulldozer
+    const col = api.stoneColumns[0];
+    const origColX = col.x;
+    const origColY = col.y;
+    w.x = col.x - (w.radius + col.radius - 8);
+    w.y = col.y;
+    api.stepPhysics(0.016);
+    assert.equal(col.x, origColX);
+    assert.equal(col.y, origColY);
+    assert.ok(Math.hypot(w.x - col.x, w.y - col.y) >= w.radius + col.radius - 0.01);
+
+    // Pickup cap of 40: removes oldest common pickup first, or oldest of any type if no common exists
+    api.blackCircles.length = 0;
+    api.addPickupToWorld({ id: 'rare-1', x: 100, y: 100, pulse: 0, type: 'elephant' });
+    api.addPickupToWorld({ id: 'common-1', x: 110, y: 100, pulse: 0, type: 'link' });
+    api.addPickupToWorld({ id: 'rare-2', x: 120, y: 100, pulse: 0, type: 'bulldozer' });
+    for (let i = 0; i < 37; i++) {
+      api.addPickupToWorld({ id: `common-extra-${i}`, x: 200 + i, y: 100, pulse: 0, type: 'speed' });
+    }
+    assert.equal(api.blackCircles.length, 40);
+    assert.equal('radius' in api.blackCircles[0], false);
+
+    // Adding a 41st pickup removes 'common-1' (oldest common) while keeping older 'rare-1'
+    api.addPickupToWorld({ id: 'new-pickup', x: 500, y: 100, pulse: 0, type: 'disco' });
+    assert.equal(api.blackCircles.length, 40);
+    assert.equal(api.blackCircles[0].id, 'rare-1');
+    assert.equal(api.blackCircles[1].id, 'rare-2');
+    assert.equal(api.blackCircles.some((c) => c.id === 'common-1'), false);
+    assert.equal(api.blackCircles[39].id, 'new-pickup');
+
+    // When all 40 pickups are rare, adding a new pickup removes the oldest pickup at index 0
+    api.blackCircles.length = 0;
+    for (let i = 0; i < 40; i++) {
+      api.addPickupToWorld({ id: `only-rare-${i}`, x: 300 + i, y: 100, pulse: 0, type: 'horse' });
+    }
+    api.addPickupToWorld({ id: 'rare-41', x: 600, y: 100, pulse: 0, type: 'spider' });
+    assert.equal(api.blackCircles.length, 40);
+    assert.equal(api.blackCircles[0].id, 'only-rare-1');
+    assert.equal(api.blackCircles[39].id, 'rare-41');
   });
 
   it('processes server events including bulldozer, earthquake, spider_web, disco_dance, and round_reset', () => {
@@ -324,12 +385,12 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.ok(api.getState().earthquakeTimer < api.constants.EARTHQUAKE_DURATION);
 
     // round_reset clears timers
-    api.processServerEvents([{ type: 'round_reset', gameMode: 'coop' }]);
+    api.processServerEvents([{ type: 'round_reset' }]);
     assert.equal(api.warrior.bulldozerTimer, 0);
     assert.equal(api.getState().earthquakeTimer, 0);
   });
 
-  it('renders all 2.5D entities (including Bulldozer mode in drawWarrior, all Hammer modes, all Enemy states, Rats, and all 18 Pickups) without errors', () => {
+  it('renders all 2.5D entities (including Bulldozer mode in drawWarrior, all Hammer modes, all Enemy states, and all 17 Pickups) without errors', () => {
     const w = api.warrior;
 
     // 1. drawWarrior in Normal, Horse, Tortoise, Elephant, and Bulldozer modes
@@ -412,17 +473,14 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     e.knockdownTimer = 4;
     api.drawEnemy(e);
 
-    // 4. drawRat
-    api.drawRat({ x: 2120, y: 2120, vx: 300, vy: 150, angle: 0.4, radius: 10, scurryPhase: 1.2 });
-
-    // 5. drawBlackCircle for all 18 pickup types
+    // 4. drawBlackCircle for all 17 pickup types
     const allPickupTypes = [
       'link',
       'weight',
       'health',
       'bomb',
       'speed',
-      'friction',
+      'traction',
       'flame',
       'hammer',
       'horse',
@@ -433,14 +491,13 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       'bulldozer',
       'disco',
       'jackolantern',
-      'rats',
       'spider',
     ];
     for (const pType of allPickupTypes) {
-      api.drawBlackCircle({ x: 2100, y: 2100, radius: 10, pulse: 1.0, type: pType });
+      api.drawBlackCircle({ x: 2100, y: 2100, pulse: 1.0, type: pType });
     }
 
-    // 6. Full scene render() and gameLoop()
+    // 5. Full scene render() and gameLoop()
     api.setState({ earthquakeTimer: 2.5 });
     api.render();
     api.gameLoop(Date.now() + 16);

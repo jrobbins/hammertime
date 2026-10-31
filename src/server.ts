@@ -21,6 +21,7 @@ const PHYSICS_SUBSTEPS = 4;
 
 // Chain constants (Initial rest length reduced by 40%: 59px instead of 98px)
 const INITIAL_CHAIN_LINKS = 3;
+const MAX_CHAIN_LINKS = 9;
 const BASE_CHAIN_OFFSET = 20;
 const LENGTH_PER_LINK = 13;
 const CHAIN_SPRING_K = 32.5; // 20% less elastic stretch (26.0 / 0.8)
@@ -28,9 +29,15 @@ const CHAIN_RADIAL_DAMP = 1.98; // 20% more radial damping (1.65 * 1.2)
 const CHAIN_LINK_RADIUS = 6.5;
 const CHAIN_RELAX_ITERS = 10;
 
-// Stone column constants (Reduced count from 8 to 4)
+// Stone column constants (4 immovable pillars at hard-coded locations)
 const STONE_COLUMN_COUNT = 4;
 const STONE_COLUMN_RADIUS = 34;
+const STONE_COLUMNS = [
+  { x: 2637, y: 2637, radius: STONE_COLUMN_RADIUS, height: 76 },
+  { x: 1563, y: 2637, radius: STONE_COLUMN_RADIUS, height: 76 },
+  { x: 1563, y: 1563, radius: STONE_COLUMN_RADIUS, height: 76 },
+  { x: 2637, y: 1563, radius: STONE_COLUMN_RADIUS, height: 76 },
+];
 
 // Collision constants
 const HAMMER_ENEMY_RESTITUTION = 0.58;
@@ -41,9 +48,10 @@ const INITIAL_HAMMER_MASS = 1.75;
 const HAMMER_WEIGHT_BONUS = 0.35;
 const EXPLOSION_RADIUS = 420;
 
-const PICKUP_TYPES = ['link', 'weight', 'health', 'bomb', 'speed', 'friction', 'flame'];
-const PVP_PICKUP_TYPES = ['link', 'weight', 'bomb', 'speed', 'friction', 'flame'];
-const MAX_HAMMERS_PER_PLAYER = 3;
+const PICKUP_TYPES = ['link', 'weight', 'health', 'bomb', 'speed', 'traction', 'flame'];
+const PICKUP_RADIUS = 10;
+const MAX_PICKUP_COUNT = 40;
+const MAX_HAMMERS_PER_PLAYER = 2;
 const EXTRA_HAMMER_DURATION = 120.0;
 const RARE_HAMMER_DROP_CHANCE = 0.0024;
 const RARE_HORSE_DROP_CHANCE = 0.0016;
@@ -54,15 +62,9 @@ const RARE_EARTHQUAKE_DROP_CHANCE = 0.0016;
 const RARE_FEAR_DROP_CHANCE = 0.0016;
 const RARE_DISCO_DROP_CHANCE = 0.0016;
 const RARE_JACKOLANTERN_DROP_CHANCE = 0.0016;
-const RARE_RATS_DROP_CHANCE = 0.0016;
 const RARE_SPIDER_DROP_CHANCE = 0.0016;
 
 const ZOMBIE_WEB_DURATION = 30.0;
-
-const RAT_SWARM_COUNT = 10;
-const RAT_SPEED = 460;
-const RAT_RADIUS = 10;
-const RAT_DAMAGE = 35;
 
 const JACKOLANTERN_HAMMER_DURATION = 60.0;
 const DISCO_HAMMER_DURATION = 20.0;
@@ -71,7 +73,7 @@ const ZOMBIE_DANCE_IMMUNE_DURATION = 45.0;
 
 const BULLDOZER_DURATION = 20.0;
 const BULLDOZER_SPEED_MULT = 0.5;
-const BULLDOZER_FRICTION_MULT = 10.0;
+const BULLDOZER_TRACTION_MULT = 10.0;
 const BULLDOZER_RADIUS = 34;
 
 const EARTHQUAKE_DURATION = 5.0;
@@ -105,22 +107,19 @@ const PLAYER_PALETTES = [
 ];
 
 // --- World State ---
-const stoneColumns = [];
+const stoneColumns = STONE_COLUMNS.map((col) => ({ ...col }));
 const enemies = [];
-const rats = [];
 const blackCircles = [];
 const players = new Map(); // id -> player object
 const leaderboardRecords = new Map(); // lowercase nickname -> { name, kills, color, updatedAt }
 let leaderboardFilePath = process.env.LEADERBOARD_FILE || DEFAULT_LEADERBOARD_FILE;
 let nextPlayerNum = 1;
 let nextEnemyId = 1;
-let nextRatId = 1;
 let nextPickupId = 1;
 let elapsedGameTime = 0;
 let spawnTimer = 0;
 let earthquakeTimer = 0; // > 0 during a 5s earthquake
 let roundRestartTimer = 0; // Counts down when round ends (victory or defeat)
-let gameMode = 'coop'; // 'coop' | 'pvp' (alternates when > 3 players)
 let roundState = 'playing'; // 'playing' | 'victory' | 'defeat'
 let teamKills = 0;
 let victoryInfo = null;
@@ -128,27 +127,19 @@ let pendingEvents = [];
 
 function initStoneColumns() {
   stoneColumns.length = 0;
-  const centerX = WORLD_WIDTH / 2;
-  const centerY = WORLD_HEIGHT / 2;
-  for (let i = 0; i < STONE_COLUMN_COUNT; i++) {
-    const angle = i * ((Math.PI * 2) / STONE_COLUMN_COUNT) + Math.PI / 4;
-    const dist = 760;
-    stoneColumns.push({
-      x: Math.round(centerX + Math.cos(angle) * dist),
-      y: Math.round(centerY + Math.sin(angle) * dist),
-      radius: STONE_COLUMN_RADIUS,
-      height: 76,
-    });
+  for (let i = 0; i < STONE_COLUMNS.length; i++) {
+    stoneColumns.push({ ...STONE_COLUMNS[i] });
   }
 }
 
-function getChainRestLength(chainLinks) {
-  return BASE_CHAIN_OFFSET + chainLinks * LENGTH_PER_LINK;
+function getChainRestLength(chainLinks, linkLength = LENGTH_PER_LINK) {
+  return BASE_CHAIN_OFFSET + chainLinks * (linkLength || LENGTH_PER_LINK);
 }
 
 function initHammerChainNodes(p, h) {
   h.chainNodes = [];
-  const links = h.chainLinks || INITIAL_CHAIN_LINKS;
+  const links = Math.min(MAX_CHAIN_LINKS, h.chainLinks || INITIAL_CHAIN_LINKS);
+  h.chainLinks = links;
   for (let i = 0; i <= links; i++) {
     const t = links > 0 ? i / links : 0;
     h.chainNodes.push({
@@ -183,7 +174,7 @@ function addHammerChainLinkNode(p, h) {
 }
 
 function createPlayerHammer(p, spawnAngle = Math.PI / 2) {
-  const initLen = getChainRestLength(INITIAL_CHAIN_LINKS);
+  const initLen = getChainRestLength(INITIAL_CHAIN_LINKS, LENGTH_PER_LINK);
   const h = {
     x: p.x + Math.cos(spawnAngle) * initLen * 0.85,
     y: p.y + Math.sin(spawnAngle) * initLen * 0.85,
@@ -192,6 +183,7 @@ function createPlayerHammer(p, spawnAngle = Math.PI / 2) {
     radius: 17,
     mass: INITIAL_HAMMER_MASS,
     chainLinks: INITIAL_CHAIN_LINKS,
+    linkLength: LENGTH_PER_LINK,
     chainNodes: [],
     bombCharges: 0,
     flameCharges: 0,
@@ -489,16 +481,13 @@ function resetPlayerForNewRound(p) {
   p.mountMaxHp = 0;
   p.bulldozerTimer = 0;
   p.speedMultiplier = 1.0;
-  p.frictionMultiplier = 1.0;
+  p.tractionMultiplier = 1.0;
   p.chainLinks = INITIAL_CHAIN_LINKS;
   p.strideCharge = 0;
   p.hurtFlash = 0;
   p.walkCycle = 0;
   p.kills = 0;
   p.maxDamageBlow = 0;
-  p.pvpHitCooldowns = {};
-  p.pvpChainHitCooldowns = {};
-  p.pvpContactCooldowns = {};
 
   p.hammers = [createPlayerHammer(p, Math.PI / 2)];
   p.hammer = p.hammers[0];
@@ -528,8 +517,8 @@ function createPlayer(id, ws) {
     walkThrust: 980,
     runThrust: 1520,
     strideCharge: 0,
-    groundFriction: 5.2,
-    brakeFriction: 13.5,
+    groundTraction: 5.2,
+    brakeTraction: 13.5,
     hp: 100,
     maxHp: 100,
     regenRate: 0,
@@ -539,7 +528,7 @@ function createPlayer(id, ws) {
     mountMaxHp: 0,
     bulldozerTimer: 0,
     speedMultiplier: 1.0,
-    frictionMultiplier: 1.0,
+    tractionMultiplier: 1.0,
     chainLinks: INITIAL_CHAIN_LINKS,
     walkCycle: 0,
     hurtFlash: 0,
@@ -570,7 +559,7 @@ function spawnEnemy(awayFromPlayers = false) {
       mass: 1.05,
       maxHp: 45,
       moveForce: 250,
-      friction: 4.8,
+      traction: 4.8,
       contactDamage: 4,
       contactPush: 210,
       skinColor: '#688f5e',
@@ -583,7 +572,7 @@ function spawnEnemy(awayFromPlayers = false) {
       mass: 1.45,
       maxHp: 75,
       moveForce: 210,
-      friction: 4.6,
+      traction: 4.6,
       contactDamage: 6,
       contactPush: 260,
       skinColor: '#567a4e',
@@ -596,7 +585,7 @@ function spawnEnemy(awayFromPlayers = false) {
       mass: 2.5,
       maxHp: 135,
       moveForce: 170,
-      friction: 4.4,
+      traction: 4.4,
       contactDamage: 9,
       contactPush: 340,
       skinColor: '#486643',
@@ -654,7 +643,7 @@ function spawnEnemy(awayFromPlayers = false) {
     hp: scaledMaxHp,
     maxHp: scaledMaxHp,
     moveForce: scaledMoveForce,
-    friction: archetype.friction,
+    traction: archetype.traction,
     contactDamage: Math.round(archetype.contactDamage * Math.pow(sizeScale, 0.5)),
     contactPush: archetype.contactPush,
     skinColor: archetype.skinColor,
@@ -701,7 +690,7 @@ function taintEnemyWithFear(e, sourcePlayer, duration = FEAR_DURATION) {
     const dist = Math.hypot(dx, dy) || 1;
     const ux = dx / dist;
     const uy = dy / dist;
-    const burstSpeed = (e.moveForce / e.friction) * FEAR_SPEED_MULT * 0.85;
+    const burstSpeed = (e.moveForce / e.traction) * FEAR_SPEED_MULT * 0.85;
     e.angle = Math.atan2(uy, ux);
     e.vx = ux * burstSpeed;
     e.vy = uy * burstSpeed;
@@ -741,15 +730,12 @@ function triggerCoopVictory() {
   if (roundState === 'victory') return;
   roundState = 'victory';
   roundRestartTimer = 0;
-  const nextMode = players.size > 3 ? 'pvp' : 'coop';
   victoryInfo = {
     reason: 'coop_kills',
-    mode: 'coop',
     title: 'ARENA VICTORY!',
     subtitle: `The warriors defeated ${teamKills} zombies across the battlefield!`,
     teamKills,
     championName: getTopKillerName(),
-    nextMode,
   };
   pendingEvents.push({
     type: 'victory',
@@ -757,29 +743,32 @@ function triggerCoopVictory() {
   });
 }
 
-function triggerPvpVictory(winnerPlayer) {
-  if (roundState === 'victory') return;
-  roundState = 'victory';
-  roundRestartTimer = 0;
-  const nextMode = 'coop';
-  victoryInfo = {
-    reason: 'pvp_last_standing',
-    mode: 'pvp',
-    title: winnerPlayer
-      ? `${winnerPlayer.name.toUpperCase()} IS VICTORIOUS!`
-      : 'PVP ARENA COMPLETE!',
-    subtitle: winnerPlayer
-      ? `${winnerPlayer.name} triumphed as the last warrior standing in PvP mode!`
-      : 'All warriors fell in mutual combat!',
-    teamKills,
-    championName: winnerPlayer ? winnerPlayer.name : 'Draw',
-    championColor: winnerPlayer ? winnerPlayer.color : '#f6e05e',
-    nextMode,
-  };
-  pendingEvents.push({
-    type: 'victory',
-    ...victoryInfo,
-  });
+function isCommonPickupType(type) {
+  return PICKUP_TYPES.includes(type || 'link');
+}
+
+function addPickupToWorld(pickup) {
+  while (blackCircles.length >= MAX_PICKUP_COUNT) {
+    const oldestCommonIdx = blackCircles.findIndex((c) => isCommonPickupType(c.type));
+    if (oldestCommonIdx !== -1) {
+      blackCircles.splice(oldestCommonIdx, 1);
+    } else {
+      blackCircles.shift();
+    }
+  }
+  if (pickup && typeof pickup === 'object' && 'radius' in pickup) {
+    delete pickup.radius;
+  }
+  blackCircles.push(pickup);
+}
+
+function serializePickups() {
+  return blackCircles.map((pk) => ({
+    id: pk.id,
+    x: pk.x,
+    y: pk.y,
+    type: pk.type,
+  }));
 }
 
 function defeatEnemy(index, killerPlayer) {
@@ -789,7 +778,7 @@ function defeatEnemy(index, killerPlayer) {
     killerPlayer.kills += 1;
     updateLeaderboardForPlayer(killerPlayer);
   }
-  const pool = gameMode === 'pvp' ? PVP_PICKUP_TYPES : PICKUP_TYPES;
+  const pool = PICKUP_TYPES;
   const rareRoll = Math.random();
   let pickupType;
   if (rareRoll < RARE_BULLDOZER_DROP_CHANCE) {
@@ -861,20 +850,6 @@ function defeatEnemy(index, killerPlayer) {
       RARE_FEAR_DROP_CHANCE +
       RARE_DISCO_DROP_CHANCE +
       RARE_JACKOLANTERN_DROP_CHANCE +
-      RARE_RATS_DROP_CHANCE
-  ) {
-    pickupType = 'rats';
-  } else if (
-    rareRoll <
-    RARE_BULLDOZER_DROP_CHANCE +
-      RARE_ELEPHANT_DROP_CHANCE +
-      RARE_HORSE_DROP_CHANCE +
-      RARE_TORTOISE_DROP_CHANCE +
-      RARE_EARTHQUAKE_DROP_CHANCE +
-      RARE_FEAR_DROP_CHANCE +
-      RARE_DISCO_DROP_CHANCE +
-      RARE_JACKOLANTERN_DROP_CHANCE +
-      RARE_RATS_DROP_CHANCE +
       RARE_SPIDER_DROP_CHANCE
   ) {
     pickupType = 'spider';
@@ -888,7 +863,6 @@ function defeatEnemy(index, killerPlayer) {
       RARE_FEAR_DROP_CHANCE +
       RARE_DISCO_DROP_CHANCE +
       RARE_JACKOLANTERN_DROP_CHANCE +
-      RARE_RATS_DROP_CHANCE +
       RARE_SPIDER_DROP_CHANCE +
       RARE_HAMMER_DROP_CHANCE
   ) {
@@ -896,11 +870,10 @@ function defeatEnemy(index, killerPlayer) {
   } else {
     pickupType = pool[Math.floor(Math.random() * pool.length)];
   }
-  blackCircles.push({
+  addPickupToWorld({
     id: nextPickupId++,
     x: e.x,
     y: e.y,
-    radius: 10,
     type: pickupType,
   });
   pendingEvents.push({
@@ -964,67 +937,13 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer) {
       });
     }
   }
-
-  // In PvP mode, bomb explosions also damage and knock back rival warriors
-  if (gameMode === 'pvp') {
-    for (const targetPlayer of players.values()) {
-      if (!targetPlayer.alive) continue;
-      if (sourcePlayer && targetPlayer.id === sourcePlayer.id) continue;
-      const bdx = targetPlayer.x - ex;
-      const bdy = targetPlayer.y - ey;
-      const bDist = Math.hypot(bdx, bdy);
-      if (bDist <= EXPLOSION_RADIUS + targetPlayer.radius) {
-        const falloff = Math.max(
-          0.35,
-          1 - bDist / (EXPLOSION_RADIUS + targetPlayer.radius)
-        );
-        const blastDamage = Math.round(450 * falloff);
-        const blastImpulse = 2400 * falloff;
-        const bnx = bDist > 0.001 ? bdx / bDist : Math.cos(Math.random() * Math.PI * 2);
-        const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
-
-        targetPlayer.vx += (blastImpulse / targetPlayer.mass) * bnx;
-        targetPlayer.vy += (blastImpulse / targetPlayer.mass) * bny;
-        if ((targetPlayer.bulldozerTimer || 0) <= 0) {
-          const killedTarget = applyDamageToPlayer(targetPlayer, blastDamage);
-
-          if (sourcePlayer && blastDamage > sourcePlayer.maxDamageBlow) {
-            sourcePlayer.maxDamageBlow = blastDamage;
-          }
-
-          pendingEvents.push({
-            type: 'player_hurt',
-            playerId: targetPlayer.id,
-            x: Math.round(targetPlayer.x),
-            y: Math.round(targetPlayer.y),
-            playerX: Math.round(targetPlayer.x),
-            playerY: Math.round(targetPlayer.y - targetPlayer.radius - 10),
-            damage: blastDamage,
-          });
-
-          if (killedTarget && sourcePlayer) {
-            sourcePlayer.kills += 1;
-          }
-        }
-      }
-    }
-  }
 }
 
-function resetGameWorld(advanceMode = true) {
-  if (players.size > 3) {
-    if (advanceMode) {
-      gameMode = gameMode === 'coop' ? 'pvp' : 'coop';
-    }
-  } else {
-    gameMode = 'coop';
-  }
-
+function resetGameWorld() {
   roundState = 'playing';
   teamKills = 0;
   victoryInfo = null;
   enemies.length = 0;
-  rats.length = 0;
   blackCircles.length = 0;
   elapsedGameTime = 0;
   spawnTimer = 0;
@@ -1042,7 +961,6 @@ function resetGameWorld(advanceMode = true) {
 
   pendingEvents.push({
     type: 'round_reset',
-    gameMode,
   });
 }
 
@@ -1080,8 +998,8 @@ function stepPlayerPhysics(p, dt) {
     : p.mountType === 'elephant'
     ? 1.0
     : 1.0;
-  const mountFrictionMult = isBulldozer
-    ? BULLDOZER_FRICTION_MULT
+  const mountTractionMult = isBulldozer
+    ? BULLDOZER_TRACTION_MULT
     : p.mountType === 'tortoise'
     ? 20.0
     : p.mountType === 'elephant'
@@ -1090,7 +1008,7 @@ function stepPlayerPhysics(p, dt) {
     ? 5.0
     : 1.0;
   const totalSpeedMult = p.speedMultiplier * mountSpeedMult;
-  const totalFrictionMult = p.frictionMultiplier * mountFrictionMult;
+  const totalTractionMult = p.tractionMultiplier * mountTractionMult;
 
   // 1. Steering & Movement (Mouse Tracking Mode vs. Keyboard Mode)
   if (p.input.controlMode === 'mouse') {
@@ -1118,7 +1036,7 @@ function stepPlayerPhysics(p, dt) {
       const thrust =
         (p.walkThrust + (p.runThrust - p.walkThrust) * p.strideCharge) *
         totalSpeedMult *
-        totalFrictionMult *
+        totalTractionMult *
         arrivalScale;
       p.vx += Math.cos(p.angle) * thrust * dt;
       p.vy += Math.sin(p.angle) * thrust * dt;
@@ -1135,7 +1053,7 @@ function stepPlayerPhysics(p, dt) {
       const thrust =
         (p.walkThrust + (p.runThrust - p.walkThrust) * p.strideCharge) *
         totalSpeedMult *
-        totalFrictionMult;
+        totalTractionMult;
       p.vx += Math.cos(p.angle) * thrust * dt;
       p.vy += Math.sin(p.angle) * thrust * dt;
     } else {
@@ -1144,21 +1062,22 @@ function stepPlayerPhysics(p, dt) {
   }
 
   const isBraking = p.input.controlMode === 'keyboard' && p.input.keys && p.input.keys.down;
-  const activeFriction =
-    (isBraking ? p.brakeFriction : p.groundFriction) * totalFrictionMult;
-  const warriorDamping = Math.exp(-activeFriction * dt);
+  const activeTraction =
+    (isBraking ? p.brakeTraction : p.groundTraction) * totalTractionMult;
+  const warriorDamping = Math.exp(-activeTraction * dt);
   p.vx *= warriorDamping;
   p.vy *= warriorDamping;
 
   // 2. Step each Hammer & Chain owned by this Warrior
   for (let hIdx = 0; hIdx < p.hammers.length; hIdx++) {
     const h = p.hammers[hIdx];
-    const links = h.chainLinks || INITIAL_CHAIN_LINKS;
+    const links = Math.min(MAX_CHAIN_LINKS, h.chainLinks || INITIAL_CHAIN_LINKS);
+    h.chainLinks = links;
     if (!h.chainNodes || h.chainNodes.length !== links + 1) {
       initHammerChainNodes(p, h);
     }
 
-    const restLength = getChainRestLength(links);
+    const restLength = getChainRestLength(links, h.linkLength);
     const segRest = restLength / Math.max(1, links);
 
     h.chainNodes[0].x = p.x;
@@ -1303,29 +1222,6 @@ function stepPlayerPhysics(p, dt) {
           }
         }
       }
-
-      // In PvP mode, also project internal chain nodes out of rival warriors
-      if (gameMode === 'pvp') {
-        for (const other of players.values()) {
-          if (!other.alive || other.id === p.id) continue;
-          const minDist = other.radius + CHAIN_LINK_RADIUS;
-          for (let i = 1; i < links; i++) {
-            const node = h.chainNodes[i];
-            const cdx = node.x - other.x;
-            const cdy = node.y - other.y;
-            const cDist = Math.hypot(cdx, cdy);
-            if (cDist < minDist && cDist > 0.0001) {
-              const push = minDist - cDist;
-              const nx = cdx / cDist;
-              const ny = cdy / cDist;
-              node.x += nx * push * 0.92;
-              node.y += ny * push * 0.92;
-              other.x -= nx * push * 0.08;
-              other.y -= ny * push * 0.08;
-            }
-          }
-        }
-      }
     }
 
     for (let i = 1; i < links; i++) {
@@ -1425,53 +1321,12 @@ function stepPlayerPhysics(p, dt) {
     if (wDist < minWarriorColDist && wDist > 0.0001) {
       const nx = wdx / wDist;
       const ny = wdy / wDist;
-      if (isBulldozer) {
-        const overlap = minWarriorColDist - wDist;
-        col.x -= nx * overlap;
-        col.y -= ny * overlap;
-        const colPad = col.radius + 28;
-        col.x = Math.max(colPad, Math.min(WORLD_WIDTH - colPad, col.x));
-        col.y = Math.max(colPad, Math.min(WORLD_HEIGHT - colPad, col.y));
-
-        // Separate pushed column from any other stone columns
-        for (let otherIdx = 0; otherIdx < stoneColumns.length; otherIdx++) {
-          if (otherIdx === cIdx) continue;
-          const otherCol = stoneColumns[otherIdx];
-          const cdx = otherCol.x - col.x;
-          const cdy = otherCol.y - col.y;
-          const cDist = Math.hypot(cdx, cdy);
-          const minColsDist = col.radius + otherCol.radius + 4;
-          if (cDist < minColsDist && cDist > 0.0001) {
-            const cnx = cdx / cDist;
-            const cny = cdy / cDist;
-            const cOverlap = minColsDist - cDist;
-            otherCol.x = Math.max(
-              colPad,
-              Math.min(WORLD_WIDTH - colPad, otherCol.x + cnx * cOverlap)
-            );
-            otherCol.y = Math.max(
-              colPad,
-              Math.min(WORLD_HEIGHT - colPad, otherCol.y + cny * cOverlap)
-            );
-          }
-        }
-
-        // If column is pinned against the arena wall, keep bulldozer outside the column
-        const postDx = p.x - col.x;
-        const postDy = p.y - col.y;
-        const postDist = Math.hypot(postDx, postDy);
-        if (postDist < minWarriorColDist && postDist > 0.0001) {
-          p.x = col.x + (postDx / postDist) * minWarriorColDist;
-          p.y = col.y + (postDy / postDist) * minWarriorColDist;
-        }
-      } else {
-        p.x = col.x + nx * minWarriorColDist;
-        p.y = col.y + ny * minWarriorColDist;
-        const vn = p.vx * nx + p.vy * ny;
-        if (vn < 0) {
-          p.vx -= vn * nx;
-          p.vy -= vn * ny;
-        }
+      p.x = col.x + nx * minWarriorColDist;
+      p.y = col.y + ny * minWarriorColDist;
+      const vn = p.vx * nx + p.vy * ny;
+      if (vn < 0) {
+        p.vx -= vn * nx;
+        p.vy -= vn * ny;
       }
     }
   }
@@ -1620,16 +1475,6 @@ function stepPlayerPhysics(p, dt) {
   p.chainLinks = p.hammer.chainLinks;
   p.chainNodes = p.hammer.chainNodes;
 
-  for (const tid in p.pvpHitCooldowns) {
-    p.pvpHitCooldowns[tid] = Math.max(0, p.pvpHitCooldowns[tid] - dt);
-  }
-  for (const tid in p.pvpChainHitCooldowns) {
-    p.pvpChainHitCooldowns[tid] = Math.max(0, p.pvpChainHitCooldowns[tid] - dt);
-  }
-  for (const tid in p.pvpContactCooldowns) {
-    p.pvpContactCooldowns[tid] = Math.max(0, p.pvpContactCooldowns[tid] - dt);
-  }
-
   // While transformed into a bulldozer, the player cannot pick up any other powerups
   if (isBulldozer) {
     return;
@@ -1638,10 +1483,10 @@ function stepPlayerPhysics(p, dt) {
   // Pickup collection for this player
   for (let i = blackCircles.length - 1; i >= 0; i--) {
     const c = blackCircles[i];
-    if (Math.hypot(p.x - c.x, p.y - c.y) < p.radius + c.radius + 3) {
+    if (Math.hypot(p.x - c.x, p.y - c.y) < p.radius + PICKUP_RADIUS + 3) {
       const pType = c.type || 'link';
       if (pType === 'hammer' && p.hammers.length >= MAX_HAMMERS_PER_PLAYER) {
-        // Player already has the maximum of 3 hammers; cannot pick up this powerup
+        // Player already has the maximum of 2 hammers; cannot pick up this powerup
         continue;
       }
       if ((pType === 'horse' || pType === 'tortoise') && p.mountType) {
@@ -1669,7 +1514,7 @@ function stepPlayerPhysics(p, dt) {
           x: Math.round(p.x),
           y: Math.round(p.y),
         });
-        label = 'BULLDOZER! (20s INVINCIBLE, CRUSH ZOMBIES & PUSH COLUMNS)';
+        label = 'BULLDOZER! (20s INVINCIBLE, CRUSH ZOMBIES)';
         color = '#ecc94b';
       } else if (pType === 'hammer') {
         const spreadAngle = p.angle + Math.PI + (p.hammers.length === 1 ? 0.65 : -0.65);
@@ -1765,31 +1610,6 @@ function stepPlayerPhysics(p, dt) {
         });
         label = 'JACK-O-LANTERN HAMMER! (60s)';
         color = '#ed8936';
-      } else if (pType === 'rats') {
-        const ringDist = p.radius + 14;
-        for (let rIdx = 0; rIdx < RAT_SWARM_COUNT; rIdx++) {
-          const spawnRingAng = (rIdx / RAT_SWARM_COUNT) * Math.PI * 2;
-          const runAng = Math.random() * Math.PI * 2;
-          rats.push({
-            id: nextRatId++,
-            x: p.x + Math.cos(spawnRingAng) * ringDist,
-            y: p.y + Math.sin(spawnRingAng) * ringDist,
-            vx: Math.cos(runAng) * RAT_SPEED,
-            vy: Math.sin(runAng) * RAT_SPEED,
-            angle: runAng,
-            radius: RAT_RADIUS,
-            walkPhase: Math.random() * Math.PI * 2,
-            owner: p,
-            hitCooldowns: {},
-          });
-        }
-        pendingEvents.push({
-          type: 'rats_pickup',
-          x: Math.round(p.x),
-          y: Math.round(p.y),
-        });
-        label = 'RAT SWARM! (10 RATS UNLEASHED)';
-        color = '#cbd5e0';
       } else if (pType === 'spider') {
         const nonSpider = p.hammers.filter((hm) => !hm.isSpider);
         const poolH = nonSpider.length > 0 ? nonSpider : p.hammers;
@@ -1803,16 +1623,32 @@ function stepPlayerPhysics(p, dt) {
         label = 'SPIDER HAMMER! (WEBS ZOMBIES FOR 30s)';
         color = '#e2e8f0';
       } else if (pType === 'link') {
-        const randIdx = Math.floor(Math.random() * p.hammers.length);
-        const targetH = p.hammers[randIdx];
-        targetH.chainLinks += 1;
-        addHammerChainLinkNode(p, targetH);
-        p.chainLinks = p.hammers[0].chainLinks;
-        p.chainNodes = p.hammers[0].chainNodes;
-        label =
-          p.hammers.length > 1
-            ? `+1 CHAIN LINK (HAMMER #${randIdx + 1})`
-            : '+1 CHAIN LINK';
+        const underMax = p.hammers.filter(
+          (hm) => (hm.chainLinks || INITIAL_CHAIN_LINKS) < MAX_CHAIN_LINKS
+        );
+        if (underMax.length > 0) {
+          const targetH = underMax[Math.floor(Math.random() * underMax.length)];
+          const targetIdx = p.hammers.indexOf(targetH);
+          targetH.chainLinks += 1;
+          addHammerChainLinkNode(p, targetH);
+          p.chainLinks = p.hammers[0].chainLinks;
+          p.chainNodes = p.hammers[0].chainNodes;
+          label =
+            p.hammers.length > 1
+              ? `+1 CHAIN LINK (HAMMER #${targetIdx + 1})`
+              : '+1 CHAIN LINK';
+        } else {
+          const randIdx = Math.floor(Math.random() * p.hammers.length);
+          const targetH = p.hammers[randIdx];
+          targetH.linkLength = +(
+            (targetH.linkLength || LENGTH_PER_LINK) +
+            LENGTH_PER_LINK / MAX_CHAIN_LINKS
+          ).toFixed(4);
+          label =
+            p.hammers.length > 1
+              ? `+LINK LENGTH (HAMMER #${randIdx + 1})`
+              : '+LINK LENGTH';
+        }
         color = '#f6e05e';
       } else if (pType === 'weight') {
         const randIdx = Math.floor(Math.random() * p.hammers.length);
@@ -1826,15 +1662,10 @@ function stepPlayerPhysics(p, dt) {
             : '+MACE MASS';
         color = '#cbd5e0';
       } else if (pType === 'health') {
-        if (gameMode === 'pvp') {
-          label = 'NO HEALING IN PVP!';
-          color = '#fc8181';
-        } else {
-          const healAmount = p.maxHp * 0.2;
-          p.hp = Math.min(p.maxHp, p.hp + healAmount);
-          label = `+${Math.round(healAmount)} HP (20%)`;
-          color = '#68d391';
-        }
+        const healAmount = p.maxHp * 0.2;
+        p.hp = Math.min(p.maxHp, p.hp + healAmount);
+        label = `+${Math.round(healAmount)} HP (20%)`;
+        color = '#68d391';
       } else if (pType === 'bomb') {
         const unarmed = p.hammers.filter((hm) => hm.bombCharges === 0);
         const poolH = unarmed.length > 0 ? unarmed : p.hammers;
@@ -1846,9 +1677,9 @@ function stepPlayerPhysics(p, dt) {
         p.speedMultiplier = +(p.speedMultiplier * 1.05).toFixed(4);
         label = '+5% SPEED';
         color = '#63b3ed';
-      } else if (pType === 'friction') {
-        p.frictionMultiplier = +(p.frictionMultiplier * 1.05).toFixed(4);
-        label = '+5% FRICTION';
+      } else if (pType === 'traction') {
+        p.tractionMultiplier = +(p.tractionMultiplier * 1.05).toFixed(4);
+        label = '+5% TRACTION';
         color = '#d69e2e';
       } else if (pType === 'flame') {
         const unflamed = p.hammers.filter((hm) => (hm.flameCharges || 0) === 0);
@@ -1990,7 +1821,7 @@ function stepWorldPhysics(dt) {
         e.vx = 0;
         e.vy = 0;
       } else {
-        const kdDamp = Math.exp(-e.friction * 5.0 * dt);
+        const kdDamp = Math.exp(-e.traction * 5.0 * dt);
         e.vx *= kdDamp;
         e.vy *= kdDamp;
       }
@@ -2000,7 +1831,7 @@ function stepWorldPhysics(dt) {
         e.vx = 0;
         e.vy = 0;
       } else {
-        const webDamp = Math.exp(-e.friction * 8.0 * dt);
+        const webDamp = Math.exp(-e.traction * 8.0 * dt);
         e.vx *= webDamp;
         e.vy *= webDamp;
       }
@@ -2051,7 +1882,7 @@ function stepWorldPhysics(dt) {
     }
 
     if (!isKnockedDown && !isWebbed) {
-      const enemyDamp = Math.exp(-(isDancing ? e.friction * 8.0 : e.friction) * dt);
+      const enemyDamp = Math.exp(-(isDancing ? e.traction * 8.0 : e.traction) * dt);
       e.vx *= enemyDamp;
       e.vy *= enemyDamp;
     }
@@ -2360,64 +2191,6 @@ function stepWorldPhysics(dt) {
     }
   }
 
-  // Update Rat Swarm: scurry in straight lines, damage touched zombies, and disappear at map edges
-  const ratEdgeMargin = 18;
-  for (let rIdx = rats.length - 1; rIdx >= 0; rIdx--) {
-    const r = rats[rIdx];
-    r.x += r.vx * dt;
-    r.y += r.vy * dt;
-    r.walkPhase += dt * 28;
-
-    // When a rat reaches the edge of the map, it disappears
-    if (
-      r.x <= ratEdgeMargin ||
-      r.x >= WORLD_WIDTH - ratEdgeMargin ||
-      r.y <= ratEdgeMargin ||
-      r.y >= WORLD_HEIGHT - ratEdgeMargin
-    ) {
-      rats.splice(rIdx, 1);
-      continue;
-    }
-
-    for (const eid in r.hitCooldowns) {
-      r.hitCooldowns[eid] = Math.max(0, r.hitCooldowns[eid] - dt);
-    }
-
-    for (let eIdx = enemies.length - 1; eIdx >= 0; eIdx--) {
-      const e = enemies[eIdx];
-      const dx = e.x - r.x;
-      const dy = e.y - r.y;
-      if (Math.hypot(dx, dy) <= r.radius + e.radius) {
-        const eKey = e.id || eIdx;
-        if ((r.hitCooldowns[eKey] || 0) <= 0) {
-          r.hitCooldowns[eKey] = 0.38;
-          e.hp -= RAT_DAMAGE;
-          e.hurtFlash = 0.16;
-          e.vx += Math.cos(r.angle) * 65;
-          e.vy += Math.sin(r.angle) * 65;
-
-          if (r.owner && RAT_DAMAGE > r.owner.maxDamageBlow) {
-            r.owner.maxDamageBlow = RAT_DAMAGE;
-          }
-
-          pendingEvents.push({
-            type: 'impact',
-            x: Math.round(r.x),
-            y: Math.round(r.y),
-            enemyX: Math.round(e.x),
-            enemyY: Math.round(e.y - e.radius - 6),
-            damage: RAT_DAMAGE,
-            isChain: false,
-          });
-
-          if (e.hp <= 0) {
-            defeatEnemy(eIdx, r.owner || null);
-          }
-        }
-      }
-    }
-  }
-
   // Soft zombie-to-zombie separation & flaming zombie contagion
   for (let i = 0; i < enemies.length; i++) {
     for (let j = i + 1; j < enemies.length; j++) {
@@ -2480,12 +2253,11 @@ function stepWorldPhysics(dt) {
     }
   }
 
-  // Warrior-to-Warrior Separation & PvP Combat (Mace, Chain, and Body Collisions)
+  // Warrior-to-Warrior Body Separation
   for (let i = 0; i < alivePlayers.length; i++) {
     const a = alivePlayers[i];
     if (!a.alive) continue;
 
-    // 1. Body-to-body separation (and contact damage in PvP mode)
     for (let j = i + 1; j < alivePlayers.length; j++) {
       const b = alivePlayers[j];
       if (!b.alive) continue;
@@ -2501,218 +2273,6 @@ function stepWorldPhysics(dt) {
         a.y -= pny * overlap;
         b.x += pnx * overlap;
         b.y += pny * overlap;
-
-        if (gameMode === 'pvp') {
-          a.vx -= pnx * 180 * dt * 8.5;
-          a.vy -= pny * 180 * dt * 8.5;
-          b.vx += pnx * 180 * dt * 8.5;
-          b.vy += pny * 180 * dt * 8.5;
-
-          if ((a.pvpContactCooldowns[b.id] || 0) <= 0) {
-            const contactDmg = 5;
-            a.pvpContactCooldowns[b.id] = 0.55;
-            b.pvpContactCooldowns[a.id] = 0.55;
-            const aDied = applyDamageToPlayer(a, contactDmg);
-            const bDied = applyDamageToPlayer(b, contactDmg);
-
-            if ((a.bulldozerTimer || 0) <= 0) {
-              pendingEvents.push({
-                type: 'player_hurt',
-                playerId: a.id,
-                x: Math.round(a.x + pnx * a.radius),
-                y: Math.round(a.y + pny * a.radius),
-                playerX: Math.round(a.x),
-                playerY: Math.round(a.y - a.radius - 10),
-                damage: contactDmg,
-              });
-            }
-            if ((b.bulldozerTimer || 0) <= 0) {
-              pendingEvents.push({
-                type: 'player_hurt',
-                playerId: b.id,
-                x: Math.round(b.x - pnx * b.radius),
-                y: Math.round(b.y - pny * b.radius),
-                playerX: Math.round(b.x),
-                playerY: Math.round(b.y - b.radius - 10),
-                damage: contactDmg,
-              });
-            }
-
-            if (aDied) {
-              b.kills += 1;
-            }
-            if (bDied) {
-              a.kills += 1;
-            }
-          }
-        }
-      }
-    }
-
-    // 2. In PvP Mode: Attacker `a`'s Spikey Maces and Chains harm rival Warrior `victim`
-    if (gameMode === 'pvp' && a.alive) {
-      for (let hIdx = 0; hIdx < a.hammers.length; hIdx++) {
-        const h = a.hammers[hIdx];
-        const links = h.chainLinks || INITIAL_CHAIN_LINKS;
-
-        for (let j = 0; j < alivePlayers.length; j++) {
-          if (i === j) continue;
-          const victim = alivePlayers[j];
-          if (!victim.alive) continue;
-
-          // A. Attacker's Spikey Mace vs. Rival Warrior
-          const hdx = victim.x - h.x;
-          const hdy = victim.y - h.y;
-          const hDist = Math.hypot(hdx, hdy);
-          const minHammerVictimDist = h.radius + victim.radius;
-
-          if (hDist < minHammerVictimDist && hDist > 0.0001) {
-            const nx = hdx / hDist;
-            const ny = hdy / hDist;
-            const overlap = minHammerVictimDist - hDist;
-            const totalInvMass = 1 / h.mass + 1 / victim.mass;
-            h.x -= nx * overlap * ((1 / h.mass) / totalInvMass);
-            h.y -= ny * overlap * ((1 / h.mass) / totalInvMass);
-            victim.x += nx * overlap * ((1 / victim.mass) / totalInvMass);
-            victim.y += ny * overlap * ((1 / victim.mass) / totalInvMass);
-
-            const rvx = h.vx - victim.vx;
-            const rvy = h.vy - victim.vy;
-            const velAlongNormal = rvx * nx + rvy * ny;
-
-            if (velAlongNormal > 0) {
-              const impulse =
-                ((1 + HAMMER_ENEMY_RESTITUTION) * velAlongNormal) / totalInvMass;
-
-              h.vx -= (impulse / h.mass) * nx;
-              h.vy -= (impulse / h.mass) * ny;
-              victim.vx += (impulse / victim.mass) * nx;
-              victim.vy += (impulse / victim.mass) * ny;
-
-              if ((a.pvpHitCooldowns[victim.id] || 0) <= 0 && impulse > 8) {
-                const damage = Math.max(1, Math.round(impulse * DAMAGE_PER_IMPULSE));
-                const victimDied = applyDamageToPlayer(victim, damage);
-                a.pvpHitCooldowns[victim.id] = 0.1;
-
-                if (damage > a.maxDamageBlow) {
-                  a.maxDamageBlow = damage;
-                }
-
-                const contactX = h.x + nx * h.radius;
-                const contactY = h.y + ny * h.radius;
-
-                pendingEvents.push({
-                  type: 'impact',
-                  x: Math.round(contactX),
-                  y: Math.round(contactY),
-                  enemyX: Math.round(victim.x),
-                  enemyY: Math.round(victim.y - victim.radius - 10),
-                  damage,
-                  isChain: false,
-                  victimPlayerId: victim.id,
-                });
-
-                if (h.bombCharges > 0) {
-                  h.bombCharges -= 1;
-                  triggerHammerExplosion(contactX, contactY, a, h);
-                }
-
-                if (victimDied) {
-                  a.kills += 1;
-                  continue;
-                }
-              }
-            }
-          }
-
-          // B. Attacker's Chain vs. Rival Warrior (1/3 momentum & 1/3 damage)
-          let closestNodeIdx = -1;
-          let minNodeDist = Infinity;
-          for (let cIdx = 1; cIdx < links; cIdx++) {
-            const node = h.chainNodes[cIdx];
-            const d = Math.hypot(victim.x - node.x, victim.y - node.y);
-            if (d < minNodeDist) {
-              minNodeDist = d;
-              closestNodeIdx = cIdx;
-            }
-          }
-
-          const minChainVictimDist = CHAIN_LINK_RADIUS + victim.radius;
-          if (
-            closestNodeIdx !== -1 &&
-            minNodeDist < minChainVictimDist &&
-            minNodeDist > 0.0001
-          ) {
-            const node = h.chainNodes[closestNodeIdx];
-            const cnx = (victim.x - node.x) / minNodeDist;
-            const cny = (victim.y - node.y) / minNodeDist;
-            const cOverlap = minChainVictimDist - minNodeDist;
-
-            node.x -= cnx * cOverlap * 0.82;
-            node.y -= cny * cOverlap * 0.82;
-            victim.x += cnx * cOverlap * 0.18;
-            victim.y += cny * cOverlap * 0.18;
-
-            const crvx = node.vx - victim.vx;
-            const crvy = node.vy - victim.vy;
-            const cVelAlongNormal = crvx * cnx + crvy * cny;
-
-            if (cVelAlongNormal > 0) {
-              const totalInvMass = 1 / h.mass + 1 / victim.mass;
-              const hammerEquivImpulse =
-                ((1 + HAMMER_ENEMY_RESTITUTION) * cVelAlongNormal) / totalInvMass;
-              const chainImpulse = hammerEquivImpulse * CHAIN_MOMENTUM_FACTOR;
-
-              victim.vx += (chainImpulse / victim.mass) * cnx;
-              victim.vy += (chainImpulse / victim.mass) * cny;
-
-              node.vx -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cnx;
-              node.vy -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cny;
-              if (closestNodeIdx > 1) {
-                h.chainNodes[closestNodeIdx - 1].vx -= cVelAlongNormal * 0.45 * cnx;
-                h.chainNodes[closestNodeIdx - 1].vy -= cVelAlongNormal * 0.45 * cny;
-              }
-              if (closestNodeIdx + 1 < links) {
-                h.chainNodes[closestNodeIdx + 1].vx -= cVelAlongNormal * 0.45 * cnx;
-                h.chainNodes[closestNodeIdx + 1].vy -= cVelAlongNormal * 0.45 * cny;
-              }
-
-              const leverRatio = closestNodeIdx / links;
-              h.vx -= ((chainImpulse * leverRatio) / h.mass) * cnx;
-              h.vy -= ((chainImpulse * leverRatio) / h.mass) * cny;
-              a.vx -= ((chainImpulse * (1 - leverRatio)) / a.mass) * cnx;
-              a.vy -= ((chainImpulse * (1 - leverRatio)) / a.mass) * cny;
-
-              if ((a.pvpChainHitCooldowns[victim.id] || 0) <= 0 && hammerEquivImpulse > 8) {
-                const chainDamage = Math.max(
-                  1,
-                  Math.round(hammerEquivImpulse * DAMAGE_PER_IMPULSE * CHAIN_DAMAGE_FACTOR)
-                );
-                const victimDied = applyDamageToPlayer(victim, chainDamage);
-                a.pvpChainHitCooldowns[victim.id] = 0.1;
-
-                if (chainDamage > a.maxDamageBlow) {
-                  a.maxDamageBlow = chainDamage;
-                }
-
-                pendingEvents.push({
-                  type: 'impact',
-                  x: Math.round(node.x),
-                  y: Math.round(node.y),
-                  enemyX: Math.round(victim.x),
-                  enemyY: Math.round(victim.y - victim.radius - 10),
-                  damage: chainDamage,
-                  isChain: true,
-                  victimPlayerId: victim.id,
-                });
-
-                if (victimDied) {
-                  a.kills += 1;
-                }
-              }
-            }
-          }
-        }
       }
     }
   }
@@ -2751,33 +2311,25 @@ function tickServer(dt) {
   if (roundState === 'victory') {
     roundRestartTimer += dt;
     if (roundRestartTimer >= VICTORY_DISPLAY_DURATION) {
-      resetGameWorld(true);
+      resetGameWorld();
     }
     return;
   }
 
   // Count surviving players
   let aliveCount = 0;
-  let lastAlivePlayer = null;
   for (const p of players.values()) {
     if (p.alive) {
       aliveCount++;
-      lastAlivePlayer = p;
     }
   }
 
-  // In PvP mode, end the round as soon as there is one (or zero) victorious warrior remaining
-  if (gameMode === 'pvp' && aliveCount <= 1) {
-    triggerPvpVictory(lastAlivePlayer);
-    return;
-  }
-
-  // In Co-op mode, if all connected players have died, count down 3s and restart
+  // If all connected players have died, count down 3s and restart
   if (aliveCount === 0) {
     roundState = 'defeat';
     roundRestartTimer += dt;
     if (roundRestartTimer >= 3.0) {
-      resetGameWorld(true);
+      resetGameWorld();
     }
     return;
   } else {
@@ -2792,22 +2344,6 @@ function tickServer(dt) {
   }
 
   if (roundState === 'victory') return;
-
-  // Re-check PvP victory right after physics substeps
-  if (gameMode === 'pvp') {
-    let postStepAlive = 0;
-    let survivor = null;
-    for (const p of players.values()) {
-      if (p.alive) {
-        postStepAlive++;
-        survivor = p;
-      }
-    }
-    if (postStepAlive <= 1) {
-      triggerPvpVictory(survivor);
-      return;
-    }
-  }
 
   // Per-frame player walk cycle and hurt flash decay (no automatic HP regeneration)
   for (const p of players.values()) {
@@ -3440,12 +2976,11 @@ server.on('upgrade', (req, socket) => {
   const player = createPlayer(playerId, socket);
   players.set(playerId, player);
 
-  // Send welcome packet with player ID, static columns, and current leaderboard
+  // Send welcome packet with player ID and current leaderboard
   const welcomeFrame = encodeWsFrame(
     JSON.stringify({
       type: 'welcome',
       playerId,
-      stoneColumns,
       leaderboard: getTopLeaderboard(),
     })
   );
@@ -3519,6 +3054,100 @@ for (let i = 0; i < INITIAL_ENEMY_COUNT; i++) {
   spawnEnemy(false);
 }
 
+function buildGameStatePayload() {
+  const serializedPlayers = [];
+  for (const p of players.values()) {
+    const serializedHammers = (p.hammers || [p.hammer]).map((h) => ({
+      x: +h.x.toFixed(1),
+      y: +h.y.toFixed(1),
+      vx: +h.vx.toFixed(1),
+      vy: +h.vy.toFixed(1),
+      radius: h.radius,
+      mass: h.mass,
+      chainLinks: h.chainLinks || INITIAL_CHAIN_LINKS,
+      linkLength: +(h.linkLength || LENGTH_PER_LINK).toFixed(2),
+      bombCharges: h.bombCharges,
+      flameTimer: +(h.flameTimer || 0).toFixed(2),
+      discoTimer: +(h.discoTimer || 0).toFixed(2),
+      jackolanternTimer: +(h.jackolanternTimer || 0).toFixed(2),
+      extraTimer: +(h.extraTimer || 0).toFixed(2),
+      isSpider: !!h.isSpider,
+      angle: +h.angle.toFixed(3),
+      currentStretch: +h.currentStretch.toFixed(1),
+      chainNodes: (h.chainNodes || []).map((n) => ({
+        x: +n.x.toFixed(1),
+        y: +n.y.toFixed(1),
+      })),
+    }));
+    serializedPlayers.push({
+      id: p.id,
+      name: p.name,
+      color: p.color,
+      capeColor: p.capeColor,
+      plumeColor: p.plumeColor,
+      alive: p.alive,
+      x: +p.x.toFixed(1),
+      y: +p.y.toFixed(1),
+      vx: +p.vx.toFixed(1),
+      vy: +p.vy.toFixed(1),
+      angle: +p.angle.toFixed(3),
+      radius: p.radius,
+      hp: +p.hp.toFixed(1),
+      maxHp: p.maxHp,
+      mountType: p.mountType || null,
+      mountHp: +(p.mountHp || 0).toFixed(1),
+      mountMaxHp: p.mountMaxHp || 0,
+      bulldozerTimer: +(p.bulldozerTimer || 0).toFixed(2),
+      chainLinks: p.chainLinks,
+      walkCycle: +p.walkCycle.toFixed(2),
+      hurtFlash: +p.hurtFlash.toFixed(2),
+      kills: p.kills,
+      maxDamageBlow: p.maxDamageBlow,
+      hammers: serializedHammers,
+      hammer: serializedHammers[0],
+      chainNodes: serializedHammers[0] ? serializedHammers[0].chainNodes : [],
+    });
+  }
+
+  const serializedEnemies = enemies.map((e) => ({
+    id: e.id,
+    variant: e.variant,
+    x: +e.x.toFixed(1),
+    y: +e.y.toFixed(1),
+    vx: +e.vx.toFixed(1),
+    vy: +e.vy.toFixed(1),
+    angle: +e.angle.toFixed(2),
+    radius: e.radius,
+    hp: Math.ceil(e.hp),
+    maxHp: e.maxHp,
+    skinColor: e.skinColor,
+    coatColor: e.coatColor,
+    hurtFlash: +e.hurtFlash.toFixed(2),
+    burnTimer: +(e.burnTimer || 0).toFixed(2),
+    fireproofTimer: +(e.fireproofTimer || 0).toFixed(2),
+    fearTimer: +(e.fearTimer || 0).toFixed(2),
+    danceTimer: +(e.danceTimer || 0).toFixed(2),
+    danceImmuneTimer: +(e.danceImmuneTimer || 0).toFixed(2),
+    webTimer: +(e.webTimer || 0).toFixed(2),
+    knockdownTimer: +(e.knockdownTimer || 0).toFixed(2),
+    walkPhase: +e.walkPhase.toFixed(2),
+  }));
+
+  return {
+    type: 'state',
+    roundState,
+    teamKills,
+    earthquakeTimer: +earthquakeTimer.toFixed(2),
+    victoryInfo,
+    players: serializedPlayers,
+    enemies: serializedEnemies,
+    pickups: serializePickups(),
+    events: pendingEvents,
+    leaderboard: getTopLeaderboard(),
+    roundRestartTimer: +roundRestartTimer.toFixed(2),
+  };
+}
+
 // 60 Hz Physics Loop
 let lastTick = performance.now();
 let broadcastAccum = 0;
@@ -3534,115 +3163,7 @@ if (require.main === module) {
     broadcastAccum += dt;
     if (broadcastAccum >= 1 / BroadcastRate && players.size > 0) {
       broadcastAccum = 0;
-      const serializedPlayers = [];
-      for (const p of players.values()) {
-        const serializedHammers = (p.hammers || [p.hammer]).map((h) => ({
-          x: +h.x.toFixed(1),
-          y: +h.y.toFixed(1),
-          vx: +h.vx.toFixed(1),
-          vy: +h.vy.toFixed(1),
-          radius: h.radius,
-          mass: h.mass,
-          chainLinks: h.chainLinks || INITIAL_CHAIN_LINKS,
-          bombCharges: h.bombCharges,
-          flameTimer: +(h.flameTimer || 0).toFixed(2),
-          discoTimer: +(h.discoTimer || 0).toFixed(2),
-          jackolanternTimer: +(h.jackolanternTimer || 0).toFixed(2),
-          extraTimer: +(h.extraTimer || 0).toFixed(2),
-          isSpider: !!h.isSpider,
-          angle: +h.angle.toFixed(3),
-          currentStretch: +h.currentStretch.toFixed(1),
-          chainNodes: (h.chainNodes || []).map((n) => ({
-            x: +n.x.toFixed(1),
-            y: +n.y.toFixed(1),
-          })),
-        }));
-        serializedPlayers.push({
-          id: p.id,
-          name: p.name,
-          color: p.color,
-          capeColor: p.capeColor,
-          plumeColor: p.plumeColor,
-          alive: p.alive,
-          x: +p.x.toFixed(1),
-          y: +p.y.toFixed(1),
-          vx: +p.vx.toFixed(1),
-          vy: +p.vy.toFixed(1),
-          angle: +p.angle.toFixed(3),
-          radius: p.radius,
-          hp: +p.hp.toFixed(1),
-          maxHp: p.maxHp,
-          mountType: p.mountType || null,
-          mountHp: +(p.mountHp || 0).toFixed(1),
-          mountMaxHp: p.mountMaxHp || 0,
-          bulldozerTimer: +(p.bulldozerTimer || 0).toFixed(2),
-          chainLinks: p.chainLinks,
-          walkCycle: +p.walkCycle.toFixed(2),
-          hurtFlash: +p.hurtFlash.toFixed(2),
-          kills: p.kills,
-          maxDamageBlow: p.maxDamageBlow,
-          hammers: serializedHammers,
-          hammer: serializedHammers[0],
-          chainNodes: serializedHammers[0] ? serializedHammers[0].chainNodes : [],
-        });
-      }
-
-      const serializedEnemies = enemies.map((e) => ({
-        id: e.id,
-        variant: e.variant,
-        x: +e.x.toFixed(1),
-        y: +e.y.toFixed(1),
-        vx: +e.vx.toFixed(1),
-        vy: +e.vy.toFixed(1),
-        angle: +e.angle.toFixed(2),
-        radius: e.radius,
-        hp: Math.ceil(e.hp),
-        maxHp: e.maxHp,
-        skinColor: e.skinColor,
-        coatColor: e.coatColor,
-        hurtFlash: +e.hurtFlash.toFixed(2),
-        burnTimer: +(e.burnTimer || 0).toFixed(2),
-        fireproofTimer: +(e.fireproofTimer || 0).toFixed(2),
-        fearTimer: +(e.fearTimer || 0).toFixed(2),
-        danceTimer: +(e.danceTimer || 0).toFixed(2),
-        danceImmuneTimer: +(e.danceImmuneTimer || 0).toFixed(2),
-        webTimer: +(e.webTimer || 0).toFixed(2),
-        knockdownTimer: +(e.knockdownTimer || 0).toFixed(2),
-        walkPhase: +e.walkPhase.toFixed(2),
-      }));
-
-      const serializedRats = rats.map((r) => ({
-        id: r.id,
-        x: +r.x.toFixed(1),
-        y: +r.y.toFixed(1),
-        angle: +r.angle.toFixed(2),
-        radius: r.radius,
-        walkPhase: +r.walkPhase.toFixed(2),
-      }));
-
-      const snapshotFrame = encodeWsFrame(
-        JSON.stringify({
-          type: 'state',
-          gameMode,
-          roundState,
-          teamKills,
-          earthquakeTimer: +earthquakeTimer.toFixed(2),
-          victoryInfo,
-          stoneColumns: stoneColumns.map((col) => ({
-            x: +col.x.toFixed(1),
-            y: +col.y.toFixed(1),
-            radius: col.radius,
-            height: col.height,
-          })),
-          players: serializedPlayers,
-          enemies: serializedEnemies,
-          rats: serializedRats,
-          pickups: blackCircles,
-          events: pendingEvents,
-          leaderboard: getTopLeaderboard(),
-          roundRestartTimer: +roundRestartTimer.toFixed(2),
-        })
-      );
+      const snapshotFrame = encodeWsFrame(JSON.stringify(buildGameStatePayload()));
       pendingEvents = [];
 
       for (const p of players.values()) {
@@ -3666,6 +3187,7 @@ module.exports = {
   BroadcastRate,
   PHYSICS_SUBSTEPS,
   INITIAL_CHAIN_LINKS,
+  MAX_CHAIN_LINKS,
   BASE_CHAIN_OFFSET,
   LENGTH_PER_LINK,
   CHAIN_SPRING_K,
@@ -3674,6 +3196,7 @@ module.exports = {
   CHAIN_RELAX_ITERS,
   STONE_COLUMN_COUNT,
   STONE_COLUMN_RADIUS,
+  STONE_COLUMNS,
   HAMMER_ENEMY_RESTITUTION,
   DAMAGE_PER_IMPULSE,
   CHAIN_MOMENTUM_FACTOR,
@@ -3682,7 +3205,8 @@ module.exports = {
   HAMMER_WEIGHT_BONUS,
   EXPLOSION_RADIUS,
   PICKUP_TYPES,
-  PVP_PICKUP_TYPES,
+  PICKUP_RADIUS,
+  MAX_PICKUP_COUNT,
   MAX_HAMMERS_PER_PLAYER,
   EXTRA_HAMMER_DURATION,
   RARE_HAMMER_DROP_CHANCE,
@@ -3694,20 +3218,15 @@ module.exports = {
   RARE_FEAR_DROP_CHANCE,
   RARE_DISCO_DROP_CHANCE,
   RARE_JACKOLANTERN_DROP_CHANCE,
-  RARE_RATS_DROP_CHANCE,
   RARE_SPIDER_DROP_CHANCE,
   ZOMBIE_WEB_DURATION,
-  RAT_SWARM_COUNT,
-  RAT_SPEED,
-  RAT_RADIUS,
-  RAT_DAMAGE,
   JACKOLANTERN_HAMMER_DURATION,
   DISCO_HAMMER_DURATION,
   ZOMBIE_DANCE_DURATION,
   ZOMBIE_DANCE_IMMUNE_DURATION,
   BULLDOZER_DURATION,
   BULLDOZER_SPEED_MULT,
-  BULLDOZER_FRICTION_MULT,
+  BULLDOZER_TRACTION_MULT,
   BULLDOZER_RADIUS,
   EARTHQUAKE_DURATION,
   ZOMBIE_KNOCKDOWN_RECOVERY,
@@ -3729,7 +3248,6 @@ module.exports = {
   // State collections & accessors
   stoneColumns,
   enemies,
-  rats,
   blackCircles,
   players,
   leaderboardRecords,
@@ -3741,7 +3259,6 @@ module.exports = {
     spawnTimer,
     earthquakeTimer,
     roundRestartTimer,
-    gameMode,
     roundState,
     teamKills,
     victoryInfo,
@@ -3752,7 +3269,6 @@ module.exports = {
     if ('spawnTimer' in patch) spawnTimer = patch.spawnTimer;
     if ('earthquakeTimer' in patch) earthquakeTimer = patch.earthquakeTimer;
     if ('roundRestartTimer' in patch) roundRestartTimer = patch.roundRestartTimer;
-    if ('gameMode' in patch) gameMode = patch.gameMode;
     if ('roundState' in patch) roundState = patch.roundState;
     if ('teamKills' in patch) teamKills = patch.teamKills;
     if ('victoryInfo' in patch) victoryInfo = patch.victoryInfo;
@@ -3783,7 +3299,9 @@ module.exports = {
   igniteEnemy,
   getTopKillerName,
   triggerCoopVictory,
-  triggerPvpVictory,
+  addPickupToWorld,
+  serializePickups,
+  buildGameStatePayload,
   defeatEnemy,
   triggerHammerExplosion,
   resetGameWorld,

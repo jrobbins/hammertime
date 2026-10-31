@@ -102,12 +102,6 @@ body {
   border: 1px solid hsla(134, 60%, 55%, 0.3);
 }
 
-.badge.badge-pvp {
-  background: hsla(0, 72%, 38%, 0.42);
-  color: hsl(0, 90%, 84%);
-  border-color: hsla(0, 80%, 62%, 0.55);
-}
-
 .stat-group {
   display: flex;
   flex-direction: column;
