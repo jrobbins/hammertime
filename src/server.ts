@@ -2976,7 +2976,7 @@ server.on('upgrade', (req, socket) => {
   const player = createPlayer(playerId, socket);
   players.set(playerId, player);
 
-  // Send welcome packet with player ID and current leaderboard
+  // Send welcome packet with player ID and current leaderboard, followed immediately by initial state
   const welcomeFrame = encodeWsFrame(
     JSON.stringify({
       type: 'welcome',
@@ -2985,6 +2985,8 @@ server.on('upgrade', (req, socket) => {
     })
   );
   socket.write(welcomeFrame);
+  const initialStateFrame = encodeWsFrame(JSON.stringify(buildGameStatePayload()));
+  socket.write(initialStateFrame);
 
   setupSocketReader(
     socket,

@@ -137,16 +137,46 @@ function loadClientGame(initialCookies = '') {
     },
   };
 
+  class MockWebSocket {
+    constructor(url) {
+      this.url = url;
+      this.readyState = MockWebSocket.CONNECTING;
+      this.sent = [];
+      this.listeners = {};
+    }
+    addEventListener(type, fn) {
+      if (!this.listeners[type]) this.listeners[type] = [];
+      this.listeners[type].push(fn);
+    }
+    send(data) {
+      this.sent.push(data);
+    }
+    close() {
+      this.readyState = MockWebSocket.CLOSED;
+      this.emit('close', {});
+    }
+    emit(type, ev = {}) {
+      const list = this.listeners[type] || [];
+      for (const fn of list) fn(ev);
+    }
+  }
+  MockWebSocket.CONNECTING = 0;
+  MockWebSocket.OPEN = 1;
+  MockWebSocket.CLOSING = 2;
+  MockWebSocket.CLOSED = 3;
+
   const sandbox = {
     window: {
       innerWidth: 1280,
       innerHeight: 800,
       devicePixelRatio: 1,
-      location: { host: '', protocol: 'file:' },
+      location: { host: 'localhost:8080', protocol: 'http:' },
       addEventListener: () => {},
       AudioContext: undefined,
       webkitAudioContext: undefined,
+      WebSocket: MockWebSocket,
     },
+    WebSocket: MockWebSocket,
     document: mockDoc,
     performance: {
       now: () => Date.now(),
@@ -515,16 +545,29 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(api.getState().hasEnteredGame, false);
     assert.equal(nicknameInput.classList.contains('input-error'), true);
 
-    // Entering a valid nickname joins the game and sets warrior.name
+    // Entering a valid nickname starts connecting, keeps dialog open with "Connecting...", and waits for server connection
+    const enterModalSubtitle = elements.get('enter-modal-subtitle');
     nicknameInput.value = '  Lady Hammer  ';
     const joinedValid = api.enterGame();
     assert.equal(joinedValid, true);
-    assert.equal(api.getState().hasEnteredGame, true);
     assert.equal(api.warrior.name, 'Lady Hammer');
     assert.equal(api.warrior.hasCustomNickname, true);
+    assert.equal(api.getState().hasEnteredGame, false);
+    assert.equal(api.getState().isConnecting, true);
+    assert.equal(enterModal.classList.contains('hidden'), false);
+    assert.equal(enterModalSubtitle.textContent, 'Connecting...');
+
+    // Once the WebSocket connects to the server, the dialog closes and hasEnteredGame becomes true
+    const ws = api.getState().ws;
+    assert.ok(ws, 'Expected WebSocket connection to be initiated');
+    ws.readyState = 1;
+    ws.emit('open', {});
+    assert.equal(api.getState().hasEnteredGame, true);
+    assert.equal(api.getState().isConnecting, false);
     assert.equal(enterModal.classList.contains('hidden'), true);
 
     // Defeating enemies in standalone mode updates local player's kills on the leaderboard
+    api.setState({ isMultiplayer: false });
     api.spawnEnemy(false);
     api.defeatEnemy(api.enemies.length - 1);
     api.spawnEnemy(false);
@@ -561,11 +604,20 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       `Expected medieval name suggestion, got: ${input1.value}`
     );
 
-    // 2. User sets their own custom nickname and enters game
+    // 2. User sets their own custom nickname and enters game -> waits for server connection
     input1.value = 'Sir Percival';
     const joined = freshInstance.api.enterGame();
     assert.equal(joined, true);
+    assert.equal(freshInstance.api.getState().hasEnteredGame, false);
+    assert.equal(freshInstance.elements.get('enter-modal').classList.contains('hidden'), false);
+    assert.equal(freshInstance.elements.get('enter-modal-subtitle').textContent, 'Connecting...');
     assert.ok(freshInstance.document.cookie.includes('hammertime_nickname=Sir%20Percival'));
+
+    const ws = freshInstance.api.getState().ws;
+    ws.readyState = 1;
+    ws.emit('open', {});
+    assert.equal(freshInstance.api.getState().hasEnteredGame, true);
+    assert.equal(freshInstance.elements.get('enter-modal').classList.contains('hidden'), true);
 
     // 3. User reloads page (simulated by passing the cookie jar into new instance)
     const reloadedInstance = loadClientGame(freshInstance.document.cookie);

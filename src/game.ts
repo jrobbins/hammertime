@@ -684,7 +684,9 @@
       hasRecentInput = true;
       mouse.screenX = e.clientX;
       mouse.screenY = e.clientY;
-      setControlMode('mouse');
+      if (hasEnteredGame) {
+        setControlMode('mouse');
+      }
     }
   });
 
@@ -874,7 +876,9 @@
 
   // Multiplayer & Round State
   let ws = null;
+  let isConnecting = false;
   let isMultiplayer = false;
+  let hasSyncedInitialServerState = false;
   let localPlayerId = null;
   const remotePlayers = []; // Other connected players
   let serverRoundRestartTimer = 0;
@@ -1311,7 +1315,9 @@
 
   function pauseForIdle(reasonText) {
     hasEnteredGame = false;
+    isConnecting = false;
     isMultiplayer = false;
+    hasSyncedInitialServerState = false;
     if (ws) {
       const sock = ws;
       ws = null;
@@ -1337,6 +1343,18 @@
       enterModal.classList.remove('hidden');
       enterModal.setAttribute('aria-hidden', 'false');
     }
+  }
+
+  function completeEnterGame() {
+    isConnecting = false;
+    hasEnteredGame = true;
+    lastUserActivityTime = performance.now();
+    hasRecentInput = true;
+    if (enterModal) {
+      enterModal.classList.add('hidden');
+      enterModal.setAttribute('aria-hidden', 'true');
+    }
+    renderLeaderboard();
   }
 
   function enterGame(customNickname?: string) {
@@ -1373,35 +1391,47 @@
     }
     recordLocalLeaderboardScore(warrior.name, kills, warrior.color);
 
-    hasEnteredGame = true;
+    isConnecting = true;
     lastUserActivityTime = performance.now();
     hasRecentInput = true;
     ensureAudioContext();
     if (enterModal) {
-      enterModal.classList.add('hidden');
-      enterModal.setAttribute('aria-hidden', 'true');
+      enterModal.classList.remove('hidden');
+      enterModal.setAttribute('aria-hidden', 'false');
     }
-    initGame();
+    if (enterModalSubtitleEl) {
+      enterModalSubtitleEl.textContent = 'Connecting...';
+    }
     connectMultiplayer();
     renderLeaderboard();
     return true;
   }
 
   function connectMultiplayer() {
-    if (!hasEnteredGame) return;
+    if (!hasEnteredGame && !isConnecting) return;
+    const WebSocketClass = win.WebSocket || (typeof WebSocket !== 'undefined' ? WebSocket : null);
+    if (!WebSocketClass) return;
     if (!window.location.host || window.location.protocol === 'file:') return;
-    if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+    if (ws && ws.readyState === WebSocketClass.OPEN) {
+      isMultiplayer = true;
+      completeEnterGame();
+      return;
+    }
+    if (ws && ws.readyState === WebSocketClass.CONNECTING) {
       return;
     }
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     try {
-      ws = new WebSocket(`${proto}//${window.location.host}`);
+      ws = new WebSocketClass(`${proto}//${window.location.host}`);
     } catch (_err) {
       return;
     }
 
     ws.addEventListener('open', () => {
-      if (warrior.hasCustomNickname && ws && ws.readyState === WebSocket.OPEN) {
+      isMultiplayer = true;
+      hasSyncedInitialServerState = false;
+      completeEnterGame();
+      if (warrior.hasCustomNickname && ws && ws.readyState === WebSocketClass.OPEN) {
         ws.send(
           JSON.stringify({
             type: 'set_nickname',
@@ -1430,7 +1460,8 @@
       if (msg.type === 'welcome') {
         localPlayerId = msg.playerId;
         isMultiplayer = true;
-        if (warrior.hasCustomNickname && ws && ws.readyState === WebSocket.OPEN) {
+        completeEnterGame();
+        if (warrior.hasCustomNickname && ws && ws.readyState === WebSocketClass.OPEN) {
           ws.send(
             JSON.stringify({
               type: 'set_nickname',
@@ -1563,7 +1594,8 @@
                 }
               }
 
-              if (wasDead && warrior.alive) {
+              if ((wasDead && warrior.alive) || !hasSyncedInitialServerState) {
+                hasSyncedInitialServerState = true;
                 camera.x = warrior.x - viewportWidth / 2;
                 camera.y = warrior.y - viewportHeight / 2 / TILT_Y;
               }
@@ -1608,15 +1640,17 @@
 
     ws.addEventListener('close', () => {
       isMultiplayer = false;
+      hasSyncedInitialServerState = false;
       ws = null;
-      if (hasEnteredGame) {
+      if (hasEnteredGame || isConnecting) {
         setTimeout(connectMultiplayer, 2000);
       }
     });
   }
 
   function sendInputToServer() {
-    if (!hasEnteredGame || !isMultiplayer || !ws || ws.readyState !== WebSocket.OPEN) return;
+    const openState = win.WebSocket ? win.WebSocket.OPEN : 1;
+    if (!hasEnteredGame || !isMultiplayer || !ws || ws.readyState !== openState) return;
     const active = hasRecentInput;
     hasRecentInput = false;
     ws.send(
@@ -7842,6 +7876,7 @@
       mouse,
       getState: () => ({
         hasEnteredGame,
+        isConnecting,
         isMultiplayer,
         localPlayerId,
         roundState,
@@ -7853,9 +7888,11 @@
         gameTime,
         controlMode,
         leaderboard,
+        ws,
       }),
       setState: (patch) => {
         if ('hasEnteredGame' in patch) hasEnteredGame = patch.hasEnteredGame;
+        if ('isConnecting' in patch) isConnecting = patch.isConnecting;
         if ('isMultiplayer' in patch) isMultiplayer = patch.isMultiplayer;
         if ('localPlayerId' in patch) localPlayerId = patch.localPlayerId;
         if ('roundState' in patch) roundState = patch.roundState;
@@ -7870,6 +7907,7 @@
       },
       initGame,
       enterGame,
+      connectMultiplayer,
       getCookie,
       setCookie,
       getRandomMedievalName,
