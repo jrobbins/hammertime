@@ -964,6 +964,60 @@ function resetGameWorld() {
   });
 }
 
+const nearbyChainColumns = [];
+const nearbyChainEnemies = [];
+const BROADPHASE_SLACK = 16;
+
+function updatePlayerBroadphaseBounds(p) {
+  let rMinX = p.x - p.radius;
+  let rMaxX = p.x + p.radius;
+  let rMinY = p.y - p.radius;
+  let rMaxY = p.y + p.radius;
+
+  for (let hIdx = 0; hIdx < p.hammers.length; hIdx++) {
+    const h = p.hammers[hIdx];
+    const links = h.chainLinks || INITIAL_CHAIN_LINKS;
+    const hMinX = h.x - h.radius;
+    const hMaxX = h.x + h.radius;
+    const hMinY = h.y - h.radius;
+    const hMaxY = h.y + h.radius;
+    if (hMinX < rMinX) rMinX = hMinX;
+    if (hMaxX > rMaxX) rMaxX = hMaxX;
+    if (hMinY < rMinY) rMinY = hMinY;
+    if (hMaxY > rMaxY) rMaxY = hMaxY;
+
+    let cMinX = p.x < h.x ? p.x : h.x;
+    let cMaxX = p.x > h.x ? p.x : h.x;
+    let cMinY = p.y < h.y ? p.y : h.y;
+    let cMaxY = p.y > h.y ? p.y : h.y;
+    if (h.chainNodes) {
+      for (let i = 1; i < links; i++) {
+        const node = h.chainNodes[i];
+        if (!node) continue;
+        if (node.x < cMinX) cMinX = node.x;
+        if (node.x > cMaxX) cMaxX = node.x;
+        if (node.y < cMinY) cMinY = node.y;
+        if (node.y > cMaxY) cMaxY = node.y;
+      }
+    }
+    const cPad = CHAIN_LINK_RADIUS + BROADPHASE_SLACK;
+    h.chainMinX = cMinX - cPad;
+    h.chainMaxX = cMaxX + cPad;
+    h.chainMinY = cMinY - cPad;
+    h.chainMaxY = cMaxY + cPad;
+
+    if (h.chainMinX < rMinX) rMinX = h.chainMinX;
+    if (h.chainMaxX > rMaxX) rMaxX = h.chainMaxX;
+    if (h.chainMinY < rMinY) rMinY = h.chainMinY;
+    if (h.chainMaxY > rMaxY) rMaxY = h.chainMaxY;
+  }
+
+  p.reachMinX = rMinX - BROADPHASE_SLACK;
+  p.reachMaxX = rMaxX + BROADPHASE_SLACK;
+  p.reachMinY = rMinY - BROADPHASE_SLACK;
+  p.reachMaxY = rMaxY + BROADPHASE_SLACK;
+}
+
 function stepPlayerPhysics(p, dt) {
   if (!p.alive) return;
 
@@ -1090,21 +1144,60 @@ function stepPlayerPhysics(p, dt) {
     h.chainNodes[links].vx = h.vx;
     h.chainNodes[links].vy = h.vy;
 
+    let chainMinX = p.x < h.x ? p.x : h.x;
+    let chainMaxX = p.x > h.x ? p.x : h.x;
+    let chainMinY = p.y < h.y ? p.y : h.y;
+    let chainMaxY = p.y > h.y ? p.y : h.y;
+
     for (let i = 1; i < links; i++) {
       const node = h.chainNodes[i];
       node.prevX = node.x;
       node.prevY = node.y;
       node.x += node.vx * dt;
       node.y += node.vy * dt;
+      if (node.x < chainMinX) chainMinX = node.x;
+      if (node.x > chainMaxX) chainMaxX = node.x;
+      if (node.y < chainMinY) chainMinY = node.y;
+      if (node.y > chainMaxY) chainMaxY = node.y;
+    }
+
+    // Broadphase cull stone columns and enemies near this chain once per substep
+    // rather than scanning all world entities across all 10 relaxation iterations
+    const broadphasePad = CHAIN_LINK_RADIUS + 80;
+    nearbyChainColumns.length = 0;
+    for (let cIdx = 0; cIdx < stoneColumns.length; cIdx++) {
+      const col = stoneColumns[cIdx];
+      const reach = col.radius + broadphasePad;
+      if (
+        col.x + reach >= chainMinX &&
+        col.x - reach <= chainMaxX &&
+        col.y + reach >= chainMinY &&
+        col.y - reach <= chainMaxY
+      ) {
+        nearbyChainColumns.push(col);
+      }
+    }
+
+    nearbyChainEnemies.length = 0;
+    for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
+      const e = enemies[eIdx];
+      const reach = e.radius + broadphasePad;
+      if (
+        e.x + reach >= chainMinX &&
+        e.x - reach <= chainMaxX &&
+        e.y + reach >= chainMinY &&
+        e.y - reach <= chainMaxY
+      ) {
+        nearbyChainEnemies.push(e);
+      }
     }
 
     for (let iter = 0; iter < CHAIN_RELAX_ITERS; iter++) {
       let iterTotalDist = 0;
       for (let i = 0; i < links; i++) {
-        iterTotalDist += Math.hypot(
-          h.chainNodes[i + 1].x - h.chainNodes[i].x,
-          h.chainNodes[i + 1].y - h.chainNodes[i].y
-        );
+        const sdx = h.chainNodes[i + 1].x - h.chainNodes[i].x;
+        const sdy = h.chainNodes[i + 1].y - h.chainNodes[i].y;
+        iterTotalDist += Math.sqrt(sdx * sdx + sdy * sdy);
       }
       const desiredSeg = Math.max(segRest, iterTotalDist / Math.max(1, links));
 
@@ -1113,8 +1206,9 @@ function stepPlayerPhysics(p, dt) {
         const b = h.chainNodes[i + 1];
         const sdx = b.x - a.x;
         const sdy = b.y - a.y;
-        const sDist = Math.hypot(sdx, sdy);
-        if (sDist > 0.0001) {
+        const sDistSq = sdx * sdx + sdy * sdy;
+        if (sDistSq > 1e-8) {
+          const sDist = Math.sqrt(sDistSq);
           const targetLen = Math.min(sDist, desiredSeg);
           const diff = (sDist - targetLen) / sDist;
           if (i > 0 && i + 1 < links) {
@@ -1142,10 +1236,11 @@ function stepPlayerPhysics(p, dt) {
         curr.y += (midY - curr.y) * 0.24;
       }
 
-      // Wrap chain segments and nodes around the immovable stone columns
-      for (let cIdx = 0; cIdx < stoneColumns.length; cIdx++) {
-        const col = stoneColumns[cIdx];
+      // Wrap chain segments and nodes around nearby immovable stone columns
+      for (let cIdx = 0; cIdx < nearbyChainColumns.length; cIdx++) {
+        const col = nearbyChainColumns[cIdx];
         const minColDist = col.radius + CHAIN_LINK_RADIUS;
+        const minColDistSq = minColDist * minColDist;
 
         for (let i = 0; i < links; i++) {
           const a = h.chainNodes[i];
@@ -1162,8 +1257,9 @@ function stepPlayerPhysics(p, dt) {
             const closestY = a.y + aby * tProj;
             const dx = closestX - col.x;
             const dy = closestY - col.y;
-            const dist = Math.hypot(dx, dy);
-            if (dist < minColDist) {
+            const distSq = dx * dx + dy * dy;
+            if (distSq < minColDistSq) {
+              const dist = Math.sqrt(distSq);
               const push = minColDist - dist;
               let nx, ny;
               if (dist > 0.0001) {
@@ -1193,25 +1289,32 @@ function stepPlayerPhysics(p, dt) {
         for (let i = 1; i < links; i++) {
           const node = h.chainNodes[i];
           const cdx = node.x - col.x;
+          if (cdx <= -minColDist || cdx >= minColDist) continue;
           const cdy = node.y - col.y;
-          const cDist = Math.hypot(cdx, cdy);
-          if (cDist < minColDist && cDist > 0.0001) {
+          if (cdy <= -minColDist || cdy >= minColDist) continue;
+          const cDistSq = cdx * cdx + cdy * cdy;
+          if (cDistSq < minColDistSq && cDistSq > 1e-8) {
+            const cDist = Math.sqrt(cDistSq);
             node.x = col.x + (cdx / cDist) * minColDist;
             node.y = col.y + (cdy / cDist) * minColDist;
           }
         }
       }
 
-      // Project internal chain nodes out of enemies
-      for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
-        const e = enemies[eIdx];
+      // Project internal chain nodes out of nearby enemies
+      for (let eIdx = 0; eIdx < nearbyChainEnemies.length; eIdx++) {
+        const e = nearbyChainEnemies[eIdx];
         const minDist = e.radius + CHAIN_LINK_RADIUS;
+        const minDistSq = minDist * minDist;
         for (let i = 1; i < links; i++) {
           const node = h.chainNodes[i];
           const cdx = node.x - e.x;
+          if (cdx <= -minDist || cdx >= minDist) continue;
           const cdy = node.y - e.y;
-          const cDist = Math.hypot(cdx, cdy);
-          if (cDist < minDist && cDist > 0.0001) {
+          if (cdy <= -minDist || cdy >= minDist) continue;
+          const cDistSq = cdx * cdx + cdy * cdy;
+          if (cDistSq < minDistSq && cDistSq > 1e-8) {
+            const cDist = Math.sqrt(cDistSq);
             const push = minDist - cDist;
             const nx = cdx / cDist;
             const ny = cdy / cDist;
@@ -1234,12 +1337,16 @@ function stepPlayerPhysics(p, dt) {
       node.vx = pbdVx * 0.82 + interpVx * 0.18;
       node.vy = pbdVy * 0.82 + interpVy * 0.18;
 
-      for (let cIdx = 0; cIdx < stoneColumns.length; cIdx++) {
-        const col = stoneColumns[cIdx];
+      for (let cIdx = 0; cIdx < nearbyChainColumns.length; cIdx++) {
+        const col = nearbyChainColumns[cIdx];
+        const maxColDist = col.radius + CHAIN_LINK_RADIUS + 1.5;
         const cdx = node.x - col.x;
+        if (cdx < -maxColDist || cdx > maxColDist) continue;
         const cdy = node.y - col.y;
-        const cDist = Math.hypot(cdx, cdy);
-        if (cDist <= col.radius + CHAIN_LINK_RADIUS + 1.5 && cDist > 0.0001) {
+        if (cdy < -maxColDist || cdy > maxColDist) continue;
+        const cDistSq = cdx * cdx + cdy * cdy;
+        if (cDistSq <= maxColDist * maxColDist && cDistSq > 1e-8) {
+          const cDist = Math.sqrt(cDistSq);
           const nx = cdx / cDist;
           const ny = cdy / cDist;
           const vn = node.vx * nx + node.vy * ny;
@@ -1254,10 +1361,9 @@ function stepPlayerPhysics(p, dt) {
     // 3. Elastic Chain Tension Along Bent Path
     let totalPathDist = 0;
     for (let i = 0; i < links; i++) {
-      totalPathDist += Math.hypot(
-        h.chainNodes[i + 1].x - h.chainNodes[i].x,
-        h.chainNodes[i + 1].y - h.chainNodes[i].y
-      );
+      const sdx = h.chainNodes[i + 1].x - h.chainNodes[i].x;
+      const sdy = h.chainNodes[i + 1].y - h.chainNodes[i].y;
+      totalPathDist += Math.sqrt(sdx * sdx + sdy * sdy);
     }
 
     if (totalPathDist > restLength && totalPathDist > 0.0001) {
@@ -1477,13 +1583,19 @@ function stepPlayerPhysics(p, dt) {
 
   // While transformed into a bulldozer, the player cannot pick up any other powerups
   if (isBulldozer) {
+    updatePlayerBroadphaseBounds(p);
     return;
   }
 
   // Pickup collection for this player
   for (let i = blackCircles.length - 1; i >= 0; i--) {
     const c = blackCircles[i];
-    if (Math.hypot(p.x - c.x, p.y - c.y) < p.radius + PICKUP_RADIUS + 3) {
+    const maxPickDist = p.radius + PICKUP_RADIUS + 3;
+    const pkDx = p.x - c.x;
+    if (pkDx <= -maxPickDist || pkDx >= maxPickDist) continue;
+    const pkDy = p.y - c.y;
+    if (pkDy <= -maxPickDist || pkDy >= maxPickDist) continue;
+    if (pkDx * pkDx + pkDy * pkDy < maxPickDist * maxPickDist) {
       const pType = c.type || 'link';
       if (pType === 'hammer' && p.hammers.length >= MAX_HAMMERS_PER_PLAYER) {
         // Player already has the maximum of 2 hammers; cannot pick up this powerup
@@ -1708,6 +1820,8 @@ function stepPlayerPhysics(p, dt) {
       }
     }
   }
+
+  updatePlayerBroadphaseBounds(p);
 }
 
 function stepWorldPhysics(dt) {
@@ -1803,17 +1917,20 @@ function stepWorldPhysics(dt) {
       speedMult = Math.max(speedMult, FEAR_SPEED_MULT);
     }
 
-    // Find closest alive player
+    // Find closest alive player using squared distance first
     let closestPlayer = null;
-    let closestDist = Infinity;
+    let closestDistSq = Infinity;
     for (let pIdx = 0; pIdx < alivePlayers.length; pIdx++) {
       const candidate = alivePlayers[pIdx];
-      const d = Math.hypot(candidate.x - e.x, candidate.y - e.y);
-      if (d < closestDist) {
-        closestDist = d;
+      const pdx = candidate.x - e.x;
+      const pdy = candidate.y - e.y;
+      const dSq = pdx * pdx + pdy * pdy;
+      if (dSq < closestDistSq) {
+        closestDistSq = dSq;
         closestPlayer = candidate;
       }
     }
+    const closestDist = closestPlayer ? Math.sqrt(closestDistSq) : Infinity;
 
     if (isKnockedDown) {
       // Fallen zombies remain motionless on the ground unless actively knocked back by a hammer/chain hit
@@ -1845,7 +1962,7 @@ function stepWorldPhysics(dt) {
           e.fearSource && e.fearSource.alive ? e.fearSource : closestPlayer;
         const awayX = e.x - refPlayer.x;
         const awayY = e.y - refPlayer.y;
-        const awayDist = Math.hypot(awayX, awayY) || 1;
+        const awayDist = Math.sqrt(awayX * awayX + awayY * awayY) || 1;
         let dirX = awayX / awayDist;
         let dirY = awayY / awayDist;
 
@@ -1865,7 +1982,7 @@ function stepWorldPhysics(dt) {
           dirX += (e.x < WORLD_WIDTH / 2 ? 1 : -1) * 0.85;
           dirY *= 0.25;
         }
-        const norm = Math.hypot(dirX, dirY) || 1;
+        const norm = Math.sqrt(dirX * dirX + dirY * dirY) || 1;
         dirX /= norm;
         dirY /= norm;
 
@@ -1892,7 +2009,7 @@ function stepWorldPhysics(dt) {
     if (isDancing && !isKnockedDown && !isWebbed) {
       e.walkPhase += dt * 11.5;
     } else if (!isKnockedDown && !isWebbed) {
-      e.walkPhase += Math.hypot(e.vx, e.vy) * dt * 0.09;
+      e.walkPhase += Math.sqrt(e.vx * e.vx + e.vy * e.vy) * dt * 0.09;
     }
 
     const ePad = e.radius + 20;
@@ -1902,11 +2019,14 @@ function stepWorldPhysics(dt) {
     // Collide zombie with the immovable stone columns
     for (let cIdx = 0; cIdx < stoneColumns.length; cIdx++) {
       const col = stoneColumns[cIdx];
-      const cdx = e.x - col.x;
-      const cdy = e.y - col.y;
-      const cDist = Math.hypot(cdx, cdy);
       const minEnemyColDist = e.radius + col.radius;
-      if (cDist < minEnemyColDist && cDist > 0.0001) {
+      const cdx = e.x - col.x;
+      if (cdx <= -minEnemyColDist || cdx >= minEnemyColDist) continue;
+      const cdy = e.y - col.y;
+      if (cdy <= -minEnemyColDist || cdy >= minEnemyColDist) continue;
+      const cDistSq = cdx * cdx + cdy * cdy;
+      if (cDistSq < minEnemyColDist * minEnemyColDist && cDistSq > 1e-8) {
+        const cDist = Math.sqrt(cDistSq);
         const nx = cdx / cDist;
         const ny = cdy / cDist;
         e.x = col.x + nx * minEnemyColDist;
@@ -1925,192 +2045,219 @@ function stepWorldPhysics(dt) {
       const p = alivePlayers[pIdx];
       if (!p.alive) continue;
 
+      // Broadphase reject: skip this player entirely if enemy is outside player's total reach AABB
+      if (
+        e.x + e.radius < p.reachMinX ||
+        e.x - e.radius > p.reachMaxX ||
+        e.y + e.radius < p.reachMinY ||
+        e.y - e.radius > p.reachMaxY
+      ) {
+        continue;
+      }
+
       for (let hIdx = 0; hIdx < p.hammers.length; hIdx++) {
         const h = p.hammers[hIdx];
         const links = h.chainLinks || INITIAL_CHAIN_LINKS;
 
         // A. Spikey Mace (or Disco Ball) vs. Zombie
+        const minHammerEnemyDist = h.radius + e.radius;
         const hdx = e.x - h.x;
         const hdy = e.y - h.y;
-        const hDist = Math.hypot(hdx, hdy);
-        const minHammerEnemyDist = h.radius + e.radius;
+        if (
+          hdx > -minHammerEnemyDist &&
+          hdx < minHammerEnemyDist &&
+          hdy > -minHammerEnemyDist &&
+          hdy < minHammerEnemyDist
+        ) {
+          const hDistSq = hdx * hdx + hdy * hdy;
+          if (hDistSq < minHammerEnemyDist * minHammerEnemyDist && hDistSq > 1e-8) {
+            const hDist = Math.sqrt(hDistSq);
+            if ((h.discoTimer || 0) > 0) {
+              // Disco Ball does not do any damage and passes through zombies rather than bouncing off of them;
+              // any zombie touched by it immediately stands in one place and starts dancing!
+              startEnemyDance(e);
+              continue;
+            } else {
+              const nx = hdx / hDist;
+              const ny = hdy / hDist;
+              const overlap = minHammerEnemyDist - hDist;
+              const totalInvMass = 1 / h.mass + 1 / e.mass;
+              h.x -= nx * overlap * ((1 / h.mass) / totalInvMass);
+              h.y -= ny * overlap * ((1 / h.mass) / totalInvMass);
+              e.x += nx * overlap * ((1 / e.mass) / totalInvMass);
+              e.y += ny * overlap * ((1 / e.mass) / totalInvMass);
 
-        if (hDist < minHammerEnemyDist && hDist > 0.0001) {
-          if ((h.discoTimer || 0) > 0) {
-            // Disco Ball does not do any damage and passes through zombies rather than bouncing off of them;
-            // any zombie touched by it immediately stands in one place and starts dancing!
-            startEnemyDance(e);
-            continue;
-          } else {
-            const nx = hdx / hDist;
-            const ny = hdy / hDist;
-            const overlap = minHammerEnemyDist - hDist;
-            const totalInvMass = 1 / h.mass + 1 / e.mass;
-            h.x -= nx * overlap * ((1 / h.mass) / totalInvMass);
-            h.y -= ny * overlap * ((1 / h.mass) / totalInvMass);
-            e.x += nx * overlap * ((1 / e.mass) / totalInvMass);
-            e.y += ny * overlap * ((1 / e.mass) / totalInvMass);
-
-            let justIgnited = false;
-            if (h.flameCharges > 0 && e.burnTimer <= 0 && e.fireproofTimer <= 0) {
-              if (igniteEnemy(e, p)) {
-                justIgnited = true;
-                h.flameCharges -= 1;
-                h.flameTimer = h.flameCharges > 0 ? h.flameCharges : 0;
-              }
-            }
-
-            if (h.isSpider) {
-              const wasFreshlyWebbed = (e.webTimer || 0) > ZOMBIE_WEB_DURATION - 0.45;
-              e.webTimer = ZOMBIE_WEB_DURATION;
-              if (!wasFreshlyWebbed) {
-                pendingEvents.push({
-                  type: 'spider_web',
-                  x: Math.round(e.x),
-                  y: Math.round(e.y),
-                });
-              }
-            }
-
-            let detonatedBomb = false;
-            if (h.bombCharges > 0) {
-              h.bombCharges -= 1;
-              detonatedBomb = true;
-              triggerHammerExplosion(h.x + nx * h.radius, h.y + ny * h.radius, p, h);
-            }
-
-            const rvx = h.vx - e.vx;
-            const rvy = h.vy - e.vy;
-            const velAlongNormal = rvx * nx + rvy * ny;
-
-            if (velAlongNormal > 0) {
-              const impulse =
-                ((1 + HAMMER_ENEMY_RESTITUTION) * velAlongNormal) / totalInvMass;
-
-              h.vx -= (impulse / h.mass) * nx;
-              h.vy -= (impulse / h.mass) * ny;
-              e.vx += (impulse / e.mass) * nx;
-              e.vy += (impulse / e.mass) * ny;
-
-              if (e.hitCooldown <= 0 && impulse > 8) {
-                const damage = Math.max(1, Math.round(impulse * DAMAGE_PER_IMPULSE));
-                e.hp -= damage;
-                e.hitCooldown = 0.09;
-                e.hurtFlash = 0.18;
-
-                if (damage > p.maxDamageBlow) {
-                  p.maxDamageBlow = damage;
+              let justIgnited = false;
+              if (h.flameCharges > 0 && e.burnTimer <= 0 && e.fireproofTimer <= 0) {
+                if (igniteEnemy(e, p)) {
+                  justIgnited = true;
+                  h.flameCharges -= 1;
+                  h.flameTimer = h.flameCharges > 0 ? h.flameCharges : 0;
                 }
-
-                const contactX = h.x + nx * h.radius;
-                const contactY = h.y + ny * h.radius;
-
-                pendingEvents.push({
-                  type: 'impact',
-                  x: Math.round(contactX),
-                  y: Math.round(contactY),
-                  enemyX: Math.round(e.x),
-                  enemyY: Math.round(e.y - e.radius - 6),
-                  damage,
-                  isChain: false,
-                });
               }
-            }
 
-            // Ensure a zombie newly ignited by the Flaming Hammer survives the initial hit to run on fire
-            if (justIgnited && !detonatedBomb && e.hp <= 0) {
-              e.hp = Math.max(18, Math.round(e.maxHp * 0.3));
-            }
+              if (h.isSpider) {
+                const wasFreshlyWebbed = (e.webTimer || 0) > ZOMBIE_WEB_DURATION - 0.45;
+                e.webTimer = ZOMBIE_WEB_DURATION;
+                if (!wasFreshlyWebbed) {
+                  pendingEvents.push({
+                    type: 'spider_web',
+                    x: Math.round(e.x),
+                    y: Math.round(e.y),
+                  });
+                }
+              }
 
-            if (e.hp <= 0) {
-              defeatEnemy(i, e.lastBlastKiller || p);
-              enemyDefeated = true;
-              break;
+              let detonatedBomb = false;
+              if (h.bombCharges > 0) {
+                h.bombCharges -= 1;
+                detonatedBomb = true;
+                triggerHammerExplosion(h.x + nx * h.radius, h.y + ny * h.radius, p, h);
+              }
+
+              const rvx = h.vx - e.vx;
+              const rvy = h.vy - e.vy;
+              const velAlongNormal = rvx * nx + rvy * ny;
+
+              if (velAlongNormal > 0) {
+                const impulse =
+                  ((1 + HAMMER_ENEMY_RESTITUTION) * velAlongNormal) / totalInvMass;
+
+                h.vx -= (impulse / h.mass) * nx;
+                h.vy -= (impulse / h.mass) * ny;
+                e.vx += (impulse / e.mass) * nx;
+                e.vy += (impulse / e.mass) * ny;
+
+                if (e.hitCooldown <= 0 && impulse > 8) {
+                  const damage = Math.max(1, Math.round(impulse * DAMAGE_PER_IMPULSE));
+                  e.hp -= damage;
+                  e.hitCooldown = 0.09;
+                  e.hurtFlash = 0.18;
+
+                  if (damage > p.maxDamageBlow) {
+                    p.maxDamageBlow = damage;
+                  }
+
+                  const contactX = h.x + nx * h.radius;
+                  const contactY = h.y + ny * h.radius;
+
+                  pendingEvents.push({
+                    type: 'impact',
+                    x: Math.round(contactX),
+                    y: Math.round(contactY),
+                    enemyX: Math.round(e.x),
+                    enemyY: Math.round(e.y - e.radius - 6),
+                    damage,
+                    isChain: false,
+                  });
+                }
+              }
+
+              // Ensure a zombie newly ignited by the Flaming Hammer survives the initial hit to run on fire
+              if (justIgnited && !detonatedBomb && e.hp <= 0) {
+                e.hp = Math.max(18, Math.round(e.maxHp * 0.3));
+              }
+
+              if (e.hp <= 0) {
+                defeatEnemy(i, e.lastBlastKiller || p);
+                enemyDefeated = true;
+                break;
+              }
             }
           }
         }
 
         // B. Chain vs. Zombie (1/3 momentum transfer & 1/3 damage)
-        let closestNodeIdx = -1;
-        let minNodeDist = Infinity;
-        for (let cIdx = 1; cIdx < links; cIdx++) {
-          const node = h.chainNodes[cIdx];
-          const d = Math.hypot(e.x - node.x, e.y - node.y);
-          if (d < minNodeDist) {
-            minNodeDist = d;
-            closestNodeIdx = cIdx;
-          }
-        }
-
         const minChainEnemyDist = CHAIN_LINK_RADIUS + e.radius;
-        if (closestNodeIdx !== -1 && minNodeDist < minChainEnemyDist && minNodeDist > 0.0001) {
-          const node = h.chainNodes[closestNodeIdx];
-          const cnx = (e.x - node.x) / minNodeDist;
-          const cny = (e.y - node.y) / minNodeDist;
-          const cOverlap = minChainEnemyDist - minNodeDist;
-
-          node.x -= cnx * cOverlap * 0.82;
-          node.y -= cny * cOverlap * 0.82;
-          e.x += cnx * cOverlap * 0.18;
-          e.y += cny * cOverlap * 0.18;
-
-          const crvx = node.vx - e.vx;
-          const crvy = node.vy - e.vy;
-          const cVelAlongNormal = crvx * cnx + crvy * cny;
-
-          if (cVelAlongNormal > 0) {
-            const totalInvMass = 1 / h.mass + 1 / e.mass;
-            const hammerEquivImpulse =
-              ((1 + HAMMER_ENEMY_RESTITUTION) * cVelAlongNormal) / totalInvMass;
-            const chainImpulse = hammerEquivImpulse * CHAIN_MOMENTUM_FACTOR;
-
-            e.vx += (chainImpulse / e.mass) * cnx;
-            e.vy += (chainImpulse / e.mass) * cny;
-
-            node.vx -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cnx;
-            node.vy -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cny;
-            if (closestNodeIdx > 1) {
-              h.chainNodes[closestNodeIdx - 1].vx -= cVelAlongNormal * 0.45 * cnx;
-              h.chainNodes[closestNodeIdx - 1].vy -= cVelAlongNormal * 0.45 * cny;
+        if (
+          e.x + e.radius >= h.chainMinX &&
+          e.x - e.radius <= h.chainMaxX &&
+          e.y + e.radius >= h.chainMinY &&
+          e.y - e.radius <= h.chainMaxY
+        ) {
+          let closestNodeIdx = -1;
+          let minNodeDistSq = minChainEnemyDist * minChainEnemyDist;
+          for (let cIdx = 1; cIdx < links; cIdx++) {
+            const node = h.chainNodes[cIdx];
+            const ndx = e.x - node.x;
+            const ndy = e.y - node.y;
+            const dSq = ndx * ndx + ndy * ndy;
+            if (dSq < minNodeDistSq) {
+              minNodeDistSq = dSq;
+              closestNodeIdx = cIdx;
             }
-            if (closestNodeIdx + 1 < links) {
-              h.chainNodes[closestNodeIdx + 1].vx -= cVelAlongNormal * 0.45 * cnx;
-              h.chainNodes[closestNodeIdx + 1].vy -= cVelAlongNormal * 0.45 * cny;
-            }
+          }
 
-            const leverRatio = closestNodeIdx / links;
-            h.vx -= ((chainImpulse * leverRatio) / h.mass) * cnx;
-            h.vy -= ((chainImpulse * leverRatio) / h.mass) * cny;
-            p.vx -= ((chainImpulse * (1 - leverRatio)) / p.mass) * cnx;
-            p.vy -= ((chainImpulse * (1 - leverRatio)) / p.mass) * cny;
+          if (closestNodeIdx !== -1 && minNodeDistSq > 1e-8) {
+            const minNodeDist = Math.sqrt(minNodeDistSq);
+            const node = h.chainNodes[closestNodeIdx];
+            const cnx = (e.x - node.x) / minNodeDist;
+            const cny = (e.y - node.y) / minNodeDist;
+            const cOverlap = minChainEnemyDist - minNodeDist;
 
-            if (e.chainHitCooldown <= 0 && hammerEquivImpulse > 8) {
-              const chainDamage = Math.max(
-                1,
-                Math.round(hammerEquivImpulse * DAMAGE_PER_IMPULSE * CHAIN_DAMAGE_FACTOR)
-              );
-              e.hp -= chainDamage;
-              e.chainHitCooldown = 0.09;
-              e.hurtFlash = 0.14;
+            node.x -= cnx * cOverlap * 0.82;
+            node.y -= cny * cOverlap * 0.82;
+            e.x += cnx * cOverlap * 0.18;
+            e.y += cny * cOverlap * 0.18;
 
-              if (chainDamage > p.maxDamageBlow) {
-                p.maxDamageBlow = chainDamage;
+            const crvx = node.vx - e.vx;
+            const crvy = node.vy - e.vy;
+            const cVelAlongNormal = crvx * cnx + crvy * cny;
+
+            if (cVelAlongNormal > 0) {
+              const totalInvMass = 1 / h.mass + 1 / e.mass;
+              const hammerEquivImpulse =
+                ((1 + HAMMER_ENEMY_RESTITUTION) * cVelAlongNormal) / totalInvMass;
+              const chainImpulse = hammerEquivImpulse * CHAIN_MOMENTUM_FACTOR;
+
+              e.vx += (chainImpulse / e.mass) * cnx;
+              e.vy += (chainImpulse / e.mass) * cny;
+
+              node.vx -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cnx;
+              node.vy -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cny;
+              if (closestNodeIdx > 1) {
+                h.chainNodes[closestNodeIdx - 1].vx -= cVelAlongNormal * 0.45 * cnx;
+                h.chainNodes[closestNodeIdx - 1].vy -= cVelAlongNormal * 0.45 * cny;
+              }
+              if (closestNodeIdx + 1 < links) {
+                h.chainNodes[closestNodeIdx + 1].vx -= cVelAlongNormal * 0.45 * cnx;
+                h.chainNodes[closestNodeIdx + 1].vy -= cVelAlongNormal * 0.45 * cny;
               }
 
-              pendingEvents.push({
-                type: 'impact',
-                x: Math.round(node.x),
-                y: Math.round(node.y),
-                enemyX: Math.round(e.x),
-                enemyY: Math.round(e.y - e.radius - 6),
-                damage: chainDamage,
-                isChain: true,
-              });
+              const leverRatio = closestNodeIdx / links;
+              h.vx -= ((chainImpulse * leverRatio) / h.mass) * cnx;
+              h.vy -= ((chainImpulse * leverRatio) / h.mass) * cny;
+              p.vx -= ((chainImpulse * (1 - leverRatio)) / p.mass) * cnx;
+              p.vy -= ((chainImpulse * (1 - leverRatio)) / p.mass) * cny;
 
-              if (e.hp <= 0) {
-                defeatEnemy(i, p);
-                enemyDefeated = true;
-                break;
+              if (e.chainHitCooldown <= 0 && hammerEquivImpulse > 8) {
+                const chainDamage = Math.max(
+                  1,
+                  Math.round(hammerEquivImpulse * DAMAGE_PER_IMPULSE * CHAIN_DAMAGE_FACTOR)
+                );
+                e.hp -= chainDamage;
+                e.chainHitCooldown = 0.09;
+                e.hurtFlash = 0.14;
+
+                if (chainDamage > p.maxDamageBlow) {
+                  p.maxDamageBlow = chainDamage;
+                }
+
+                pendingEvents.push({
+                  type: 'impact',
+                  x: Math.round(node.x),
+                  y: Math.round(node.y),
+                  enemyX: Math.round(e.x),
+                  enemyY: Math.round(e.y - e.radius - 6),
+                  damage: chainDamage,
+                  isChain: true,
+                });
+
+                if (e.hp <= 0) {
+                  defeatEnemy(i, p);
+                  enemyDefeated = true;
+                  break;
+                }
               }
             }
           }
@@ -2120,12 +2267,15 @@ function stepWorldPhysics(dt) {
       if (enemyDefeated) break;
 
       // C. Zombie touches Player Warrior
-      const wdx = p.x - e.x;
-      const wdy = p.y - e.y;
-      const wDist = Math.hypot(wdx, wdy);
       const minWarriorEnemyDist = p.radius + e.radius;
+      const wdx = p.x - e.x;
+      if (wdx <= -minWarriorEnemyDist || wdx >= minWarriorEnemyDist) continue;
+      const wdy = p.y - e.y;
+      if (wdy <= -minWarriorEnemyDist || wdy >= minWarriorEnemyDist) continue;
+      const wDistSq = wdx * wdx + wdy * wdy;
 
-      if (wDist < minWarriorEnemyDist && wDist > 0.0001) {
+      if (wDistSq < minWarriorEnemyDist * minWarriorEnemyDist && wDistSq > 1e-8) {
+        const wDist = Math.sqrt(wDistSq);
         if ((p.bulldozerTimer || 0) > 0) {
           // While a bulldozer, the player takes no damage and instantly kills any zombie they touch
           const crushDmg = Math.max(1, Math.ceil(e.hp));
@@ -2193,14 +2343,19 @@ function stepWorldPhysics(dt) {
 
   // Soft zombie-to-zombie separation & flaming zombie contagion
   for (let i = 0; i < enemies.length; i++) {
+    const a = enemies[i];
     for (let j = i + 1; j < enemies.length; j++) {
-      const a = enemies[i];
       const b = enemies[j];
-      const edx = b.x - a.x;
-      const edy = b.y - a.y;
-      const eDist = Math.hypot(edx, edy);
       const minDist = a.radius + b.radius;
-      if (eDist <= minDist + 2) {
+      const touchDist = minDist + 2;
+      const edx = b.x - a.x;
+      if (edx > touchDist || edx < -touchDist) continue;
+      const edy = b.y - a.y;
+      if (edy > touchDist || edy < -touchDist) continue;
+      const eDistSq = edx * edx + edy * edy;
+      if (eDistSq > touchDist * touchDist) continue;
+      const eDist = Math.sqrt(eDistSq);
+      if (eDist <= touchDist) {
         if (a.burnTimer > 0 && b.burnTimer <= 0 && b.fireproofTimer <= 0) {
           igniteEnemy(b, a.burnOwner);
         } else if (b.burnTimer > 0 && a.burnTimer <= 0 && a.fireproofTimer <= 0) {
@@ -3307,6 +3462,7 @@ module.exports = {
   defeatEnemy,
   triggerHammerExplosion,
   resetGameWorld,
+  updatePlayerBroadphaseBounds,
   stepPlayerPhysics,
   stepWorldPhysics,
   tickServer,

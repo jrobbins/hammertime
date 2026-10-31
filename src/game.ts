@@ -841,6 +841,10 @@
     bulldozerTimer: 0,
     walkCycle: 0,
     hurtFlash: 0,
+    reachMinX: 0,
+    reachMaxX: 0,
+    reachMinY: 0,
+    reachMaxY: 0,
     hammers: [] as any[],
   };
 
@@ -854,6 +858,10 @@
     chainLinks: INITIAL_CHAIN_LINKS,
     linkLength: LENGTH_PER_LINK,
     chainNodes: [],
+    chainMinX: 0,
+    chainMaxX: 0,
+    chainMinY: 0,
+    chainMaxY: 0,
     bombCharges: 0,            // Next hammer impact triggers a large explosion when > 0
     flameCharges: 0,           // Next hammer impact sets zombie on fire when > 0
     flameTimer: 0,             // > 0 while Flaming Hammer is armed
@@ -1140,6 +1148,10 @@
       chainLinks: INITIAL_CHAIN_LINKS,
       linkLength: LENGTH_PER_LINK,
       chainNodes: [],
+      chainMinX: 0,
+      chainMaxX: 0,
+      chainMinY: 0,
+      chainMaxY: 0,
       bombCharges: 0,
       flameCharges: 0,
       flameTimer: 0,
@@ -2217,6 +2229,60 @@
     updateHUD();
   }
 
+  const nearbyChainColumns = [];
+  const nearbyChainEnemies = [];
+  const BROADPHASE_SLACK = 16;
+
+  function updateWarriorBroadphaseBounds(w = warrior) {
+    let rMinX = w.x - w.radius;
+    let rMaxX = w.x + w.radius;
+    let rMinY = w.y - w.radius;
+    let rMaxY = w.y + w.radius;
+
+    for (let hIdx = 0; hIdx < w.hammers.length; hIdx++) {
+      const h = w.hammers[hIdx];
+      const links = h.chainLinks || INITIAL_CHAIN_LINKS;
+      const hMinX = h.x - h.radius;
+      const hMaxX = h.x + h.radius;
+      const hMinY = h.y - h.radius;
+      const hMaxY = h.y + h.radius;
+      if (hMinX < rMinX) rMinX = hMinX;
+      if (hMaxX > rMaxX) rMaxX = hMaxX;
+      if (hMinY < rMinY) rMinY = hMinY;
+      if (hMaxY > rMaxY) rMaxY = hMaxY;
+
+      let cMinX = w.x < h.x ? w.x : h.x;
+      let cMaxX = w.x > h.x ? w.x : h.x;
+      let cMinY = w.y < h.y ? w.y : h.y;
+      let cMaxY = w.y > h.y ? w.y : h.y;
+      if (h.chainNodes) {
+        for (let i = 1; i < links; i++) {
+          const node = h.chainNodes[i];
+          if (!node) continue;
+          if (node.x < cMinX) cMinX = node.x;
+          if (node.x > cMaxX) cMaxX = node.x;
+          if (node.y < cMinY) cMinY = node.y;
+          if (node.y > cMaxY) cMaxY = node.y;
+        }
+      }
+      const cPad = CHAIN_LINK_RADIUS + BROADPHASE_SLACK;
+      h.chainMinX = cMinX - cPad;
+      h.chainMaxX = cMaxX + cPad;
+      h.chainMinY = cMinY - cPad;
+      h.chainMaxY = cMaxY + cPad;
+
+      if (h.chainMinX < rMinX) rMinX = h.chainMinX;
+      if (h.chainMaxX > rMaxX) rMaxX = h.chainMaxX;
+      if (h.chainMinY < rMinY) rMinY = h.chainMinY;
+      if (h.chainMaxY > rMaxY) rMaxY = h.chainMaxY;
+    }
+
+    w.reachMinX = rMinX - BROADPHASE_SLACK;
+    w.reachMaxX = rMaxX + BROADPHASE_SLACK;
+    w.reachMinY = rMinY - BROADPHASE_SLACK;
+    w.reachMaxY = rMaxY + BROADPHASE_SLACK;
+  }
+
   // --- Core Physics Step ---
   function stepPhysics(dt) {
     if (!warrior.hammers || warrior.hammers.length === 0) {
@@ -2358,21 +2424,60 @@
       nodes[links].vx = h.vx;
       nodes[links].vy = h.vy;
 
+      let chainMinX = warrior.x < h.x ? warrior.x : h.x;
+      let chainMaxX = warrior.x > h.x ? warrior.x : h.x;
+      let chainMinY = warrior.y < h.y ? warrior.y : h.y;
+      let chainMaxY = warrior.y > h.y ? warrior.y : h.y;
+
       for (let i = 1; i < links; i++) {
         const node = nodes[i];
         node.prevX = node.x;
         node.prevY = node.y;
         node.x += node.vx * dt;
         node.y += node.vy * dt;
+        if (node.x < chainMinX) chainMinX = node.x;
+        if (node.x > chainMaxX) chainMaxX = node.x;
+        if (node.y < chainMinY) chainMinY = node.y;
+        if (node.y > chainMaxY) chainMaxY = node.y;
+      }
+
+      // Broadphase cull stone columns and enemies near this chain once per substep
+      // rather than scanning all world entities across all 10 relaxation iterations
+      const broadphasePad = CHAIN_LINK_RADIUS + 80;
+      nearbyChainColumns.length = 0;
+      for (let cIdx = 0; cIdx < stoneColumns.length; cIdx++) {
+        const col = stoneColumns[cIdx];
+        const reach = col.radius + broadphasePad;
+        if (
+          col.x + reach >= chainMinX &&
+          col.x - reach <= chainMaxX &&
+          col.y + reach >= chainMinY &&
+          col.y - reach <= chainMaxY
+        ) {
+          nearbyChainColumns.push(col);
+        }
+      }
+
+      nearbyChainEnemies.length = 0;
+      for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
+        const e = enemies[eIdx];
+        const reach = e.radius + broadphasePad;
+        if (
+          e.x + reach >= chainMinX &&
+          e.x - reach <= chainMaxX &&
+          e.y + reach >= chainMinY &&
+          e.y - reach <= chainMaxY
+        ) {
+          nearbyChainEnemies.push(e);
+        }
       }
 
       for (let iter = 0; iter < CHAIN_RELAX_ITERS; iter++) {
         let iterTotalDist = 0;
         for (let i = 0; i < links; i++) {
-          iterTotalDist += Math.hypot(
-            nodes[i + 1].x - nodes[i].x,
-            nodes[i + 1].y - nodes[i].y
-          );
+          const sdx = nodes[i + 1].x - nodes[i].x;
+          const sdy = nodes[i + 1].y - nodes[i].y;
+          iterTotalDist += Math.sqrt(sdx * sdx + sdy * sdy);
         }
         const desiredSeg = Math.max(segRest, iterTotalDist / Math.max(1, links));
 
@@ -2381,8 +2486,9 @@
           const b = nodes[i + 1];
           const sdx = b.x - a.x;
           const sdy = b.y - a.y;
-          const sDist = Math.hypot(sdx, sdy);
-          if (sDist > 0.0001) {
+          const sDistSq = sdx * sdx + sdy * sdy;
+          if (sDistSq > 1e-8) {
+            const sDist = Math.sqrt(sDistSq);
             const targetLen = Math.min(sDist, desiredSeg);
             const diff = (sDist - targetLen) / sDist;
             if (i > 0 && i + 1 < links) {
@@ -2410,9 +2516,10 @@
           curr.y += (midY - curr.y) * 0.24;
         }
 
-        for (let cIdx = 0; cIdx < stoneColumns.length; cIdx++) {
-          const col = stoneColumns[cIdx];
+        for (let cIdx = 0; cIdx < nearbyChainColumns.length; cIdx++) {
+          const col = nearbyChainColumns[cIdx];
           const minColDist = col.radius + CHAIN_LINK_RADIUS;
+          const minColDistSq = minColDist * minColDist;
 
           for (let i = 0; i < links; i++) {
             const a = nodes[i];
@@ -2429,8 +2536,9 @@
               const closestY = a.y + aby * tProj;
               const dx = closestX - col.x;
               const dy = closestY - col.y;
-              const dist = Math.hypot(dx, dy);
-              if (dist < minColDist) {
+              const distSq = dx * dx + dy * dy;
+              if (distSq < minColDistSq) {
+                const dist = Math.sqrt(distSq);
                 const push = minColDist - dist;
                 let nx, ny;
                 if (dist > 0.0001) {
@@ -2460,24 +2568,31 @@
           for (let i = 1; i < links; i++) {
             const node = nodes[i];
             const cdx = node.x - col.x;
+            if (cdx <= -minColDist || cdx >= minColDist) continue;
             const cdy = node.y - col.y;
-            const cDist = Math.hypot(cdx, cdy);
-            if (cDist < minColDist && cDist > 0.0001) {
+            if (cdy <= -minColDist || cdy >= minColDist) continue;
+            const cDistSq = cdx * cdx + cdy * cdy;
+            if (cDistSq < minColDistSq && cDistSq > 1e-8) {
+              const cDist = Math.sqrt(cDistSq);
               node.x = col.x + (cdx / cDist) * minColDist;
               node.y = col.y + (cdy / cDist) * minColDist;
             }
           }
         }
 
-        for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
-          const e = enemies[eIdx];
+        for (let eIdx = 0; eIdx < nearbyChainEnemies.length; eIdx++) {
+          const e = nearbyChainEnemies[eIdx];
           const minDist = e.radius + CHAIN_LINK_RADIUS;
+          const minDistSq = minDist * minDist;
           for (let i = 1; i < links; i++) {
             const node = nodes[i];
             const cdx = node.x - e.x;
+            if (cdx <= -minDist || cdx >= minDist) continue;
             const cdy = node.y - e.y;
-            const cDist = Math.hypot(cdx, cdy);
-            if (cDist < minDist && cDist > 0.0001) {
+            if (cdy <= -minDist || cdy >= minDist) continue;
+            const cDistSq = cdx * cdx + cdy * cdy;
+            if (cDistSq < minDistSq && cDistSq > 1e-8) {
+              const cDist = Math.sqrt(cDistSq);
               const push = minDist - cDist;
               const nx = cdx / cDist;
               const ny = cdy / cDist;
@@ -2500,12 +2615,16 @@
         node.vx = pbdVx * 0.82 + interpVx * 0.18;
         node.vy = pbdVy * 0.82 + interpVy * 0.18;
 
-        for (let cIdx = 0; cIdx < stoneColumns.length; cIdx++) {
-          const col = stoneColumns[cIdx];
+        for (let cIdx = 0; cIdx < nearbyChainColumns.length; cIdx++) {
+          const col = nearbyChainColumns[cIdx];
+          const maxColDist = col.radius + CHAIN_LINK_RADIUS + 1.5;
           const cdx = node.x - col.x;
+          if (cdx < -maxColDist || cdx > maxColDist) continue;
           const cdy = node.y - col.y;
-          const cDist = Math.hypot(cdx, cdy);
-          if (cDist <= col.radius + CHAIN_LINK_RADIUS + 1.5 && cDist > 0.0001) {
+          if (cdy < -maxColDist || cdy > maxColDist) continue;
+          const cDistSq = cdx * cdx + cdy * cdy;
+          if (cDistSq <= maxColDist * maxColDist && cDistSq > 1e-8) {
+            const cDist = Math.sqrt(cDistSq);
             const nx = cdx / cDist;
             const ny = cdy / cDist;
             const vn = node.vx * nx + node.vy * ny;
@@ -2519,10 +2638,9 @@
 
       let totalPathDist = 0;
       for (let i = 0; i < links; i++) {
-        totalPathDist += Math.hypot(
-          nodes[i + 1].x - nodes[i].x,
-          nodes[i + 1].y - nodes[i].y
-        );
+        const sdx = nodes[i + 1].x - nodes[i].x;
+        const sdy = nodes[i + 1].y - nodes[i].y;
+        totalPathDist += Math.sqrt(sdx * sdx + sdy * sdy);
       }
 
       if (totalPathDist > restLength && totalPathDist > 0.0001) {
@@ -2743,6 +2861,7 @@
     }
 
     warrior.chainLinks = warrior.hammers[0].chainLinks;
+    updateWarriorBroadphaseBounds(warrior);
 
     // 5. Update Enemies & Collisions (Hammers, Chains, and Warrior)
     for (let i = enemies.length - 1; i >= 0; i--) {
@@ -2823,7 +2942,7 @@
       // Move toward warrior (or away from warrior at 4x speed when tainted with fear, or stand in place when dancing)
       const toWarriorX = warrior.x - e.x;
       const toWarriorY = warrior.y - e.y;
-      const distToWarrior = Math.hypot(toWarriorX, toWarriorY);
+      const distToWarrior = Math.sqrt(toWarriorX * toWarriorX + toWarriorY * toWarriorY);
       if (isKnockedDown) {
         if (e.hitCooldown <= 0 && e.chainHitCooldown <= 0) {
           e.vx = 0;
@@ -2864,7 +2983,7 @@
             dirX += (e.x < WORLD_WIDTH / 2 ? 1 : -1) * 0.85;
             dirY *= 0.25;
           }
-          const norm = Math.hypot(dirX, dirY) || 1;
+          const norm = Math.sqrt(dirX * dirX + dirY * dirY) || 1;
           dirX /= norm;
           dirY /= norm;
 
@@ -2892,7 +3011,7 @@
       if (isDancing && !isKnockedDown && !isWebbed) {
         e.walkPhase += dt * 11.5;
       } else if (!isKnockedDown && !isWebbed) {
-        e.walkPhase += Math.hypot(e.vx, e.vy) * dt * 0.09;
+        e.walkPhase += Math.sqrt(e.vx * e.vx + e.vy * e.vy) * dt * 0.09;
       }
 
       // Clamp enemy inside world
@@ -2903,11 +3022,14 @@
       // Collide enemy with the 4 immovable stone columns
       for (let cIdx = 0; cIdx < stoneColumns.length; cIdx++) {
         const col = stoneColumns[cIdx];
-        const cdx = e.x - col.x;
-        const cdy = e.y - col.y;
-        const cDist = Math.hypot(cdx, cdy);
         const minEnemyColDist = e.radius + col.radius;
-        if (cDist < minEnemyColDist && cDist > 0.0001) {
+        const cdx = e.x - col.x;
+        if (cdx <= -minEnemyColDist || cdx >= minEnemyColDist) continue;
+        const cdy = e.y - col.y;
+        if (cdy <= -minEnemyColDist || cdy >= minEnemyColDist) continue;
+        const cDistSq = cdx * cdx + cdy * cdy;
+        if (cDistSq < minEnemyColDist * minEnemyColDist && cDistSq > 1e-8) {
+          const cDist = Math.sqrt(cDistSq);
           const nx = cdx / cDist;
           const ny = cdy / cDist;
           e.x = col.x + nx * minEnemyColDist;
@@ -2920,6 +3042,16 @@
         }
       }
 
+      // Broadphase reject: skip hammer, chain, and warrior collision checks if enemy is outside warrior's reach AABB
+      if (
+        e.x + e.radius < warrior.reachMinX ||
+        e.x - e.radius > warrior.reachMaxX ||
+        e.y + e.radius < warrior.reachMinY ||
+        e.y - e.radius > warrior.reachMaxY
+      ) {
+        continue;
+      }
+
       let enemyDefeated = false;
       for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
         const h = warrior.hammers[hIdx];
@@ -2927,182 +3059,103 @@
         const nodes = h.chainNodes;
 
         // --- A. Hammer-Enemy Semi-Elastic Collision & Force-Based Damage (or Disco Ball Pass-Through) ---
+        const minHammerEnemyDist = h.radius + e.radius;
         const hdx = e.x - h.x;
         const hdy = e.y - h.y;
-        const hDist = Math.hypot(hdx, hdy);
-        const minHammerEnemyDist = h.radius + e.radius;
+        if (
+          hdx > -minHammerEnemyDist &&
+          hdx < minHammerEnemyDist &&
+          hdy > -minHammerEnemyDist &&
+          hdy < minHammerEnemyDist
+        ) {
+          const hDistSq = hdx * hdx + hdy * hdy;
+          if (hDistSq < minHammerEnemyDist * minHammerEnemyDist && hDistSq > 1e-8) {
+            const hDist = Math.sqrt(hDistSq);
+            if ((h.discoTimer || 0) > 0) {
+              // Disco Ball does not do any damage and passes through zombies rather than bouncing off of them;
+              // any zombie touched by it immediately stands in one place and starts dancing!
+              startEnemyDance(e);
+              continue;
+            } else {
+              const nx = hdx / hDist;
+              const ny = hdy / hDist;
 
-        if (hDist < minHammerEnemyDist && hDist > 0.0001) {
-          if ((h.discoTimer || 0) > 0) {
-            // Disco Ball does not do any damage and passes through zombies rather than bouncing off of them;
-            // any zombie touched by it immediately stands in one place and starts dancing!
-            startEnemyDance(e);
-            continue;
-          } else {
-            const nx = hdx / hDist;
-            const ny = hdy / hDist;
+              const overlap = minHammerEnemyDist - hDist;
+              const totalInvMass = 1 / h.mass + 1 / e.mass;
+              h.x -= nx * overlap * ((1 / h.mass) / totalInvMass);
+              h.y -= ny * overlap * ((1 / h.mass) / totalInvMass);
+              e.x += nx * overlap * ((1 / e.mass) / totalInvMass);
+              e.y += ny * overlap * ((1 / e.mass) / totalInvMass);
 
-            const overlap = minHammerEnemyDist - hDist;
-            const totalInvMass = 1 / h.mass + 1 / e.mass;
-            h.x -= nx * overlap * ((1 / h.mass) / totalInvMass);
-            h.y -= ny * overlap * ((1 / h.mass) / totalInvMass);
-            e.x += nx * overlap * ((1 / e.mass) / totalInvMass);
-            e.y += ny * overlap * ((1 / e.mass) / totalInvMass);
-
-            let justIgnited = false;
-            if (h.flameCharges > 0 && e.burnTimer <= 0 && e.fireproofTimer <= 0) {
-              if (igniteEnemy(e)) {
-                justIgnited = true;
-                h.flameCharges -= 1;
-                h.flameTimer = h.flameCharges > 0 ? h.flameCharges : 0;
-              }
-            }
-
-            if (h.isSpider) {
-              const wasFreshlyWebbed = (e.webTimer || 0) > ZOMBIE_WEB_DURATION - 0.45;
-              e.webTimer = ZOMBIE_WEB_DURATION;
-              if (!wasFreshlyWebbed) {
-                playSpiderWebSound();
-                addParticles(e.x, e.y, '#ffffff', 12, 30, 130, 3.2);
-                addFloatingText(e.x, e.y - e.radius - 16, 'WEBBED! (30s)', '#ffffff', 1.05);
-              }
-            }
-
-            let detonatedBomb = false;
-            if (h.bombCharges > 0) {
-              h.bombCharges -= 1;
-              detonatedBomb = true;
-              triggerHammerExplosion(h.x + nx * h.radius, h.y + ny * h.radius, h);
-            }
-
-            const rvx = h.vx - e.vx;
-            const rvy = h.vy - e.vy;
-            const velAlongNormal = rvx * nx + rvy * ny;
-
-            if (velAlongNormal > 0) {
-              const impulse =
-                ((1 + HAMMER_ENEMY_RESTITUTION) * velAlongNormal) / totalInvMass;
-
-              h.vx -= (impulse / h.mass) * nx;
-              h.vy -= (impulse / h.mass) * ny;
-              e.vx += (impulse / e.mass) * nx;
-              e.vy += (impulse / e.mass) * ny;
-
-              if (e.hitCooldown <= 0 && impulse > 8) {
-                const damage = Math.max(1, Math.round(impulse * DAMAGE_PER_IMPULSE));
-                e.hp -= damage;
-                e.hitCooldown = 0.09;
-                e.hurtFlash = 0.18;
-                playImpactSound(damage, false);
-
-                if (damage > maxDamageBlow) {
-                  maxDamageBlow = damage;
+              let justIgnited = false;
+              if (h.flameCharges > 0 && e.burnTimer <= 0 && e.fireproofTimer <= 0) {
+                if (igniteEnemy(e)) {
+                  justIgnited = true;
+                  h.flameCharges -= 1;
+                  h.flameTimer = h.flameCharges > 0 ? h.flameCharges : 0;
                 }
+              }
 
-                const contactX = h.x + nx * h.radius;
-                const contactY = h.y + ny * h.radius;
-
-                const sparkCount = Math.min(22, 5 + Math.floor(damage / 8));
-                addParticles(contactX, contactY, '#fbd38d', sparkCount, 60, 260, 3.2);
-                if (damage >= 25) {
-                  addShockwave(contactX, contactY, Math.min(65, 20 + damage * 0.45));
-                  camera.shake = Math.min(12, camera.shake + damage * 0.08);
+              if (h.isSpider) {
+                const wasFreshlyWebbed = (e.webTimer || 0) > ZOMBIE_WEB_DURATION - 0.45;
+                e.webTimer = ZOMBIE_WEB_DURATION;
+                if (!wasFreshlyWebbed) {
+                  playSpiderWebSound();
+                  addParticles(e.x, e.y, '#ffffff', 12, 30, 130, 3.2);
+                  addFloatingText(e.x, e.y - e.radius - 16, 'WEBBED! (30s)', '#ffffff', 1.05);
                 }
-
-                const dmgColor = damage >= 50 ? '#fbd38d' : '#ffffff';
-                const dmgScale = damage >= 50 ? 1.25 : 1.0;
-                addFloatingText(e.x, e.y - e.radius - 6, `-${damage}`, dmgColor, dmgScale);
-              }
-            }
-
-            if (justIgnited && !detonatedBomb && e.hp <= 0) {
-              e.hp = Math.max(18, Math.round(e.maxHp * 0.3));
-            }
-
-            if (e.hp <= 0) {
-              defeatEnemy(i);
-              enemyDefeated = true;
-              break;
-            }
-          }
-        }
-
-        // --- B. Chain-Enemy Collision: 1/3 Momentum Transfer, 1/3 Damage, and Chain Bending ---
-        let closestNodeIdx = -1;
-        let minNodeDist = Infinity;
-        for (let cIdx = 1; cIdx < links; cIdx++) {
-          const node = nodes[cIdx];
-          const d = Math.hypot(e.x - node.x, e.y - node.y);
-          if (d < minNodeDist) {
-            minNodeDist = d;
-            closestNodeIdx = cIdx;
-          }
-        }
-
-        const minChainEnemyDist = CHAIN_LINK_RADIUS + e.radius;
-        if (closestNodeIdx !== -1 && minNodeDist < minChainEnemyDist && minNodeDist > 0.0001) {
-          const node = nodes[closestNodeIdx];
-          const cnx = (e.x - node.x) / minNodeDist;
-          const cny = (e.y - node.y) / minNodeDist;
-          const cOverlap = minChainEnemyDist - minNodeDist;
-
-          node.x -= cnx * cOverlap * 0.82;
-          node.y -= cny * cOverlap * 0.82;
-          e.x += cnx * cOverlap * 0.18;
-          e.y += cny * cOverlap * 0.18;
-
-          const crvx = node.vx - e.vx;
-          const crvy = node.vy - e.vy;
-          const cVelAlongNormal = crvx * cnx + crvy * cny;
-
-          if (cVelAlongNormal > 0) {
-            const totalInvMass = 1 / h.mass + 1 / e.mass;
-            const hammerEquivImpulse =
-              ((1 + HAMMER_ENEMY_RESTITUTION) * cVelAlongNormal) / totalInvMass;
-            const chainImpulse = hammerEquivImpulse * CHAIN_MOMENTUM_FACTOR;
-
-            e.vx += (chainImpulse / e.mass) * cnx;
-            e.vy += (chainImpulse / e.mass) * cny;
-
-            node.vx -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cnx;
-            node.vy -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cny;
-            if (closestNodeIdx > 1) {
-              nodes[closestNodeIdx - 1].vx -= cVelAlongNormal * 0.45 * cnx;
-              nodes[closestNodeIdx - 1].vy -= cVelAlongNormal * 0.45 * cny;
-            }
-            if (closestNodeIdx + 1 < links) {
-              nodes[closestNodeIdx + 1].vx -= cVelAlongNormal * 0.45 * cnx;
-              nodes[closestNodeIdx + 1].vy -= cVelAlongNormal * 0.45 * cny;
-            }
-
-            const leverRatio = closestNodeIdx / links;
-            h.vx -= ((chainImpulse * leverRatio) / h.mass) * cnx;
-            h.vy -= ((chainImpulse * leverRatio) / h.mass) * cny;
-            warrior.vx -= ((chainImpulse * (1 - leverRatio)) / warrior.mass) * cnx;
-            warrior.vy -= ((chainImpulse * (1 - leverRatio)) / warrior.mass) * cny;
-
-            if (e.chainHitCooldown <= 0 && hammerEquivImpulse > 8) {
-              const chainDamage = Math.max(
-                1,
-                Math.round(hammerEquivImpulse * DAMAGE_PER_IMPULSE * CHAIN_DAMAGE_FACTOR)
-              );
-              e.hp -= chainDamage;
-              e.chainHitCooldown = 0.09;
-              e.hurtFlash = 0.14;
-              playImpactSound(chainDamage, true);
-
-              if (chainDamage > maxDamageBlow) {
-                maxDamageBlow = chainDamage;
               }
 
-              addParticles(node.x, node.y, '#cbd5e0', 5, 40, 160, 2.5);
-              addFloatingText(
-                e.x,
-                e.y - e.radius - 6,
-                `-${chainDamage}`,
-                '#cbd5e0',
-                0.92
-              );
+              let detonatedBomb = false;
+              if (h.bombCharges > 0) {
+                h.bombCharges -= 1;
+                detonatedBomb = true;
+                triggerHammerExplosion(h.x + nx * h.radius, h.y + ny * h.radius, h);
+              }
+
+              const rvx = h.vx - e.vx;
+              const rvy = h.vy - e.vy;
+              const velAlongNormal = rvx * nx + rvy * ny;
+
+              if (velAlongNormal > 0) {
+                const impulse =
+                  ((1 + HAMMER_ENEMY_RESTITUTION) * velAlongNormal) / totalInvMass;
+
+                h.vx -= (impulse / h.mass) * nx;
+                h.vy -= (impulse / h.mass) * ny;
+                e.vx += (impulse / e.mass) * nx;
+                e.vy += (impulse / e.mass) * ny;
+
+                if (e.hitCooldown <= 0 && impulse > 8) {
+                  const damage = Math.max(1, Math.round(impulse * DAMAGE_PER_IMPULSE));
+                  e.hp -= damage;
+                  e.hitCooldown = 0.09;
+                  e.hurtFlash = 0.18;
+                  playImpactSound(damage, false);
+
+                  if (damage > maxDamageBlow) {
+                    maxDamageBlow = damage;
+                  }
+
+                  const contactX = h.x + nx * h.radius;
+                  const contactY = h.y + ny * h.radius;
+
+                  const sparkCount = Math.min(22, 5 + Math.floor(damage / 8));
+                  addParticles(contactX, contactY, '#fbd38d', sparkCount, 60, 260, 3.2);
+                  if (damage >= 25) {
+                    addShockwave(contactX, contactY, Math.min(65, 20 + damage * 0.45));
+                    camera.shake = Math.min(12, camera.shake + damage * 0.08);
+                  }
+
+                  const dmgColor = damage >= 50 ? '#fbd38d' : '#ffffff';
+                  const dmgScale = damage >= 50 ? 1.25 : 1.0;
+                  addFloatingText(e.x, e.y - e.radius - 6, `-${damage}`, dmgColor, dmgScale);
+                }
+              }
+
+              if (justIgnited && !detonatedBomb && e.hp <= 0) {
+                e.hp = Math.max(18, Math.round(e.maxHp * 0.3));
+              }
 
               if (e.hp <= 0) {
                 defeatEnemy(i);
@@ -3112,17 +3165,116 @@
             }
           }
         }
+
+        // --- B. Chain-Enemy Collision: 1/3 Momentum Transfer, 1/3 Damage, and Chain Bending ---
+        const minChainEnemyDist = CHAIN_LINK_RADIUS + e.radius;
+        if (
+          e.x + e.radius >= h.chainMinX &&
+          e.x - e.radius <= h.chainMaxX &&
+          e.y + e.radius >= h.chainMinY &&
+          e.y - e.radius <= h.chainMaxY
+        ) {
+          let closestNodeIdx = -1;
+          let minNodeDistSq = minChainEnemyDist * minChainEnemyDist;
+          for (let cIdx = 1; cIdx < links; cIdx++) {
+            const node = nodes[cIdx];
+            const ndx = e.x - node.x;
+            const ndy = e.y - node.y;
+            const dSq = ndx * ndx + ndy * ndy;
+            if (dSq < minNodeDistSq) {
+              minNodeDistSq = dSq;
+              closestNodeIdx = cIdx;
+            }
+          }
+
+          if (closestNodeIdx !== -1 && minNodeDistSq > 1e-8) {
+            const minNodeDist = Math.sqrt(minNodeDistSq);
+            const node = nodes[closestNodeIdx];
+            const cnx = (e.x - node.x) / minNodeDist;
+            const cny = (e.y - node.y) / minNodeDist;
+            const cOverlap = minChainEnemyDist - minNodeDist;
+
+            node.x -= cnx * cOverlap * 0.82;
+            node.y -= cny * cOverlap * 0.82;
+            e.x += cnx * cOverlap * 0.18;
+            e.y += cny * cOverlap * 0.18;
+
+            const crvx = node.vx - e.vx;
+            const crvy = node.vy - e.vy;
+            const cVelAlongNormal = crvx * cnx + crvy * cny;
+
+            if (cVelAlongNormal > 0) {
+              const totalInvMass = 1 / h.mass + 1 / e.mass;
+              const hammerEquivImpulse =
+                ((1 + HAMMER_ENEMY_RESTITUTION) * cVelAlongNormal) / totalInvMass;
+              const chainImpulse = hammerEquivImpulse * CHAIN_MOMENTUM_FACTOR;
+
+              e.vx += (chainImpulse / e.mass) * cnx;
+              e.vy += (chainImpulse / e.mass) * cny;
+
+              node.vx -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cnx;
+              node.vy -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cny;
+              if (closestNodeIdx > 1) {
+                nodes[closestNodeIdx - 1].vx -= cVelAlongNormal * 0.45 * cnx;
+                nodes[closestNodeIdx - 1].vy -= cVelAlongNormal * 0.45 * cny;
+              }
+              if (closestNodeIdx + 1 < links) {
+                nodes[closestNodeIdx + 1].vx -= cVelAlongNormal * 0.45 * cnx;
+                nodes[closestNodeIdx + 1].vy -= cVelAlongNormal * 0.45 * cny;
+              }
+
+              const leverRatio = closestNodeIdx / links;
+              h.vx -= ((chainImpulse * leverRatio) / h.mass) * cnx;
+              h.vy -= ((chainImpulse * leverRatio) / h.mass) * cny;
+              warrior.vx -= ((chainImpulse * (1 - leverRatio)) / warrior.mass) * cnx;
+              warrior.vy -= ((chainImpulse * (1 - leverRatio)) / warrior.mass) * cny;
+
+              if (e.chainHitCooldown <= 0 && hammerEquivImpulse > 8) {
+                const chainDamage = Math.max(
+                  1,
+                  Math.round(hammerEquivImpulse * DAMAGE_PER_IMPULSE * CHAIN_DAMAGE_FACTOR)
+                );
+                e.hp -= chainDamage;
+                e.chainHitCooldown = 0.09;
+                e.hurtFlash = 0.14;
+                playImpactSound(chainDamage, true);
+
+                if (chainDamage > maxDamageBlow) {
+                  maxDamageBlow = chainDamage;
+                }
+
+                addParticles(node.x, node.y, '#cbd5e0', 5, 40, 160, 2.5);
+                addFloatingText(
+                  e.x,
+                  e.y - e.radius - 6,
+                  `-${chainDamage}`,
+                  '#cbd5e0',
+                  0.92
+                );
+
+                if (e.hp <= 0) {
+                  defeatEnemy(i);
+                  enemyDefeated = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
       }
 
       if (enemyDefeated) continue;
 
       // --- C. Requirement #9: Enemy touches warrior -> small damage & pushes warrior a little bit ---
-      const wdx = warrior.x - e.x;
-      const wdy = warrior.y - e.y;
-      const wDist = Math.hypot(wdx, wdy);
       const minWarriorEnemyDist = warrior.radius + e.radius;
+      const wdx = warrior.x - e.x;
+      if (wdx <= -minWarriorEnemyDist || wdx >= minWarriorEnemyDist) continue;
+      const wdy = warrior.y - e.y;
+      if (wdy <= -minWarriorEnemyDist || wdy >= minWarriorEnemyDist) continue;
+      const wDistSq = wdx * wdx + wdy * wdy;
 
-      if (wDist < minWarriorEnemyDist && wDist > 0.0001) {
+      if (wDistSq < minWarriorEnemyDist * minWarriorEnemyDist && wDistSq > 1e-8) {
+        const wDist = Math.sqrt(wDistSq);
         if (isBulldozer) {
           // While a bulldozer, the player takes no damage and instantly kills any zombie they touch
           const crushDmg = Math.max(1, Math.ceil(e.hp));
@@ -3220,14 +3372,19 @@
 
     // Soft enemy-to-enemy separation & flaming zombie contagion
     for (let i = 0; i < enemies.length; i++) {
+      const a = enemies[i];
       for (let j = i + 1; j < enemies.length; j++) {
-        const a = enemies[i];
         const b = enemies[j];
-        const edx = b.x - a.x;
-        const edy = b.y - a.y;
-        const eDist = Math.hypot(edx, edy);
         const minDist = a.radius + b.radius;
-        if (eDist <= minDist + 2) {
+        const touchDist = minDist + 2;
+        const edx = b.x - a.x;
+        if (edx > touchDist || edx < -touchDist) continue;
+        const edy = b.y - a.y;
+        if (edy > touchDist || edy < -touchDist) continue;
+        const eDistSq = edx * edx + edy * edy;
+        if (eDistSq > touchDist * touchDist) continue;
+        const eDist = Math.sqrt(eDistSq);
+        if (eDist <= touchDist) {
           if (a.burnTimer > 0 && b.burnTimer <= 0 && b.fireproofTimer <= 0) {
             igniteEnemy(b);
           } else if (b.burnTimer > 0 && a.burnTimer <= 0 && a.fireproofTimer <= 0) {
@@ -3285,9 +3442,12 @@
       for (let i = blackCircles.length - 1; i >= 0; i--) {
         const c = blackCircles[i];
         c.pulse += dt * 4;
+        const maxPickDist = warrior.radius + PICKUP_RADIUS + 3;
         const cdx = warrior.x - c.x;
+        if (cdx <= -maxPickDist || cdx >= maxPickDist) continue;
         const cdy = warrior.y - c.y;
-        if (Math.hypot(cdx, cdy) < warrior.radius + PICKUP_RADIUS + 3) {
+        if (cdy <= -maxPickDist || cdy >= maxPickDist) continue;
+        if (cdx * cdx + cdy * cdy < maxPickDist * maxPickDist) {
           const pType = c.type || 'link';
           if (pType === 'hammer' && warrior.hammers.length >= MAX_HAMMERS_PER_PLAYER) {
             // Cannot pick up extra hammer when already at maximum of 2 hammers
@@ -3598,6 +3758,8 @@
         blackCircles[i].pulse += dt * 4;
       }
     }
+
+    updateWarriorBroadphaseBounds(warrior);
   }
 
   function triggerGameOver() {
@@ -4263,12 +4425,48 @@
       if (Array.isArray(rp.hammers) && rp.hammers.length > 0) {
         for (let hIdx = 0; hIdx < rp.hammers.length; hIdx++) {
           const rh = rp.hammers[hIdx];
-          if (rh && Array.isArray(rh.chainNodes)) {
-            drawChain(rh.chainNodes, rh.currentStretch || 0);
+          if (rh && Array.isArray(rh.chainNodes) && rh.chainNodes.length > 0) {
+            let cMinX = rp.x < rh.x ? rp.x : rh.x;
+            let cMaxX = rp.x > rh.x ? rp.x : rh.x;
+            let cMinY = rp.y < rh.y ? rp.y : rh.y;
+            let cMaxY = rp.y > rh.y ? rp.y : rh.y;
+            for (let nIdx = 0; nIdx < rh.chainNodes.length; nIdx++) {
+              const cn = rh.chainNodes[nIdx];
+              if (cn.x < cMinX) cMinX = cn.x;
+              if (cn.x > cMaxX) cMaxX = cn.x;
+              if (cn.y < cMinY) cMinY = cn.y;
+              if (cn.y > cMaxY) cMaxY = cn.y;
+            }
+            if (
+              cMaxX >= viewLeft &&
+              cMinX <= viewRight &&
+              cMaxY >= viewTop &&
+              cMinY <= viewBottom
+            ) {
+              drawChain(rh.chainNodes, rh.currentStretch || 0);
+            }
           }
         }
-      } else if (Array.isArray(rp.chainNodes)) {
-        drawChain(rp.chainNodes, rp.hammer ? rp.hammer.currentStretch : 0);
+      } else if (Array.isArray(rp.chainNodes) && rp.chainNodes.length > 0) {
+        let cMinX = rp.x;
+        let cMaxX = rp.x;
+        let cMinY = rp.y;
+        let cMaxY = rp.y;
+        for (let nIdx = 0; nIdx < rp.chainNodes.length; nIdx++) {
+          const cn = rp.chainNodes[nIdx];
+          if (cn.x < cMinX) cMinX = cn.x;
+          if (cn.x > cMaxX) cMaxX = cn.x;
+          if (cn.y < cMinY) cMinY = cn.y;
+          if (cn.y > cMaxY) cMaxY = cn.y;
+        }
+        if (
+          cMaxX >= viewLeft &&
+          cMinX <= viewRight &&
+          cMaxY >= viewTop &&
+          cMinY <= viewBottom
+        ) {
+          drawChain(rp.chainNodes, rp.hammer ? rp.hammer.currentStretch : 0);
+        }
       }
     }
 
@@ -7918,6 +8116,7 @@
       getTopLocalLeaderboard,
       clearLocalLeaderboard,
       renderLeaderboard,
+      updateWarriorBroadphaseBounds,
       stepPhysics,
       updateEffects,
       updateHUD,

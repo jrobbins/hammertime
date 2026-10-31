@@ -588,6 +588,57 @@ describe('Enemy Production Scaling (>2 Players) & Cooperative Victory Mode', () 
     srv.tickServer(0.016);
     assert.equal(srv.players.size, 0);
   });
+
+  it('maintains broadphase AABB bounds and handles 5-player 9-link 2-hammer chain collisions against 54 enemies', () => {
+    const coords = [
+      [800, 800],
+      [3400, 800],
+      [2100, 2100],
+      [800, 3400],
+      [3400, 3400],
+    ];
+    const testPlayers = coords.map(([x, y], idx) => {
+      const p = addTestPlayer(`p${idx + 1}`, x, y);
+      const h2 = srv.createPlayerHammer(p, Math.PI);
+      h2.extraTimer = srv.EXTRA_HAMMER_DURATION;
+      p.hammers.push(h2);
+      for (const h of p.hammers) {
+        h.chainLinks = srv.MAX_CHAIN_LINKS;
+        srv.initHammerChainNodes(p, h);
+      }
+      return p;
+    });
+
+    // Spawn 54 enemies across the map, including one overlapping p1's internal chain node
+    const p1 = testPlayers[0];
+    const midNode = p1.hammers[0].chainNodes[4];
+    midNode.vx = 450;
+    midNode.vy = 0;
+    const chainTargetEnemy = addTestEnemy(midNode.x + 8, midNode.y, 300);
+
+    for (let i = 1; i < 54; i++) {
+      addTestEnemy(400 + (i * 67) % 3400, 400 + ((i * 131) % 3400), 200);
+    }
+    assert.equal(srv.enemies.length, 54);
+
+    srv.stepWorldPhysics(0.016);
+
+    for (const p of testPlayers) {
+      assert.ok(Number.isFinite(p.reachMinX) && Number.isFinite(p.reachMaxX));
+      assert.ok(Number.isFinite(p.reachMinY) && Number.isFinite(p.reachMaxY));
+      assert.ok(p.reachMinX < p.x && p.reachMaxX > p.x);
+      assert.ok(p.reachMinY < p.y && p.reachMaxY > p.y);
+      for (const h of p.hammers) {
+        assert.ok(Number.isFinite(h.chainMinX) && Number.isFinite(h.chainMaxX));
+        assert.ok(Number.isFinite(h.chainMinY) && Number.isFinite(h.chainMaxY));
+      }
+    }
+
+    assert.ok(
+      chainTargetEnemy.hp < 300 || chainTargetEnemy.vx > 0,
+      'Enemy overlapping internal chain node should be pushed/damaged'
+    );
+  });
 });
 
 describe('WebSocket RFC 6455 Framing & HTTP Static Server', () => {

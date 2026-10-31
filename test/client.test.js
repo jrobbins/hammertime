@@ -395,6 +395,14 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(api.blackCircles.length, 40);
     assert.equal(api.blackCircles[0].id, 'only-rare-1');
     assert.equal(api.blackCircles[39].id, 'rare-41');
+
+    // Broadphase AABB bounds are maintained for warrior and hammer chains
+    assert.ok(Number.isFinite(w.reachMinX) && Number.isFinite(w.reachMaxX));
+    assert.ok(Number.isFinite(w.reachMinY) && Number.isFinite(w.reachMaxY));
+    assert.ok(w.reachMinX < w.x && w.reachMaxX > w.x);
+    assert.ok(w.reachMinY < w.y && w.reachMaxY > w.y);
+    assert.ok(Number.isFinite(w.hammers[0].chainMinX) && Number.isFinite(w.hammers[0].chainMaxX));
+    assert.ok(Number.isFinite(w.hammers[0].chainMinY) && Number.isFinite(w.hammers[0].chainMaxY));
   });
 
   it('processes server events including bulldozer, earthquake, spider_web, disco_dance, and round_reset', () => {
