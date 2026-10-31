@@ -492,6 +492,10 @@ function resetPlayerForNewRound(p) {
   p.hammers = [createPlayerHammer(p, Math.PI / 2)];
   p.hammer = p.hammers[0];
   p.chainNodes = p.hammer.chainNodes;
+  if (p.input) {
+    p.input.mouseWorldX = p.x;
+    p.input.mouseWorldY = p.y;
+  }
 }
 
 function createPlayer(id, ws) {
@@ -518,7 +522,6 @@ function createPlayer(id, ws) {
     runThrust: 1520,
     strideCharge: 0,
     groundTraction: 5.2,
-    brakeTraction: 13.5,
     hp: 100,
     maxHp: 100,
     regenRate: 0,
@@ -538,8 +541,6 @@ function createPlayer(id, ws) {
     hammer: null,
     chainNodes: [],
     input: {
-      controlMode: 'keyboard',
-      keys: { left: false, right: false, up: false, down: false },
       mouseWorldX: WORLD_WIDTH / 2,
       mouseWorldY: WORLD_HEIGHT / 2,
     },
@@ -1064,60 +1065,40 @@ function stepPlayerPhysics(p, dt) {
   const totalSpeedMult = p.speedMultiplier * mountSpeedMult;
   const totalTractionMult = p.tractionMultiplier * mountTractionMult;
 
-  // 1. Steering & Movement (Mouse Tracking Mode vs. Keyboard Mode)
-  if (p.input.controlMode === 'mouse') {
-    const mdx = p.input.mouseWorldX - p.x;
-    const mdy = p.input.mouseWorldY - p.y;
-    const distToMouse = Math.hypot(mdx, mdy);
+  // 1. Steering & Movement (Mouse Tracking)
+  const mdx = p.input.mouseWorldX - p.x;
+  const mdy = p.input.mouseWorldY - p.y;
+  const distToMouse = Math.hypot(mdx, mdy);
 
-    if (distToMouse > 4) {
-      const targetAngle = Math.atan2(mdy, mdx);
-      const angleDiff = Math.atan2(
-        Math.sin(targetAngle - p.angle),
-        Math.cos(targetAngle - p.angle)
-      );
-      const maxTurn = p.turnSpeed * 2.2 * dt;
-      if (Math.abs(angleDiff) <= maxTurn) {
-        p.angle = targetAngle;
-      } else {
-        p.angle += Math.sign(angleDiff) * maxTurn;
-      }
-    }
-
-    if (distToMouse > 10) {
-      p.strideCharge = Math.min(1, p.strideCharge + dt * 1.4);
-      const arrivalScale = Math.min(1, (distToMouse - 8) / 42);
-      const thrust =
-        (p.walkThrust + (p.runThrust - p.walkThrust) * p.strideCharge) *
-        totalSpeedMult *
-        totalTractionMult *
-        arrivalScale;
-      p.vx += Math.cos(p.angle) * thrust * dt;
-      p.vy += Math.sin(p.angle) * thrust * dt;
+  if (distToMouse > 4) {
+    const targetAngle = Math.atan2(mdy, mdx);
+    const angleDiff = Math.atan2(
+      Math.sin(targetAngle - p.angle),
+      Math.cos(targetAngle - p.angle)
+    );
+    const maxTurn = p.turnSpeed * 2.2 * dt;
+    if (Math.abs(angleDiff) <= maxTurn) {
+      p.angle = targetAngle;
     } else {
-      p.strideCharge = Math.max(0, p.strideCharge - dt * 3.0);
-    }
-  } else {
-    const keys = p.input.keys || {};
-    if (keys.left) p.angle -= p.turnSpeed * dt;
-    if (keys.right) p.angle += p.turnSpeed * dt;
-
-    if (keys.up && !keys.down) {
-      p.strideCharge = Math.min(1, p.strideCharge + dt * 1.4);
-      const thrust =
-        (p.walkThrust + (p.runThrust - p.walkThrust) * p.strideCharge) *
-        totalSpeedMult *
-        totalTractionMult;
-      p.vx += Math.cos(p.angle) * thrust * dt;
-      p.vy += Math.sin(p.angle) * thrust * dt;
-    } else {
-      p.strideCharge = Math.max(0, p.strideCharge - dt * 3.0);
+      p.angle += Math.sign(angleDiff) * maxTurn;
     }
   }
 
-  const isBraking = p.input.controlMode === 'keyboard' && p.input.keys && p.input.keys.down;
-  const activeTraction =
-    (isBraking ? p.brakeTraction : p.groundTraction) * totalTractionMult;
+  if (distToMouse > 10) {
+    p.strideCharge = Math.min(1, p.strideCharge + dt * 1.4);
+    const arrivalScale = Math.min(1, (distToMouse - 8) / 42);
+    const thrust =
+      (p.walkThrust + (p.runThrust - p.walkThrust) * p.strideCharge) *
+      totalSpeedMult *
+      totalTractionMult *
+      arrivalScale;
+    p.vx += Math.cos(p.angle) * thrust * dt;
+    p.vy += Math.sin(p.angle) * thrust * dt;
+  } else {
+    p.strideCharge = Math.max(0, p.strideCharge - dt * 3.0);
+  }
+
+  const activeTraction = p.groundTraction * totalTractionMult;
   const warriorDamping = Math.exp(-activeTraction * dt);
   p.vx *= warriorDamping;
   p.vy *= warriorDamping;
@@ -1395,11 +1376,12 @@ function stepPlayerPhysics(p, dt) {
       h.currentStretch = stretch;
       h.currentTension = springForce;
 
-      h.vx -= ((springForce * uHx) / h.mass) * dt;
-      h.vy -= ((springForce * uHy) / h.mass) * dt;
+      h.vx -= ((springForce * uHx) / INITIAL_HAMMER_MASS) * dt;
+      h.vy -= ((springForce * uHy) / INITIAL_HAMMER_MASS) * dt;
 
-      p.vx += ((springForce * uWx) / p.mass) * dt;
-      p.vy += ((springForce * uWy) / p.mass) * dt;
+      const warriorPullAccel = Math.min(springForce / p.mass, p.walkThrust * 0.35);
+      p.vx += warriorPullAccel * uWx * dt;
+      p.vy += warriorPullAccel * uWy * dt;
     } else {
       h.currentStretch = 0;
       h.currentTension = 0;
@@ -2227,8 +2209,12 @@ function stepWorldPhysics(dt) {
               const leverRatio = closestNodeIdx / links;
               h.vx -= ((chainImpulse * leverRatio) / h.mass) * cnx;
               h.vy -= ((chainImpulse * leverRatio) / h.mass) * cny;
-              p.vx -= ((chainImpulse * (1 - leverRatio)) / p.mass) * cnx;
-              p.vy -= ((chainImpulse * (1 - leverRatio)) / p.mass) * cny;
+              const warriorChainRecoil = Math.min(
+                (chainImpulse * (1 - leverRatio)) / p.mass,
+                95
+              );
+              p.vx -= warriorChainRecoil * cnx;
+              p.vy -= warriorChainRecoil * cny;
 
               if (e.chainHitCooldown <= 0 && hammerEquivImpulse > 8) {
                 const chainDamage = Math.max(
@@ -3160,38 +3146,20 @@ server.on('upgrade', (req, socket) => {
             setPlayerNickname(player, desired);
           }
         }
-        const prevMode = player.input.controlMode;
-        const prevLeft = player.input.keys.left;
-        const prevRight = player.input.keys.right;
-        const prevUp = player.input.keys.up;
-        const prevDown = player.input.keys.down;
-
-        player.input.controlMode = msg.controlMode === 'mouse' ? 'mouse' : 'keyboard';
-        if (msg.keys && typeof msg.keys === 'object') {
-          player.input.keys.left = !!msg.keys.left;
-          player.input.keys.right = !!msg.keys.right;
-          player.input.keys.up = !!msg.keys.up;
-          player.input.keys.down = !!msg.keys.down;
-        }
-
-        const keysChanged =
-          player.input.controlMode !== prevMode ||
-          player.input.keys.left !== prevLeft ||
-          player.input.keys.right !== prevRight ||
-          player.input.keys.up !== prevUp ||
-          player.input.keys.down !== prevDown ||
-          player.input.keys.left ||
-          player.input.keys.right ||
-          player.input.keys.up ||
-          player.input.keys.down;
-
-        if (keysChanged || msg.active) {
-          player.lastActivityTime = Date.now();
-        }
 
         if (typeof msg.mouseWorldX === 'number' && typeof msg.mouseWorldY === 'number') {
+          if (
+            msg.mouseWorldX !== player.input.mouseWorldX ||
+            msg.mouseWorldY !== player.input.mouseWorldY
+          ) {
+            player.lastActivityTime = Date.now();
+          }
           player.input.mouseWorldX = msg.mouseWorldX;
           player.input.mouseWorldY = msg.mouseWorldY;
+        }
+
+        if (msg.active) {
+          player.lastActivityTime = Date.now();
         }
       } else if (msg.type === 'reset') {
         player.lastActivityTime = Date.now();
@@ -3255,6 +3223,8 @@ function buildGameStatePayload() {
       mountHp: +(p.mountHp || 0).toFixed(1),
       mountMaxHp: p.mountMaxHp || 0,
       bulldozerTimer: +(p.bulldozerTimer || 0).toFixed(2),
+      speedMultiplier: +(p.speedMultiplier || 1).toFixed(4),
+      tractionMultiplier: +(p.tractionMultiplier || 1).toFixed(4),
       chainLinks: p.chainLinks,
       walkCycle: +p.walkCycle.toFixed(2),
       hurtFlash: +p.hurtFlash.toFixed(2),

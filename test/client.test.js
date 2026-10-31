@@ -165,13 +165,21 @@ function loadClientGame(initialCookies = '') {
   MockWebSocket.CLOSING = 2;
   MockWebSocket.CLOSED = 3;
 
+  const windowListeners = {};
   const sandbox = {
     window: {
       innerWidth: 1280,
       innerHeight: 800,
       devicePixelRatio: 1,
       location: { host: 'localhost:8080', protocol: 'http:' },
-      addEventListener: () => {},
+      addEventListener: (type, fn) => {
+        if (!windowListeners[type]) windowListeners[type] = [];
+        windowListeners[type].push(fn);
+      },
+      dispatchEvent: (ev) => {
+        const list = windowListeners[ev.type] || [];
+        for (const fn of list) fn(ev);
+      },
       AudioContext: undefined,
       webkitAudioContext: undefined,
       WebSocket: MockWebSocket,
@@ -202,17 +210,24 @@ function loadClientGame(initialCookies = '') {
 
   const code = fs.readFileSync(path.join(__dirname, '..', 'dist', 'game.js'), 'utf8');
   vm.runInNewContext(code, sandbox, { filename: 'game.js' });
-  return { api: sandbox.window.__HAMMERTIME_TEST__, elements, document: mockDoc };
+  return {
+    api: sandbox.window.__HAMMERTIME_TEST__,
+    elements,
+    document: mockDoc,
+    window: sandbox.window,
+  };
 }
 
 describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', () => {
   let api;
   let elements;
+  let win;
 
   beforeEach(() => {
     const loaded = loadClientGame();
     api = loaded.api;
     elements = loaded.elements;
+    win = loaded.window;
     api.initGame();
     api.enemies.length = 0;
     api.blackCircles.length = 0;
@@ -220,6 +235,10 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     api.warrior.y = 2100;
     api.warrior.vx = 0;
     api.warrior.vy = 0;
+    api.camera.x = 2100 - 640;
+    api.camera.y = 2100 - 400 / api.constants.TILT_Y;
+    api.mouse.screenX = 640;
+    api.mouse.screenY = 400;
   });
 
   it('keeps client constants in exact parity with server constants', () => {
@@ -631,5 +650,298 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     const reloadedInstance = loadClientGame(freshInstance.document.cookie);
     const input2 = reloadedInstance.elements.get('nickname-input');
     assert.equal(input2.value, 'Sir Percival');
+  });
+
+  it('performs local client prediction with smooth reconciliation and remote entity snapshot interpolation', () => {
+    const nicknameInput = elements.get('nickname-input');
+    nicknameInput.value = 'Sir Predict';
+    api.enterGame();
+    const ws = api.getState().ws;
+    ws.readyState = 1;
+    ws.emit('open', {});
+    ws.emit('message', {
+      data: JSON.stringify({
+        type: 'welcome',
+        playerId: 'local-1',
+        worldWidth: 4200,
+        worldHeight: 4200,
+      }),
+    });
+
+    assert.equal(api.getState().isMultiplayer, true);
+    assert.equal(api.getState().localPlayerId, 'local-1');
+    assert.equal(api.getState().hasSyncedInitialServerState, false);
+
+    // 1. Initial 'state' snapshot hard-snaps local warrior, remote players, and enemies
+    ws.emit('message', {
+      data: JSON.stringify({
+        type: 'state',
+        roundState: 'playing',
+        teamKills: 5,
+        players: [
+          {
+            id: 'local-1',
+            name: 'Sir Predict',
+            color: '#63b3ed',
+            capeColor: '#742a2a',
+            plumeColor: '#ecc94b',
+            alive: true,
+            x: 1200,
+            y: 1300,
+            vx: 100,
+            vy: 0,
+            angle: 0,
+            radius: 20,
+            hp: 100,
+            maxHp: 100,
+            speedMultiplier: 1.1,
+            tractionMultiplier: 1.05,
+            chainLinks: 4,
+            walkCycle: 0,
+            hurtFlash: 0,
+            kills: 2,
+            maxDamageBlow: 40,
+            hammers: [
+              {
+                x: 1120,
+                y: 1300,
+                vx: 90,
+                vy: 0,
+                radius: 17,
+                mass: 1.85,
+                chainLinks: 4,
+                linkLength: 14,
+                angle: 0,
+                currentStretch: 0,
+                chainNodes: [
+                  { x: 1200, y: 1300 },
+                  { x: 1180, y: 1300 },
+                  { x: 1160, y: 1300 },
+                  { x: 1140, y: 1300 },
+                  { x: 1120, y: 1300 },
+                ],
+              },
+            ],
+          },
+          {
+            id: 'remote-2',
+            name: 'Lady Remote',
+            color: '#f6ad55',
+            capeColor: '#2c5282',
+            plumeColor: '#f6e05e',
+            alive: true,
+            x: 1600,
+            y: 1600,
+            vx: 150,
+            vy: -50,
+            angle: 0.2,
+            radius: 20,
+            hp: 100,
+            maxHp: 100,
+            chainLinks: 4,
+            walkCycle: 0,
+            hurtFlash: 0,
+            hammers: [
+              {
+                x: 1520,
+                y: 1600,
+                vx: 140,
+                vy: -40,
+                radius: 17,
+                mass: 1.85,
+                chainLinks: 4,
+                linkLength: 14,
+                angle: 0.2,
+                currentStretch: 0,
+                chainNodes: [
+                  { x: 1600, y: 1600 },
+                  { x: 1580, y: 1600 },
+                  { x: 1560, y: 1600 },
+                  { x: 1540, y: 1600 },
+                  { x: 1520, y: 1600 },
+                ],
+              },
+            ],
+          },
+        ],
+        enemies: [
+          {
+            id: 'enemy-1',
+            variant: 'walker',
+            x: 1400,
+            y: 1400,
+            vx: -80,
+            vy: 60,
+            angle: 2.5,
+            radius: 19,
+            hp: 75,
+            maxHp: 75,
+            skinColor: '#567a4e',
+            coatColor: '#35302b',
+            hurtFlash: 0,
+            walkPhase: 0,
+          },
+        ],
+        pickups: [],
+      }),
+    });
+
+    assert.equal(api.getState().hasSyncedInitialServerState, true);
+    assert.equal(api.warrior.x, 1200);
+    assert.equal(api.warrior.y, 1300);
+    assert.equal(api.warrior.speedMultiplier, 1.1);
+    assert.equal(api.warrior.tractionMultiplier, 1.05);
+    assert.equal(api.remotePlayers.length, 1);
+    assert.equal(api.remotePlayers[0].x, 1600);
+    assert.equal(api.enemies.length, 1);
+    assert.equal(api.enemies[0].x, 1400);
+
+    // 2. Subsequent 'state' message with small discrepancy smoothly blends instead of hard-jumping
+    ws.emit('message', {
+      data: JSON.stringify({
+        type: 'state',
+        roundState: 'playing',
+        players: [
+          {
+            id: 'local-1',
+            name: 'Sir Predict',
+            alive: true,
+            x: 1240,
+            y: 1320,
+            vx: 100,
+            vy: 0,
+            angle: 0.5,
+            radius: 20,
+            hp: 100,
+            maxHp: 100,
+            chainLinks: 4,
+            hammers: [
+              {
+                x: 1160,
+                y: 1320,
+                vx: 90,
+                vy: 0,
+                radius: 17,
+                mass: 1.85,
+                chainLinks: 4,
+                linkLength: 14,
+                angle: 0.5,
+                chainNodes: [
+                  { x: 1240, y: 1320 },
+                  { x: 1220, y: 1320 },
+                  { x: 1200, y: 1320 },
+                  { x: 1180, y: 1320 },
+                  { x: 1160, y: 1320 },
+                ],
+              },
+            ],
+          },
+          {
+            id: 'remote-2',
+            name: 'Lady Remote',
+            alive: true,
+            x: 1630,
+            y: 1590,
+            vx: 150,
+            vy: -50,
+            angle: 0.4,
+            radius: 20,
+            hp: 100,
+            maxHp: 100,
+            chainLinks: 4,
+            hammers: [
+              {
+                x: 1550,
+                y: 1590,
+                vx: 140,
+                vy: -40,
+                radius: 17,
+                mass: 1.85,
+                chainLinks: 4,
+                linkLength: 14,
+                angle: 0.4,
+                chainNodes: [
+                  { x: 1630, y: 1590 },
+                  { x: 1610, y: 1590 },
+                  { x: 1590, y: 1590 },
+                  { x: 1570, y: 1590 },
+                  { x: 1550, y: 1590 },
+                ],
+              },
+            ],
+          },
+        ],
+        enemies: [
+          {
+            id: 'enemy-1',
+            variant: 'walker',
+            x: 1380,
+            y: 1415,
+            vx: -80,
+            vy: 60,
+            angle: 2.6,
+            radius: 19,
+            hp: 75,
+            maxHp: 75,
+          },
+        ],
+      }),
+    });
+
+    // Should be smoothly blended between old (1200) and new (1240), not hard-jumped to 1240
+    assert.ok(api.warrior.x > 1200 && api.warrior.x < 1240);
+    assert.ok(api.remotePlayers[0].x > 1600 && api.remotePlayers[0].x < 1630);
+    assert.ok(api.enemies[0].x < 1400 && api.enemies[0].x > 1380);
+
+    // 3. Stepping client between snapshots advances local prediction toward mouse, remote player dead-reckoning, and enemy dead-reckoning
+    api.mouse.screenX = api.warrior.x + 300 - api.camera.x;
+    api.mouse.screenY = (api.warrior.y - api.camera.y) * api.constants.TILT_Y;
+    const prevLocalX = api.warrior.x;
+    const prevRemoteX = api.remotePlayers[0].x;
+    const prevEnemyX = api.enemies[0].x;
+
+    api.stepMultiplayerClient(0.016);
+
+    assert.ok(api.warrior.x > prevLocalX, 'Local warrior should advance via client prediction');
+    assert.ok(
+      api.remotePlayers[0].x > prevRemoteX,
+      'Remote player should advance via velocity dead-reckoning and interpolation'
+    );
+    assert.ok(
+      api.enemies[0].x < prevEnemyX,
+      'Enemy with negative vx should advance left via dead-reckoning and interpolation'
+    );
+
+    // 4. Large teleport (> 260 px) hard-snaps immediately
+    ws.emit('message', {
+      data: JSON.stringify({
+        type: 'state',
+        roundState: 'playing',
+        players: [
+          {
+            id: 'local-1',
+            name: 'Sir Predict',
+            alive: true,
+            x: 3000,
+            y: 3000,
+            vx: 0,
+            vy: 0,
+            angle: 0,
+            radius: 20,
+            hp: 100,
+            maxHp: 100,
+            chainLinks: 4,
+            hammers: [],
+          },
+        ],
+        enemies: [],
+      }),
+    });
+    assert.equal(api.warrior.x, 3000);
+    assert.equal(api.warrior.y, 3000);
+
+    // 5. Verify keyboard mode and keys state have been completely removed
+    assert.equal('keys' in api, false);
+    assert.equal('controlMode' in api.getState(), false);
   });
 });

@@ -648,7 +648,6 @@
   }
 
   // --- Input State ---
-  let controlMode = 'keyboard'; // 'keyboard' or 'mouse'
   let hasEnteredGame = false;
   let lastUserActivityTime = performance.now();
   let hasRecentInput = false;
@@ -656,19 +655,6 @@
     screenX: window.innerWidth / 2,
     screenY: window.innerHeight / 2,
   };
-
-  const keys = {
-    left: false,
-    right: false,
-    up: false,
-    down: false,
-  };
-
-  function setControlMode(mode) {
-    if (controlMode !== mode) {
-      controlMode = mode;
-    }
-  }
 
   window.addEventListener('pointerdown', (e) => {
     ensureAudioContext();
@@ -684,46 +670,6 @@
       hasRecentInput = true;
       mouse.screenX = e.clientX;
       mouse.screenY = e.clientY;
-      if (hasEnteredGame) {
-        setControlMode('mouse');
-      }
-    }
-  });
-
-  window.addEventListener('keydown', (e) => {
-    if (nicknameInputEl && document.activeElement === nicknameInputEl) {
-      return;
-    }
-    ensureAudioContext();
-    lastUserActivityTime = performance.now();
-    hasRecentInput = true;
-    // Pressing any key switches to keyboard mode and stops tracking the mouse
-    setControlMode('keyboard');
-
-    if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
-      keys.left = true;
-      e.preventDefault();
-    } else if (e.code === 'ArrowRight' || e.code === 'KeyD') {
-      keys.right = true;
-      e.preventDefault();
-    } else if (e.code === 'ArrowUp' || e.code === 'KeyW') {
-      keys.up = true;
-      e.preventDefault();
-    } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {
-      keys.down = true;
-      e.preventDefault();
-    }
-  });
-
-  window.addEventListener('keyup', (e) => {
-    if (e.code === 'ArrowLeft' || e.code === 'KeyA') {
-      keys.left = false;
-    } else if (e.code === 'ArrowRight' || e.code === 'KeyD') {
-      keys.right = false;
-    } else if (e.code === 'ArrowUp' || e.code === 'KeyW') {
-      keys.up = false;
-    } else if (e.code === 'ArrowDown' || e.code === 'KeyS') {
-      keys.down = false;
     }
   });
 
@@ -820,9 +766,8 @@
     turnSpeed: 3.3,      // Radians/sec
     walkThrust: 980,     // Forward acceleration when walking
     runThrust: 1520,     // Forward acceleration when running at full stride
-    strideCharge: 0,     // Ramps from 0 (walk) to 1 (run) while holding Up arrow
-    groundTraction: 5.2, // Normal ground traction damping rate
-    brakeTraction: 13.5, // Extra damping when pressing Down arrow to slow down
+    strideCharge: 0,     // Ramps from 0 (walk) to 1 (run) while moving toward cursor
+    groundTraction: 5.2, // Ground traction damping rate
     hp: 100,
     maxHp: 100,
     regenRate: 0,        // No automatic healing over time
@@ -845,6 +790,12 @@
     reachMaxX: 0,
     reachMinY: 0,
     reachMaxY: 0,
+    serverX: WORLD_WIDTH / 2,
+    serverY: WORLD_HEIGHT / 2,
+    serverVx: 0,
+    serverVy: 0,
+    serverAngle: -Math.PI / 2,
+    hasServerTarget: false,
     hammers: [] as any[],
   };
 
@@ -862,6 +813,12 @@
     chainMaxX: 0,
     chainMinY: 0,
     chainMaxY: 0,
+    serverX: WORLD_WIDTH / 2,
+    serverY: WORLD_HEIGHT / 2 + 85,
+    serverVx: 0,
+    serverVy: 0,
+    serverAngle: Math.PI / 2,
+    hasServerTarget: false,
     bombCharges: 0,            // Next hammer impact triggers a large explosion when > 0
     flameCharges: 0,           // Next hammer impact sets zombie on fire when > 0
     flameTimer: 0,             // > 0 while Flaming Hammer is armed
@@ -982,6 +939,11 @@
   // --- Helper Functions ---
   function clamp(val, min, max) {
     return Math.max(min, Math.min(max, val));
+  }
+
+  function lerpAngle(a, b, t) {
+    const diff = Math.atan2(Math.sin(b - a), Math.cos(b - a));
+    return a + diff * t;
   }
 
   function sanitizeNickname(rawName, fallback = 'Warrior') {
@@ -1152,6 +1114,12 @@
       chainMaxX: 0,
       chainMinY: 0,
       chainMaxY: 0,
+      serverX: warrior.x + Math.cos(spawnAngle) * initLen * 0.85,
+      serverY: warrior.y + Math.sin(spawnAngle) * initLen * 0.85,
+      serverVx: warrior.vx + Math.cos(spawnAngle) * 180,
+      serverVy: warrior.vy + Math.sin(spawnAngle) * 180,
+      serverAngle: spawnAngle,
+      hasServerTarget: false,
       bombCharges: 0,
       flameCharges: 0,
       flameTimer: 0,
@@ -1318,7 +1286,9 @@
         earthquakeTimer = 0;
         localKnockdownTimer = 0;
         warrior.bulldozerTimer = 0;
+        warrior.hasServerTarget = false;
         for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
+          warrior.hammers[hIdx].hasServerTarget = false;
           if (warrior.hammers[hIdx].trail) warrior.hammers[hIdx].trail.length = 0;
         }
       }
@@ -1501,17 +1471,55 @@
           leaderboard = msg.leaderboard;
         }
 
+        const hasRoundReset =
+          Array.isArray(msg.events) &&
+          msg.events.some((ev) => ev && ev.type === 'round_reset');
+        if (hasRoundReset) {
+          hasSyncedInitialServerState = false;
+        }
+
         if (Array.isArray(msg.players)) {
+          const prevRemoteById = new Map();
+          for (let i = 0; i < remotePlayers.length; i++) {
+            const rp = remotePlayers[i];
+            if (rp && rp.id != null) {
+              prevRemoteById.set(rp.id, rp);
+            }
+          }
           remotePlayers.length = 0;
+
           for (let i = 0; i < msg.players.length; i++) {
             const p = msg.players[i];
             if (p.id === localPlayerId) {
               const wasDead = !warrior.alive;
-              warrior.x = p.x;
-              warrior.y = p.y;
-              warrior.vx = p.vx;
-              warrior.vy = p.vy;
-              warrior.angle = p.angle;
+              const posError = Math.hypot(p.x - warrior.x, p.y - warrior.y);
+              const shouldHardSnap =
+                !hasSyncedInitialServerState ||
+                (wasDead && p.alive) ||
+                !p.alive ||
+                posError > 260;
+
+              warrior.serverX = p.x;
+              warrior.serverY = p.y;
+              warrior.serverVx = p.vx || 0;
+              warrior.serverVy = p.vy || 0;
+              warrior.serverAngle = p.angle || 0;
+              warrior.hasServerTarget = true;
+
+              if (shouldHardSnap) {
+                warrior.x = p.x;
+                warrior.y = p.y;
+                warrior.vx = p.vx || 0;
+                warrior.vy = p.vy || 0;
+                warrior.angle = p.angle || 0;
+                warrior.walkCycle = p.walkCycle || 0;
+              } else {
+                warrior.x += (p.x - warrior.x) * 0.28;
+                warrior.y += (p.y - warrior.y) * 0.28;
+                warrior.vx = warrior.vx * 0.72 + (p.vx || 0) * 0.28;
+                warrior.vy = warrior.vy * 0.72 + (p.vy || 0) * 0.28;
+              }
+
               warrior.radius = p.radius || 20;
               warrior.hp = p.hp;
               warrior.maxHp = p.maxHp;
@@ -1523,6 +1531,12 @@
               warrior.capeColor = p.capeColor;
               warrior.plumeColor = p.plumeColor;
               warrior.chainLinks = p.chainLinks;
+              if (typeof p.speedMultiplier === 'number') {
+                warrior.speedMultiplier = p.speedMultiplier;
+              }
+              if (typeof p.tractionMultiplier === 'number') {
+                warrior.tractionMultiplier = p.tractionMultiplier;
+              }
               warrior.mountType = p.mountType || null;
               warrior.mountHp = p.mountHp || 0;
               warrior.mountMaxHp = p.mountMaxHp || 0;
@@ -1532,7 +1546,6 @@
               } else if ((p.bulldozerTimer || 0) <= 0 && (warrior.bulldozerTimer || 0) < BULLDOZER_DURATION - 1.5) {
                 warrior.bulldozerTimer = 0;
               }
-              warrior.walkCycle = p.walkCycle;
               warrior.hurtFlash = p.hurtFlash;
               kills = p.kills || 0;
               maxDamageBlow = p.maxDamageBlow || 0;
@@ -1550,17 +1563,28 @@
               for (let hIdx = 0; hIdx < serverHammers.length; hIdx++) {
                 const sh = serverHammers[hIdx];
                 let lh = warrior.hammers[hIdx];
+                const isNewHammer = !lh;
                 if (!lh) {
                   lh = {
                     x: sh.x,
                     y: sh.y,
-                    vx: sh.vx,
-                    vy: sh.vy,
+                    vx: sh.vx || 0,
+                    vy: sh.vy || 0,
                     radius: sh.radius || 17,
                     mass: sh.mass || INITIAL_HAMMER_MASS,
                     chainLinks: sh.chainLinks || INITIAL_CHAIN_LINKS,
                     linkLength: sh.linkLength || LENGTH_PER_LINK,
                     chainNodes: [],
+                    chainMinX: 0,
+                    chainMaxX: 0,
+                    chainMinY: 0,
+                    chainMaxY: 0,
+                    serverX: sh.x,
+                    serverY: sh.y,
+                    serverVx: sh.vx || 0,
+                    serverVy: sh.vy || 0,
+                    serverAngle: sh.angle || 0,
+                    hasServerTarget: true,
                     bombCharges: sh.bombCharges || 0,
                     flameTimer: sh.flameTimer || 0,
                     discoTimer: sh.discoTimer || 0,
@@ -1573,10 +1597,28 @@
                   };
                   warrior.hammers.push(lh);
                 } else {
-                  lh.x = sh.x;
-                  lh.y = sh.y;
-                  lh.vx = sh.vx;
-                  lh.vy = sh.vy;
+                  const hammerSnap =
+                    shouldHardSnap || Math.hypot(sh.x - lh.x, sh.y - lh.y) > 320;
+                  lh.serverX = sh.x;
+                  lh.serverY = sh.y;
+                  lh.serverVx = sh.vx || 0;
+                  lh.serverVy = sh.vy || 0;
+                  lh.serverAngle = sh.angle || 0;
+                  lh.hasServerTarget = true;
+
+                  if (hammerSnap) {
+                    lh.x = sh.x;
+                    lh.y = sh.y;
+                    lh.vx = sh.vx || 0;
+                    lh.vy = sh.vy || 0;
+                    lh.angle = sh.angle || 0;
+                  } else {
+                    lh.x += (sh.x - lh.x) * 0.35;
+                    lh.y += (sh.y - lh.y) * 0.35;
+                    lh.vx = lh.vx * 0.5 + (sh.vx || 0) * 0.5;
+                    lh.vy = lh.vy * 0.5 + (sh.vy || 0) * 0.5;
+                    lh.angle = lerpAngle(lh.angle || 0, sh.angle || 0, 0.35);
+                  }
                   lh.radius = sh.radius || 17;
                   lh.mass = sh.mass || INITIAL_HAMMER_MASS;
                   lh.chainLinks = sh.chainLinks || INITIAL_CHAIN_LINKS;
@@ -1587,24 +1629,39 @@
                   lh.jackolanternTimer = sh.jackolanternTimer || 0;
                   lh.extraTimer = sh.extraTimer || 0;
                   lh.isSpider = !!sh.isSpider;
-                  lh.angle = sh.angle || 0;
                   lh.currentStretch = sh.currentStretch || 0;
                 }
 
                 if (Array.isArray(sh.chainNodes)) {
-                  lh.chainNodes.length = 0;
-                  for (let c = 0; c < sh.chainNodes.length; c++) {
-                    lh.chainNodes.push({
-                      x: sh.chainNodes[c].x,
-                      y: sh.chainNodes[c].y,
-                      vx: 0,
-                      vy: 0,
-                      prevX: sh.chainNodes[c].x,
-                      prevY: sh.chainNodes[c].y,
-                    });
+                  const snapNodes =
+                    isNewHammer ||
+                    shouldHardSnap ||
+                    lh.chainNodes.length !== sh.chainNodes.length;
+                  if (snapNodes) {
+                    lh.chainNodes.length = 0;
+                    for (let c = 0; c < sh.chainNodes.length; c++) {
+                      lh.chainNodes.push({
+                        x: sh.chainNodes[c].x,
+                        y: sh.chainNodes[c].y,
+                        vx: 0,
+                        vy: 0,
+                        prevX: sh.chainNodes[c].x,
+                        prevY: sh.chainNodes[c].y,
+                      });
+                    }
+                  } else {
+                    for (let c = 0; c < sh.chainNodes.length; c++) {
+                      const cn = lh.chainNodes[c];
+                      cn.x += (sh.chainNodes[c].x - cn.x) * 0.35;
+                      cn.y += (sh.chainNodes[c].y - cn.y) * 0.35;
+                      cn.prevX = cn.x;
+                      cn.prevY = cn.y;
+                    }
                   }
                 }
               }
+
+              updateWarriorBroadphaseBounds(warrior);
 
               if ((wasDead && warrior.alive) || !hasSyncedInitialServerState) {
                 hasSyncedInitialServerState = true;
@@ -1612,15 +1669,203 @@
                 camera.y = warrior.y - viewportHeight / 2 / TILT_Y;
               }
             } else {
-              remotePlayers.push(p);
+              const prevRp = p.id != null ? prevRemoteById.get(p.id) : null;
+              const incomingHammers =
+                Array.isArray(p.hammers) && p.hammers.length > 0
+                  ? p.hammers
+                  : p.hammer
+                  ? [{ ...p.hammer, chainNodes: p.chainNodes || [] }]
+                  : [];
+
+              if (
+                prevRp &&
+                !hasRoundReset &&
+                prevRp.alive &&
+                p.alive &&
+                Math.hypot(p.x - prevRp.x, p.y - prevRp.y) <= 260
+              ) {
+                prevRp.name = p.name;
+                prevRp.color = p.color;
+                prevRp.capeColor = p.capeColor;
+                prevRp.plumeColor = p.plumeColor;
+                prevRp.alive = p.alive;
+                prevRp.radius = p.radius || 20;
+                prevRp.hp = p.hp;
+                prevRp.maxHp = p.maxHp;
+                prevRp.mountType = p.mountType || null;
+                prevRp.mountHp = p.mountHp || 0;
+                prevRp.mountMaxHp = p.mountMaxHp || 0;
+                prevRp.bulldozerTimer = p.bulldozerTimer || 0;
+                prevRp.chainLinks = p.chainLinks;
+                prevRp.hurtFlash = p.hurtFlash || 0;
+                prevRp.kills = p.kills || 0;
+                prevRp.maxDamageBlow = p.maxDamageBlow || 0;
+                prevRp.vx = p.vx || 0;
+                prevRp.vy = p.vy || 0;
+                prevRp.targetX = p.x;
+                prevRp.targetY = p.y;
+                prevRp.targetAngle = p.angle || 0;
+                prevRp.x += (p.x - prevRp.x) * 0.35;
+                prevRp.y += (p.y - prevRp.y) * 0.35;
+                prevRp.angle = lerpAngle(prevRp.angle || 0, p.angle || 0, 0.35);
+
+                if (!Array.isArray(prevRp.hammers)) {
+                  prevRp.hammers = [];
+                }
+                while (prevRp.hammers.length > incomingHammers.length) {
+                  prevRp.hammers.pop();
+                }
+                for (let hIdx = 0; hIdx < incomingHammers.length; hIdx++) {
+                  const sh = incomingHammers[hIdx];
+                  let rh = prevRp.hammers[hIdx];
+                  if (
+                    rh &&
+                    Math.hypot(sh.x - rh.x, sh.y - rh.y) <= 320
+                  ) {
+                    rh.radius = sh.radius || 17;
+                    rh.mass = sh.mass || INITIAL_HAMMER_MASS;
+                    rh.chainLinks = sh.chainLinks || INITIAL_CHAIN_LINKS;
+                    rh.linkLength = sh.linkLength || LENGTH_PER_LINK;
+                    rh.bombCharges = sh.bombCharges || 0;
+                    rh.flameTimer = sh.flameTimer || 0;
+                    rh.discoTimer = sh.discoTimer || 0;
+                    rh.jackolanternTimer = sh.jackolanternTimer || 0;
+                    rh.extraTimer = sh.extraTimer || 0;
+                    rh.isSpider = !!sh.isSpider;
+                    rh.currentStretch = sh.currentStretch || 0;
+                    rh.vx = sh.vx || 0;
+                    rh.vy = sh.vy || 0;
+                    rh.targetX = sh.x;
+                    rh.targetY = sh.y;
+                    rh.targetAngle = sh.angle || 0;
+                    rh.x += (sh.x - rh.x) * 0.35;
+                    rh.y += (sh.y - rh.y) * 0.35;
+                    rh.angle = lerpAngle(rh.angle || 0, sh.angle || 0, 0.35);
+
+                    if (Array.isArray(sh.chainNodes)) {
+                      if (
+                        !Array.isArray(rh.chainNodes) ||
+                        rh.chainNodes.length !== sh.chainNodes.length
+                      ) {
+                        rh.chainNodes = sh.chainNodes.map((n) => ({
+                          x: n.x,
+                          y: n.y,
+                          targetX: n.x,
+                          targetY: n.y,
+                        }));
+                      } else {
+                        for (let c = 0; c < sh.chainNodes.length; c++) {
+                          const rn = rh.chainNodes[c];
+                          rn.targetX = sh.chainNodes[c].x;
+                          rn.targetY = sh.chainNodes[c].y;
+                          rn.x += (sh.chainNodes[c].x - rn.x) * 0.35;
+                          rn.y += (sh.chainNodes[c].y - rn.y) * 0.35;
+                        }
+                      }
+                    }
+                  } else {
+                    const clonedNodes = Array.isArray(sh.chainNodes)
+                      ? sh.chainNodes.map((n) => ({
+                          x: n.x,
+                          y: n.y,
+                          targetX: n.x,
+                          targetY: n.y,
+                        }))
+                      : [];
+                    prevRp.hammers[hIdx] = {
+                      ...sh,
+                      targetX: sh.x,
+                      targetY: sh.y,
+                      targetAngle: sh.angle || 0,
+                      chainNodes: clonedNodes,
+                    };
+                  }
+                }
+                prevRp.hammer = prevRp.hammers[0] || null;
+                prevRp.chainNodes = prevRp.hammer ? prevRp.hammer.chainNodes : [];
+                remotePlayers.push(prevRp);
+              } else {
+                const initHammers = incomingHammers.map((sh) => ({
+                  ...sh,
+                  targetX: sh.x,
+                  targetY: sh.y,
+                  targetAngle: sh.angle || 0,
+                  chainNodes: Array.isArray(sh.chainNodes)
+                    ? sh.chainNodes.map((n) => ({
+                        x: n.x,
+                        y: n.y,
+                        targetX: n.x,
+                        targetY: n.y,
+                      }))
+                    : [],
+                }));
+                remotePlayers.push({
+                  ...p,
+                  targetX: p.x,
+                  targetY: p.y,
+                  targetAngle: p.angle || 0,
+                  hammers: initHammers,
+                  hammer: initHammers[0] || p.hammer || null,
+                  chainNodes: initHammers[0]
+                    ? initHammers[0].chainNodes
+                    : p.chainNodes || [],
+                });
+              }
             }
           }
         }
 
         if (Array.isArray(msg.enemies)) {
+          const prevEnemyById = new Map();
+          for (let i = 0; i < enemies.length; i++) {
+            const e = enemies[i];
+            if (e && e.id != null) {
+              prevEnemyById.set(e.id, e);
+            }
+          }
           enemies.length = 0;
           for (let i = 0; i < msg.enemies.length; i++) {
-            enemies.push(msg.enemies[i]);
+            const inc = msg.enemies[i];
+            const prevE = inc.id != null ? prevEnemyById.get(inc.id) : null;
+            if (
+              prevE &&
+              !hasRoundReset &&
+              Math.hypot(inc.x - prevE.x, inc.y - prevE.y) <= 260
+            ) {
+              prevE.variant = inc.variant;
+              prevE.radius = inc.radius;
+              prevE.hp = inc.hp;
+              prevE.maxHp = inc.maxHp;
+              prevE.skinColor = inc.skinColor;
+              prevE.coatColor = inc.coatColor;
+              prevE.hurtFlash = inc.hurtFlash || 0;
+              prevE.burnTimer = inc.burnTimer || 0;
+              prevE.fireproofTimer = inc.fireproofTimer || 0;
+              prevE.fearTimer = inc.fearTimer || 0;
+              prevE.danceTimer = inc.danceTimer || 0;
+              prevE.danceImmuneTimer = inc.danceImmuneTimer || 0;
+              prevE.webTimer = inc.webTimer || 0;
+              prevE.knockdownTimer = inc.knockdownTimer || 0;
+              prevE.vx = inc.vx || 0;
+              prevE.vy = inc.vy || 0;
+              prevE.targetX = inc.x;
+              prevE.targetY = inc.y;
+              prevE.targetAngle = inc.angle || 0;
+              prevE.x += (inc.x - prevE.x) * 0.35;
+              prevE.y += (inc.y - prevE.y) * 0.35;
+              prevE.angle = lerpAngle(prevE.angle || 0, inc.angle || 0, 0.35);
+              if (typeof prevE.walkPhase !== 'number') {
+                prevE.walkPhase = inc.walkPhase || 0;
+              }
+              enemies.push(prevE);
+            } else {
+              enemies.push({
+                ...inc,
+                targetX: inc.x,
+                targetY: inc.y,
+                targetAngle: inc.angle || 0,
+              });
+            }
           }
         }
 
@@ -1669,8 +1914,6 @@
       JSON.stringify({
         type: 'input',
         nickname: warrior.hasCustomNickname ? warrior.name : undefined,
-        controlMode,
-        keys,
         active,
         mouseWorldX: +(camera.x + mouse.screenX).toFixed(1),
         mouseWorldY: +(camera.y + mouse.screenY / TILT_Y).toFixed(1),
@@ -2283,34 +2526,7 @@
     w.reachMaxY = rMaxY + BROADPHASE_SLACK;
   }
 
-  // --- Core Physics Step ---
-  function stepPhysics(dt) {
-    if (!warrior.hammers || warrior.hammers.length === 0) {
-      warrior.hammers = [hammer];
-    }
-
-    if (earthquakeTimer > 0) {
-      earthquakeTimer = Math.max(0, earthquakeTimer - dt);
-    }
-    if (localKnockdownTimer > 0) {
-      localKnockdownTimer = Math.max(0, localKnockdownTimer - dt);
-    }
-
-    if (warrior.bulldozerTimer > 0) {
-      warrior.bulldozerTimer = Math.max(0, warrior.bulldozerTimer - dt);
-      if (warrior.bulldozerTimer <= 0) {
-        warrior.radius =
-          warrior.mountType === 'elephant'
-            ? 32
-            : warrior.mountType === 'tortoise'
-            ? 26
-            : warrior.mountType === 'horse'
-            ? 25
-            : 20;
-      } else {
-        warrior.radius = BULLDOZER_RADIUS;
-      }
-    }
+  function stepLocalWarriorAndHammers(dt, isPrediction = false) {
     const isBulldozer = (warrior.bulldozerTimer || 0) > 0;
 
     const mountSpeedMult = isBulldozer
@@ -2334,70 +2550,44 @@
     const totalSpeedMult = warrior.speedMultiplier * mountSpeedMult;
     const totalTractionMult = warrior.tractionMultiplier * mountTractionMult;
 
-    // 1 & 2. Warrior Steering & Movement (Mouse Tracking Mode vs. Keyboard Mode)
-    if (controlMode === 'mouse') {
-      const targetWorldX = camera.x + mouse.screenX;
-      const targetWorldY = camera.y + mouse.screenY / TILT_Y;
-      const mdx = targetWorldX - warrior.x;
-      const mdy = targetWorldY - warrior.y;
-      const distToMouse = Math.hypot(mdx, mdy);
+    // 1 & 2. Warrior Steering & Movement (Mouse Tracking)
+    const targetWorldX = camera.x + mouse.screenX;
+    const targetWorldY = camera.y + mouse.screenY / TILT_Y;
+    const mdx = targetWorldX - warrior.x;
+    const mdy = targetWorldY - warrior.y;
+    const distToMouse = Math.hypot(mdx, mdy);
 
-      if (distToMouse > 4) {
-        const targetAngle = Math.atan2(mdy, mdx);
-        const angleDiff = Math.atan2(
-          Math.sin(targetAngle - warrior.angle),
-          Math.cos(targetAngle - warrior.angle)
-        );
-        const maxTurn = warrior.turnSpeed * 2.2 * dt;
-        if (Math.abs(angleDiff) <= maxTurn) {
-          warrior.angle = targetAngle;
-        } else {
-          warrior.angle += Math.sign(angleDiff) * maxTurn;
-        }
-      }
-
-      if (distToMouse > 10) {
-        warrior.strideCharge = Math.min(1, warrior.strideCharge + dt * 1.4);
-        const arrivalScale = Math.min(1, (distToMouse - 8) / 42);
-        const thrust =
-          (warrior.walkThrust +
-            (warrior.runThrust - warrior.walkThrust) * warrior.strideCharge) *
-          totalSpeedMult *
-          totalTractionMult *
-          arrivalScale;
-        warrior.vx += Math.cos(warrior.angle) * thrust * dt;
-        warrior.vy += Math.sin(warrior.angle) * thrust * dt;
+    if (distToMouse > 4) {
+      const targetAngle = Math.atan2(mdy, mdx);
+      const angleDiff = Math.atan2(
+        Math.sin(targetAngle - warrior.angle),
+        Math.cos(targetAngle - warrior.angle)
+      );
+      const maxTurn = warrior.turnSpeed * 2.2 * dt;
+      if (Math.abs(angleDiff) <= maxTurn) {
+        warrior.angle = targetAngle;
       } else {
-        warrior.strideCharge = Math.max(0, warrior.strideCharge - dt * 3.0);
-      }
-    } else {
-      // Keyboard Mode (does not track the mouse)
-      if (keys.left) {
-        warrior.angle -= warrior.turnSpeed * dt;
-      }
-      if (keys.right) {
-        warrior.angle += warrior.turnSpeed * dt;
-      }
-
-      if (keys.up && !keys.down) {
-        warrior.strideCharge = Math.min(1, warrior.strideCharge + dt * 1.4);
-        const thrust =
-          (warrior.walkThrust +
-            (warrior.runThrust - warrior.walkThrust) * warrior.strideCharge) *
-          totalSpeedMult *
-          totalTractionMult;
-        warrior.vx += Math.cos(warrior.angle) * thrust * dt;
-        warrior.vy += Math.sin(warrior.angle) * thrust * dt;
-      } else {
-        warrior.strideCharge = Math.max(0, warrior.strideCharge - dt * 3.0);
+        warrior.angle += Math.sign(angleDiff) * maxTurn;
       }
     }
 
+    if (distToMouse > 10) {
+      warrior.strideCharge = Math.min(1, warrior.strideCharge + dt * 1.4);
+      const arrivalScale = Math.min(1, (distToMouse - 8) / 42);
+      const thrust =
+        (warrior.walkThrust +
+          (warrior.runThrust - warrior.walkThrust) * warrior.strideCharge) *
+        totalSpeedMult *
+        totalTractionMult *
+        arrivalScale;
+      warrior.vx += Math.cos(warrior.angle) * thrust * dt;
+      warrior.vy += Math.sin(warrior.angle) * thrust * dt;
+    } else {
+      warrior.strideCharge = Math.max(0, warrior.strideCharge - dt * 3.0);
+    }
+
     // Apply ground traction to warrior (scaled by totalTractionMult)
-    const isBraking = controlMode === 'keyboard' && keys.down;
-    const activeTraction =
-      (isBraking ? warrior.brakeTraction : warrior.groundTraction) *
-      totalTractionMult;
+    const activeTraction = warrior.groundTraction * totalTractionMult;
     const warriorDamping = Math.exp(-activeTraction * dt);
     warrior.vx *= warriorDamping;
     warrior.vy *= warriorDamping;
@@ -2598,8 +2788,10 @@
               const ny = cdy / cDist;
               node.x += nx * push * 0.92;
               node.y += ny * push * 0.92;
-              e.x -= nx * push * 0.08;
-              e.y -= ny * push * 0.08;
+              if (!isPrediction) {
+                e.x -= nx * push * 0.08;
+                e.y -= ny * push * 0.08;
+              }
             }
           }
         }
@@ -2672,11 +2864,17 @@
         h.currentStretch = stretch;
         h.currentTension = springForce;
 
-        h.vx -= ((springForce * uHx) / h.mass) * dt;
-        h.vy -= ((springForce * uHy) / h.mass) * dt;
+        h.vx -= ((springForce * uHx) / INITIAL_HAMMER_MASS) * dt;
+        h.vy -= ((springForce * uHy) / INITIAL_HAMMER_MASS) * dt;
 
-        warrior.vx += ((springForce * uWx) / warrior.mass) * dt;
-        warrior.vy += ((springForce * uWy) / warrior.mass) * dt;
+        if (!isPrediction) {
+          const warriorPullAccel = Math.min(
+            springForce / warrior.mass,
+            warrior.walkThrust * 0.35
+          );
+          warrior.vx += warriorPullAccel * uWx * dt;
+          warrior.vy += warriorPullAccel * uWy * dt;
+        }
       } else {
         h.currentStretch = 0;
         h.currentTension = 0;
@@ -2799,8 +2997,10 @@
         h.angle = Math.atan2(lastSegDy, lastSegDx);
       }
 
-      // Flaming Hammer lasts until it is used (no time decay)
-      h.flameTimer = h.flameCharges > 0 ? h.flameCharges : 0;
+      if (!isPrediction) {
+        // Flaming Hammer lasts until it is used (no time decay)
+        h.flameTimer = h.flameCharges > 0 ? h.flameCharges : 0;
+      }
 
       if (h.discoTimer > 0) {
         h.discoTimer = Math.max(0, h.discoTimer - dt);
@@ -2813,13 +3013,15 @@
       }
     }
 
-    // Remove any additional hammers whose 120-second duration has expired
-    for (let hIdx = warrior.hammers.length - 1; hIdx >= 1; hIdx--) {
-      const h = warrior.hammers[hIdx];
-      if (h.extraTimer != null && h.extraTimer <= 0) {
-        addParticles(h.x, h.y, '#b794f4', 14, 30, 140, 3.2);
-        addFloatingText(h.x, h.y - h.radius - 12, 'EXTRA HAMMER EXPIRED', '#b794f4', 1.0);
-        warrior.hammers.splice(hIdx, 1);
+    if (!isPrediction) {
+      // Remove any additional hammers whose 120-second duration has expired
+      for (let hIdx = warrior.hammers.length - 1; hIdx >= 1; hIdx--) {
+        const h = warrior.hammers[hIdx];
+        if (h.extraTimer != null && h.extraTimer <= 0) {
+          addParticles(h.x, h.y, '#b794f4', 14, 30, 140, 3.2);
+          addFloatingText(h.x, h.y - h.radius - 12, 'EXTRA HAMMER EXPIRED', '#b794f4', 1.0);
+          warrior.hammers.splice(hIdx, 1);
+        }
       }
     }
 
@@ -2862,6 +3064,167 @@
 
     warrior.chainLinks = warrior.hammers[0].chainLinks;
     updateWarriorBroadphaseBounds(warrior);
+    return isBulldozer;
+  }
+
+  function stepMultiplayerClient(frameDt) {
+    if (!warrior.hammers || warrior.hammers.length === 0) {
+      warrior.hammers = [hammer];
+    }
+
+    // 1. Local Player Prediction & Smooth Reconciliation
+    if (roundState === 'playing' && warrior.alive) {
+      const subDt = frameDt / PHYSICS_SUBSTEPS;
+      for (let s = 0; s < PHYSICS_SUBSTEPS; s++) {
+        stepLocalWarriorAndHammers(subDt, true);
+      }
+      const warriorSpeed = Math.hypot(warrior.vx, warrior.vy);
+      if (warriorSpeed > 15) {
+        warrior.walkCycle = (warrior.walkCycle || 0) + warriorSpeed * frameDt * 0.085;
+      }
+      if (warrior.hurtFlash > 0) {
+        warrior.hurtFlash = Math.max(0, warrior.hurtFlash - frameDt);
+      }
+    }
+
+    const interpBlend = 1 - Math.exp(-16 * frameDt);
+
+    // 2. Remote Players Dead-Reckoning & Snapshot Interpolation
+    for (let i = 0; i < remotePlayers.length; i++) {
+      const rp = remotePlayers[i];
+      if (!rp || !rp.alive) continue;
+      const vx = rp.vx || 0;
+      const vy = rp.vy || 0;
+      const rPad = (rp.radius || 20) + 24;
+      const baseTx = typeof rp.targetX === 'number' ? rp.targetX : rp.x;
+      const baseTy = typeof rp.targetY === 'number' ? rp.targetY : rp.y;
+      rp.targetX = clamp(baseTx + vx * frameDt, rPad, WORLD_WIDTH - rPad);
+      rp.targetY = clamp(baseTy + vy * frameDt, rPad, WORLD_HEIGHT - rPad);
+      rp.x += (rp.targetX - rp.x) * interpBlend;
+      rp.y += (rp.targetY - rp.y) * interpBlend;
+      if (typeof rp.targetAngle === 'number') {
+        rp.angle = lerpAngle(rp.angle || 0, rp.targetAngle, interpBlend);
+      }
+      const rpSpeed = Math.hypot(vx, vy);
+      if (rpSpeed > 15) {
+        rp.walkCycle = (rp.walkCycle || 0) + rpSpeed * frameDt * 0.085;
+      }
+      if (rp.hurtFlash > 0) {
+        rp.hurtFlash = Math.max(0, rp.hurtFlash - frameDt);
+      }
+
+      const rpHammers =
+        Array.isArray(rp.hammers) && rp.hammers.length > 0
+          ? rp.hammers
+          : rp.hammer
+          ? [rp.hammer]
+          : [];
+      for (let hIdx = 0; hIdx < rpHammers.length; hIdx++) {
+        const rh = rpHammers[hIdx];
+        if (!rh) continue;
+        const hvx = rh.vx || 0;
+        const hvy = rh.vy || 0;
+        const hPad = (rh.radius || 17) + 16;
+        const hBaseTx = typeof rh.targetX === 'number' ? rh.targetX : rh.x;
+        const hBaseTy = typeof rh.targetY === 'number' ? rh.targetY : rh.y;
+        rh.targetX = clamp(hBaseTx + hvx * frameDt, hPad, WORLD_WIDTH - hPad);
+        rh.targetY = clamp(hBaseTy + hvy * frameDt, hPad, WORLD_HEIGHT - hPad);
+        rh.x += (rh.targetX - rh.x) * interpBlend;
+        rh.y += (rh.targetY - rh.y) * interpBlend;
+        if (typeof rh.targetAngle === 'number') {
+          rh.angle = lerpAngle(rh.angle || 0, rh.targetAngle, interpBlend);
+        }
+
+        const rNodes = rh.chainNodes;
+        if (Array.isArray(rNodes) && rNodes.length >= 2) {
+          const lastIdx = rNodes.length - 1;
+          rNodes[0].x = rp.x;
+          rNodes[0].y = rp.y;
+          rNodes[lastIdx].x = rh.x;
+          rNodes[lastIdx].y = rh.y;
+          for (let c = 1; c < lastIdx; c++) {
+            const node = rNodes[c];
+            const t = c / lastIdx;
+            const nvx = vx + (hvx - vx) * t;
+            const nvy = vy + (hvy - vy) * t;
+            const nBaseTx = typeof node.targetX === 'number' ? node.targetX : node.x;
+            const nBaseTy = typeof node.targetY === 'number' ? node.targetY : node.y;
+            node.targetX = nBaseTx + nvx * frameDt;
+            node.targetY = nBaseTy + nvy * frameDt;
+            node.x += (node.targetX - node.x) * interpBlend;
+            node.y += (node.targetY - node.y) * interpBlend;
+          }
+          for (let c = 1; c < lastIdx; c++) {
+            const prev = rNodes[c - 1];
+            const curr = rNodes[c];
+            const next = rNodes[c + 1];
+            curr.x += ((prev.x + next.x) * 0.5 - curr.x) * 0.2;
+            curr.y += ((prev.y + next.y) * 0.5 - curr.y) * 0.2;
+          }
+        }
+      }
+    }
+
+    // 3. Enemies Dead-Reckoning & Snapshot Interpolation
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i];
+      if (!e) continue;
+      const isStationary =
+        (e.danceTimer || 0) > 0 ||
+        (e.webTimer || 0) > 0 ||
+        earthquakeTimer > 0 ||
+        (e.knockdownTimer || 0) > 0;
+      const evx = isStationary ? 0 : e.vx || 0;
+      const evy = isStationary ? 0 : e.vy || 0;
+      const ePad = (e.radius || 19) + 12;
+      const eBaseTx = typeof e.targetX === 'number' ? e.targetX : e.x;
+      const eBaseTy = typeof e.targetY === 'number' ? e.targetY : e.y;
+      e.targetX = clamp(eBaseTx + evx * frameDt, ePad, WORLD_WIDTH - ePad);
+      e.targetY = clamp(eBaseTy + evy * frameDt, ePad, WORLD_HEIGHT - ePad);
+      e.x += (e.targetX - e.x) * interpBlend;
+      e.y += (e.targetY - e.y) * interpBlend;
+      if (typeof e.targetAngle === 'number') {
+        e.angle = lerpAngle(e.angle || 0, e.targetAngle, interpBlend);
+      }
+      const eSpeed = Math.hypot(evx, evy);
+      if (!isStationary && eSpeed > 5) {
+        e.walkPhase = (e.walkPhase || 0) + eSpeed * frameDt * 0.11;
+      }
+      if (e.hurtFlash > 0) {
+        e.hurtFlash = Math.max(0, e.hurtFlash - frameDt);
+      }
+    }
+  }
+
+  // --- Core Physics Step ---
+  function stepPhysics(dt) {
+    if (!warrior.hammers || warrior.hammers.length === 0) {
+      warrior.hammers = [hammer];
+    }
+
+    if (earthquakeTimer > 0) {
+      earthquakeTimer = Math.max(0, earthquakeTimer - dt);
+    }
+    if (localKnockdownTimer > 0) {
+      localKnockdownTimer = Math.max(0, localKnockdownTimer - dt);
+    }
+
+    if (warrior.bulldozerTimer > 0) {
+      warrior.bulldozerTimer = Math.max(0, warrior.bulldozerTimer - dt);
+      if (warrior.bulldozerTimer <= 0) {
+        warrior.radius =
+          warrior.mountType === 'elephant'
+            ? 32
+            : warrior.mountType === 'tortoise'
+            ? 26
+            : warrior.mountType === 'horse'
+            ? 25
+            : 20;
+      } else {
+        warrior.radius = BULLDOZER_RADIUS;
+      }
+    }
+    const isBulldozer = stepLocalWarriorAndHammers(dt, false);
 
     // 5. Update Enemies & Collisions (Hammers, Chains, and Warrior)
     for (let i = enemies.length - 1; i >= 0; i--) {
@@ -3226,8 +3589,12 @@
               const leverRatio = closestNodeIdx / links;
               h.vx -= ((chainImpulse * leverRatio) / h.mass) * cnx;
               h.vy -= ((chainImpulse * leverRatio) / h.mass) * cny;
-              warrior.vx -= ((chainImpulse * (1 - leverRatio)) / warrior.mass) * cnx;
-              warrior.vy -= ((chainImpulse * (1 - leverRatio)) / warrior.mass) * cny;
+              const warriorChainRecoil = Math.min(
+                (chainImpulse * (1 - leverRatio)) / warrior.mass,
+                95
+              );
+              warrior.vx -= warriorChainRecoil * cnx;
+              warrior.vy -= warriorChainRecoil * cny;
 
               if (e.chainHitCooldown <= 0 && hammerEquivImpulse > 8) {
                 const chainDamage = Math.max(
@@ -4342,21 +4709,19 @@
       ctx.stroke();
     }
 
-    // Mouse target reticle on the ground plane when in mouse tracking mode
-    if (controlMode === 'mouse') {
-      const targetWorldX = camera.x + mouse.screenX;
-      const targetWorldY = camera.y + mouse.screenY / TILT_Y;
-      ctx.strokeStyle = 'rgba(99, 179, 237, 0.72)';
-      ctx.lineWidth = 2;
-      ctx.beginPath();
-      ctx.arc(targetWorldX, targetWorldY, 13, 0, Math.PI * 2);
-      ctx.stroke();
+    // Mouse target reticle on the ground plane
+    const targetWorldX = camera.x + mouse.screenX;
+    const targetWorldY = camera.y + mouse.screenY / TILT_Y;
+    ctx.strokeStyle = 'rgba(99, 179, 237, 0.72)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(targetWorldX, targetWorldY, 13, 0, Math.PI * 2);
+    ctx.stroke();
 
-      ctx.fillStyle = 'rgba(99, 179, 237, 0.85)';
-      ctx.beginPath();
-      ctx.arc(targetWorldX, targetWorldY, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    ctx.fillStyle = 'rgba(99, 179, 237, 0.85)';
+    ctx.beginPath();
+    ctx.arc(targetWorldX, targetWorldY, 3.5, 0, Math.PI * 2);
+    ctx.fill();
 
     ctx.restore();
 
@@ -7967,8 +8332,9 @@
           'Session paused due to inactivity so the server stays idle when nobody is playing. Click to rejoin!'
         );
       } else if (isMultiplayer) {
-        sendInputToServer();
+        stepMultiplayerClient(frameDt);
         updateCamera();
+        sendInputToServer();
         updateEffects(frameDt);
         updateHUD();
       } else if (!isGameOver) {
@@ -8070,12 +8436,12 @@
       remotePlayers,
       localLeaderboardRecords,
       camera,
-      keys,
       mouse,
       getState: () => ({
         hasEnteredGame,
         isConnecting,
         isMultiplayer,
+        hasSyncedInitialServerState,
         localPlayerId,
         roundState,
         teamKills,
@@ -8084,7 +8450,6 @@
         earthquakeTimer,
         localKnockdownTimer,
         gameTime,
-        controlMode,
         leaderboard,
         ws,
       }),
@@ -8092,6 +8457,8 @@
         if ('hasEnteredGame' in patch) hasEnteredGame = patch.hasEnteredGame;
         if ('isConnecting' in patch) isConnecting = patch.isConnecting;
         if ('isMultiplayer' in patch) isMultiplayer = patch.isMultiplayer;
+        if ('hasSyncedInitialServerState' in patch)
+          hasSyncedInitialServerState = patch.hasSyncedInitialServerState;
         if ('localPlayerId' in patch) localPlayerId = patch.localPlayerId;
         if ('roundState' in patch) roundState = patch.roundState;
         if ('teamKills' in patch) teamKills = patch.teamKills;
@@ -8100,12 +8467,12 @@
         if ('earthquakeTimer' in patch) earthquakeTimer = patch.earthquakeTimer;
         if ('localKnockdownTimer' in patch) localKnockdownTimer = patch.localKnockdownTimer;
         if ('gameTime' in patch) gameTime = patch.gameTime;
-        if ('controlMode' in patch) controlMode = patch.controlMode;
         if ('leaderboard' in patch) leaderboard = patch.leaderboard;
       },
       initGame,
       enterGame,
       connectMultiplayer,
+      lerpAngle,
       getCookie,
       setCookie,
       getRandomMedievalName,
@@ -8117,6 +8484,8 @@
       clearLocalLeaderboard,
       renderLeaderboard,
       updateWarriorBroadphaseBounds,
+      stepLocalWarriorAndHammers,
+      stepMultiplayerClient,
       stepPhysics,
       updateEffects,
       updateHUD,

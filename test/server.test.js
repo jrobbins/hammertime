@@ -29,6 +29,8 @@ function addTestPlayer(id = 'p1', x = 2100, y = 2100) {
   p.y = y;
   p.vx = 0;
   p.vy = 0;
+  p.input.mouseWorldX = x;
+  p.input.mouseWorldY = y;
   p.hammers = [srv.createPlayerHammer(p, 0)];
   p.hammer = p.hammers[0];
   p.chainNodes = p.hammer.chainNodes;
@@ -141,24 +143,16 @@ describe('World Initialization, Stone Columns & Player Creation', () => {
     assert.equal(p.hp, 50);
   });
 
-  it('steers and moves warrior in both keyboard and mouse modes', () => {
-    const p = addTestPlayer('p1', 2100, 2100);
+  it('steers and moves warrior toward mouse cursor', () => {
+    const p = addTestPlayer('p1', 1500, 1500);
+    assert.equal('controlMode' in p.input, false);
+    assert.equal('keys' in p.input, false);
     p.angle = 0;
-    p.input.controlMode = 'keyboard';
-    p.input.keys = { left: false, right: true, up: true, down: false };
+    p.input.mouseWorldX = 1500;
+    p.input.mouseWorldY = 1800;
     srv.stepPlayerPhysics(p, 0.05);
     assert.ok(p.angle > 0);
-    assert.ok(Math.hypot(p.vx, p.vy) > 0);
-
-    // Mouse mode
-    const p2 = addTestPlayer('p2', 1500, 1500);
-    p2.angle = 0;
-    p2.input.controlMode = 'mouse';
-    p2.input.mouseWorldX = 1500;
-    p2.input.mouseWorldY = 1800;
-    srv.stepPlayerPhysics(p2, 0.05);
-    assert.ok(p2.angle > 0);
-    assert.ok(p2.vy > 0);
+    assert.ok(p.vy > 0);
   });
 });
 
@@ -351,8 +345,8 @@ describe('Rare Powerups: Extra Hammer (120s), Mounts (Horse, Tortoise, Elephant)
     p.angle = 0;
     p.vx = 0;
     p.vy = 0;
-    p.input.controlMode = 'keyboard';
-    p.input.keys = { left: false, right: false, up: true, down: false };
+    p.input.mouseWorldX = p.x + 1200;
+    p.input.mouseWorldY = p.y;
     for (let i = 0; i < 40; i++) srv.stepPlayerPhysics(p, 0.016);
     const tortoiseSpeed = Math.hypot(p.vx, p.vy);
 
@@ -365,6 +359,8 @@ describe('Rare Powerups: Extra Hammer (120s), Mounts (Horse, Tortoise, Elephant)
 
     p.vx = 0;
     p.vy = 0;
+    p.input.mouseWorldX = p.x + 1200;
+    p.input.mouseWorldY = p.y;
     for (let i = 0; i < 40; i++) srv.stepPlayerPhysics(p, 0.016);
     const elephantSpeed = Math.hypot(p.vx, p.vy);
     assert.ok(
@@ -638,6 +634,34 @@ describe('Enemy Production Scaling (>2 Players) & Cooperative Victory Mode', () 
       chainTargetEnemy.hp < 300 || chainTargetEnemy.vx > 0,
       'Enemy overlapping internal chain node should be pushed/damaged'
     );
+
+    p1.speedMultiplier = 1.1576;
+    p1.tractionMultiplier = 1.1025;
+    const payload = srv.buildGameStatePayload();
+    const serializedP1 = payload.players.find((pl) => pl.id === 'p1');
+    assert.equal(serializedP1.speedMultiplier, 1.1576);
+    assert.equal(serializedP1.tractionMultiplier, 1.1025);
+
+    // Even with 2 heavy 9-link hammers pulling West, mouse steering East moves p1 East toward the mouse
+    p1.x = 2100;
+    p1.y = 2100;
+    p1.vx = 0;
+    p1.vy = 0;
+    p1.angle = 0;
+    p1.input.mouseWorldX = 2500;
+    p1.input.mouseWorldY = 2100;
+    for (const h of p1.hammers) {
+      h.mass = 15.0; // After many weight pickups
+      h.x = 1850;    // Pulling strongly West (-X)
+      h.y = 2100;
+      h.vx = -300;
+      h.vy = 0;
+      srv.initHammerChainNodes(p1, h);
+    }
+    for (let step = 0; step < 30; step++) {
+      srv.stepPlayerPhysics(p1, 0.016 / srv.PHYSICS_SUBSTEPS);
+    }
+    assert.ok(p1.vx > 0 && p1.x > 2100, 'Warrior should move East toward mouse despite heavy hammers pulling West');
   });
 });
 
@@ -655,7 +679,7 @@ describe('WebSocket RFC 6455 Framing & HTTP Static Server', () => {
     );
 
     // Small unmasked frame
-    const smallPayload = { type: 'input', controlMode: 'mouse', active: true };
+    const smallPayload = { type: 'input', mouseWorldX: 2100, mouseWorldY: 2100, active: true };
     mockSocket.emit('data', srv.encodeWsFrame(JSON.stringify(smallPayload)));
     assert.equal(received.length, 1);
     assert.deepEqual(received[0], smallPayload);
