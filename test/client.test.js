@@ -271,10 +271,16 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.RARE_DISCO_DROP_CHANCE, srv.RARE_DISCO_DROP_CHANCE);
     assert.equal(c.RARE_JACKOLANTERN_DROP_CHANCE, srv.RARE_JACKOLANTERN_DROP_CHANCE);
     assert.equal(c.RARE_SPIDER_DROP_CHANCE, srv.RARE_SPIDER_DROP_CHANCE);
+    assert.equal(c.DISCO_HAMMER_DURATION, srv.DISCO_HAMMER_DURATION);
+    assert.equal(c.JACKOLANTERN_HAMMER_DURATION, srv.JACKOLANTERN_HAMMER_DURATION);
+    assert.equal(c.SPIDER_HAMMER_DURATION, srv.SPIDER_HAMMER_DURATION);
     assert.equal(c.ZOMBIE_WEB_DURATION, srv.ZOMBIE_WEB_DURATION);
     assert.equal(c.BULLDOZER_DURATION, srv.BULLDOZER_DURATION);
     assert.equal(c.BULLDOZER_TRACTION_MULT, srv.BULLDOZER_TRACTION_MULT);
     assert.equal(c.BULLDOZER_RADIUS, srv.BULLDOZER_RADIUS);
+    assert.deepEqual([...c.PICKUP_TYPES], srv.PICKUP_TYPES);
+    assert.deepEqual([...c.PICKUP_TYPES], ['link', 'weight', 'health', 'bomb', 'speed', 'flame']);
+    assert.equal(c.PICKUP_TYPES.includes('traction'), false);
     assert.deepEqual(JSON.parse(JSON.stringify(c.STONE_COLUMNS)), srv.STONE_COLUMNS);
     assert.deepEqual(JSON.parse(JSON.stringify(api.stoneColumns)), srv.STONE_COLUMNS);
 
@@ -282,14 +288,25 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(indexHtml.includes('toggle-deadzone-btn'), false);
     assert.equal(indexHtml.includes('reset-game-btn'), false);
     assert.equal(indexHtml.includes('hud-actions'), false);
+    assert.equal(indexHtml.includes('coords-text'), false);
+    assert.equal(indexHtml.includes('wave-badge'), false);
+    assert.equal(indexHtml.includes('chain-links-val'), false);
+    assert.equal(indexHtml.includes('hammer-mass-val'), true);
+    assert.equal(indexHtml.includes('HAMMER MASS'), true);
+    assert.equal(indexHtml.includes('<strong>Traction</strong>'), false);
+
+    api.updateHUD();
+    assert.equal(elements.get('hammer-mass-val').textContent, '0.88');
+    assert.equal(elements.has('coords-text'), false);
+    assert.equal(elements.has('wave-badge'), false);
   });
 
-  it('handles all 17 standalone pickups, extra hammer 120s expiration, spider web, disco, and bulldozer', () => {
+  it('handles all 16 standalone pickups, extra hammer 120s expiration, spider web, disco, and bulldozer', () => {
     const w = api.warrior;
 
-    // Common pickups: link, weight, health, bomb, flame, speed, traction
+    // Common pickups: link, weight, health, bomb, flame, speed
     w.hp = 60;
-    const commonPickups = ['link', 'weight', 'health', 'bomb', 'flame', 'speed', 'traction'];
+    const commonPickups = ['link', 'weight', 'health', 'bomb', 'flame', 'speed'];
     for (const pType of commonPickups) {
       api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: pType });
       api.stepPhysics(0.016);
@@ -300,7 +317,13 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(w.hammers[0].bombCharges, 1);
     assert.equal(w.hammers[0].flameCharges, 1);
     assert.equal(w.speedMultiplier, 1.05);
-    assert.equal(w.tractionMultiplier, 1.05);
+
+    // Cannot pick up health when already at full health
+    w.hp = w.maxHp;
+    api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'health' });
+    api.stepPhysics(0.016);
+    assert.equal(api.blackCircles.length, 1);
+    api.blackCircles.length = 0;
 
     // Mounts: horse, tortoise, elephant
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'horse' });
@@ -323,8 +346,8 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       api.stepPhysics(0.016);
     }
     assert.ok(api.getState().earthquakeTimer > 4.9);
-    assert.ok(w.hammers[0].discoTimer > 19.9);
-    assert.ok(w.hammers[0].jackolanternTimer > 59.9);
+    assert.ok(w.hammers[0].discoTimer > 119.9);
+    assert.ok(w.hammers[0].jackolanternTimer > 119.9);
     w.hammers[0].discoTimer = 0;
     api.setState({ earthquakeTimer: 0, localKnockdownTimer: 0 });
 
@@ -333,6 +356,8 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     api.stepPhysics(0.016);
     assert.equal(w.hammers.length, 2);
     assert.ok(w.hammers[1].extraTimer > 119);
+    api.updateHUD();
+    assert.equal(elements.get('hammer-mass-val').textContent, '1.23/0.88');
     // 3rd hammer pickup is ignored when already at max 2
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'hammer' });
     api.stepPhysics(0.016);
@@ -363,6 +388,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'spider' });
     api.stepPhysics(0.016);
     assert.equal(w.hammers[0].isSpider, true);
+    assert.ok(w.hammers[0].spiderTimer > 119.9);
 
     api.spawnEnemy(false);
     const e = api.enemies[0];
@@ -377,6 +403,11 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     w.hammers[0].vy = 0;
     api.stepPhysics(0.016);
     assert.ok(e.webTimer > 29.9);
+
+    w.hammers[0].spiderTimer = 0.01;
+    api.stepPhysics(0.05);
+    assert.equal(w.hammers[0].spiderTimer, 0);
+    assert.equal(w.hammers[0].isSpider, false);
 
     // Bulldozer pickup & same-tick pickup guard
     w.speedMultiplier = 1.0;
@@ -459,7 +490,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(api.getState().earthquakeTimer, 0);
   });
 
-  it('renders all 2.5D entities (including Bulldozer mode in drawWarrior, all Hammer modes, all Enemy states, and all 17 Pickups) without errors', () => {
+  it('renders all 2.5D entities (including Bulldozer mode in drawWarrior, all Hammer modes, all Enemy states, and all 16 Pickups) without errors', () => {
     const w = api.warrior;
 
     // 1. drawWarrior in Normal, Horse, Tortoise, Elephant, and Bulldozer modes
@@ -542,14 +573,13 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     e.knockdownTimer = 4;
     api.drawEnemy(e);
 
-    // 4. drawBlackCircle for all 17 pickup types
+    // 4. drawBlackCircle for all 16 pickup types
     const allPickupTypes = [
       'link',
       'weight',
       'health',
       'bomb',
       'speed',
-      'traction',
       'flame',
       'hammer',
       'horse',

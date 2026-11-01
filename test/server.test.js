@@ -87,24 +87,25 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.EXPLOSION_RADIUS, 420);
   });
 
-  it('defines reduced rare powerup drop probabilities', () => {
-    assert.equal(srv.RARE_HAMMER_DROP_CHANCE, 0.0024);
-    assert.equal(srv.RARE_HORSE_DROP_CHANCE, 0.0016);
-    assert.equal(srv.RARE_TORTOISE_DROP_CHANCE, 0.0016);
-    assert.equal(srv.RARE_ELEPHANT_DROP_CHANCE, 0.00072);
-    assert.equal(srv.RARE_BULLDOZER_DROP_CHANCE, 0.0006);
-    assert.equal(srv.RARE_EARTHQUAKE_DROP_CHANCE, 0.0016);
-    assert.equal(srv.RARE_FEAR_DROP_CHANCE, 0.0016);
-    assert.equal(srv.RARE_DISCO_DROP_CHANCE, 0.0016);
-    assert.equal(srv.RARE_JACKOLANTERN_DROP_CHANCE, 0.0016);
-    assert.equal(srv.RARE_SPIDER_DROP_CHANCE, 0.0016);
+  it('defines rare powerup drop probabilities', () => {
+    assert.equal(srv.RARE_HAMMER_DROP_CHANCE, 0.005);
+    assert.equal(srv.RARE_HORSE_DROP_CHANCE, 0.005);
+    assert.equal(srv.RARE_TORTOISE_DROP_CHANCE, 0.005);
+    assert.equal(srv.RARE_ELEPHANT_DROP_CHANCE, 0.005);
+    assert.equal(srv.RARE_BULLDOZER_DROP_CHANCE, 0.005);
+    assert.equal(srv.RARE_EARTHQUAKE_DROP_CHANCE, 0.005);
+    assert.equal(srv.RARE_FEAR_DROP_CHANCE, 0.005);
+    assert.equal(srv.RARE_DISCO_DROP_CHANCE, 0.005);
+    assert.equal(srv.RARE_JACKOLANTERN_DROP_CHANCE, 0.005);
+    assert.equal(srv.RARE_SPIDER_DROP_CHANCE, 0.005);
   });
 
   it('defines powerup durations and parameters', () => {
-    assert.equal(srv.DISCO_HAMMER_DURATION, 20.0);
+    assert.equal(srv.DISCO_HAMMER_DURATION, 120.0);
     assert.equal(srv.ZOMBIE_DANCE_DURATION, 30.0);
     assert.equal(srv.ZOMBIE_DANCE_IMMUNE_DURATION, 45.0);
-    assert.equal(srv.JACKOLANTERN_HAMMER_DURATION, 60.0);
+    assert.equal(srv.JACKOLANTERN_HAMMER_DURATION, 120.0);
+    assert.equal(srv.SPIDER_HAMMER_DURATION, 120.0);
     assert.equal(srv.ZOMBIE_WEB_DURATION, 30.0);
     assert.equal(srv.BULLDOZER_DURATION, 20.0);
     assert.equal(srv.BULLDOZER_RADIUS, 34);
@@ -166,10 +167,13 @@ describe('World Initialization, Stone Columns & Player Creation', () => {
   });
 });
 
-describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed, Traction)', () => {
+describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed)', () => {
   beforeEach(resetTestWorld);
 
-  it('collects link, weight, speed, traction, and health pickups', () => {
+  it('collects link, weight, speed, and health pickups (and excludes traction pickup)', () => {
+    assert.deepEqual(srv.PICKUP_TYPES, ['link', 'weight', 'health', 'bomb', 'speed', 'flame']);
+    assert.equal(srv.PICKUP_TYPES.includes('traction'), false);
+
     const p = addTestPlayer('p1', 2100, 2100);
     p.hp = 60;
 
@@ -206,17 +210,27 @@ describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed, Traction)',
     assert.ok(p.hammer.mass > prevMass);
     assert.ok(p.hammer.radius > prevRadius);
 
-    // Speed & Traction
+    // Speed
     srv.blackCircles.push({ id: 3, x: p.x, y: p.y, radius: 10, type: 'speed' });
-    srv.blackCircles.push({ id: 4, x: p.x, y: p.y, radius: 10, type: 'traction' });
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(p.speedMultiplier, 1.05);
-    assert.equal(p.tractionMultiplier, 1.05);
 
     // Health (+20%)
     srv.blackCircles.push({ id: 5, x: p.x, y: p.y, radius: 10, type: 'health' });
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(p.hp, 80);
+
+    // Second health pickup brings player to full health (100)
+    srv.blackCircles.push({ id: 6, x: p.x, y: p.y, radius: 10, type: 'health' });
+    srv.stepPlayerPhysics(p, 0.016);
+    assert.equal(p.hp, 100);
+    assert.equal(srv.blackCircles.length, 0);
+
+    // Cannot pick up a health powerup when already at full health
+    srv.blackCircles.push({ id: 7, x: p.x, y: p.y, radius: 10, type: 'health' });
+    srv.stepPlayerPhysics(p, 0.016);
+    assert.equal(p.hp, 100);
+    assert.equal(srv.blackCircles.length, 1);
   });
 
   it('arms bomb and flame charges and triggers explosion and zombie burn + fireproof cycle', () => {
@@ -426,7 +440,7 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'disco' });
     srv.stepPlayerPhysics(p, 0.016);
-    assert.ok(p.hammer.discoTimer > 19.9);
+    assert.ok(p.hammer.discoTimer > 119.9);
 
     // Place zombie directly in path of moving disco hammer
     const e1 = addTestEnemy(2200, 2100, 100);
@@ -452,11 +466,11 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     assert.equal(srv.startEnemyDance(e1), false);
   });
 
-  it('Jack-o-Lantern Hammer lasts 60s and deals normal impact damage', () => {
+  it('Jack-o-Lantern Hammer lasts 120s and deals normal impact damage', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'jackolantern' });
     srv.stepPlayerPhysics(p, 0.016);
-    assert.ok(p.hammer.jackolanternTimer > 59.9);
+    assert.ok(p.hammer.jackolanternTimer > 119.9);
 
     const e = addTestEnemy(2200, 2100, 200);
     p.hammer.x = 2190;
@@ -468,11 +482,12 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     assert.ok(e.hp < 200, 'Jack-o-lantern hammer should deal normal impact damage');
   });
 
-  it('Spider Hammer deals normal damage and wraps zombies in white webbing for 30s so they cannot move', () => {
+  it('Spider Hammer lasts 120s, deals normal damage, and wraps zombies in white webbing for 30s so they cannot move', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'spider' });
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(p.hammer.isSpider, true);
+    assert.ok(p.hammer.spiderTimer > 119.9);
 
     // Cannot pick up another spider powerup when all hammers are already spiders
     srv.blackCircles.push({ id: 2, x: p.x, y: p.y, radius: 10, type: 'spider' });
@@ -502,6 +517,12 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     assert.equal(e.y, prevY);
     assert.equal(e.vx, 0);
     assert.equal(e.vy, 0);
+
+    // Spider hammer effect expires after 120s
+    p.hammer.spiderTimer = 0.01;
+    srv.stepPlayerPhysics(p, 0.05);
+    assert.equal(p.hammer.spiderTimer, 0);
+    assert.equal(p.hammer.isSpider, false);
   });
 
   it('Bulldozer mode grants 20s invincibility, crushes zombies, cannot move fixed stone columns, and blocks other pickups', () => {

@@ -52,26 +52,27 @@ const INITIAL_HAMMER_MASS = 0.875;
 const HAMMER_WEIGHT_BONUS = 0.35;
 const EXPLOSION_RADIUS = 420;
 
-const PICKUP_TYPES = ['link', 'weight', 'health', 'bomb', 'speed', 'traction', 'flame'];
+const PICKUP_TYPES = ['link', 'weight', 'health', 'bomb', 'speed', 'flame'];
 const PICKUP_RADIUS = 10;
 const MAX_PICKUP_COUNT = 40;
 const MAX_HAMMERS_PER_PLAYER = 2;
 const EXTRA_HAMMER_DURATION = 120.0;
-const RARE_HAMMER_DROP_CHANCE = 0.0024;
-const RARE_HORSE_DROP_CHANCE = 0.0016;
-const RARE_TORTOISE_DROP_CHANCE = 0.0016;
-const RARE_ELEPHANT_DROP_CHANCE = 0.00072;
-const RARE_BULLDOZER_DROP_CHANCE = 0.0006;
-const RARE_EARTHQUAKE_DROP_CHANCE = 0.0016;
-const RARE_FEAR_DROP_CHANCE = 0.0016;
-const RARE_DISCO_DROP_CHANCE = 0.0016;
-const RARE_JACKOLANTERN_DROP_CHANCE = 0.0016;
-const RARE_SPIDER_DROP_CHANCE = 0.0016;
+const RARE_HAMMER_DROP_CHANCE = 0.005;
+const RARE_HORSE_DROP_CHANCE = 0.005;
+const RARE_TORTOISE_DROP_CHANCE = 0.005;
+const RARE_ELEPHANT_DROP_CHANCE = 0.005;
+const RARE_BULLDOZER_DROP_CHANCE = 0.005;
+const RARE_EARTHQUAKE_DROP_CHANCE = 0.005;
+const RARE_FEAR_DROP_CHANCE = 0.005;
+const RARE_DISCO_DROP_CHANCE = 0.005;
+const RARE_JACKOLANTERN_DROP_CHANCE = 0.005;
+const RARE_SPIDER_DROP_CHANCE = 0.005;
 
 const ZOMBIE_WEB_DURATION = 30.0;
+const SPIDER_HAMMER_DURATION = 120.0;
 
-const JACKOLANTERN_HAMMER_DURATION = 60.0;
-const DISCO_HAMMER_DURATION = 20.0;
+const JACKOLANTERN_HAMMER_DURATION = 120.0;
+const DISCO_HAMMER_DURATION = 120.0;
 const ZOMBIE_DANCE_DURATION = 30.0;
 const ZOMBIE_DANCE_IMMUNE_DURATION = 45.0;
 
@@ -223,6 +224,7 @@ function createPlayerHammer(p, spawnAngle = Math.PI / 2) {
     flameTimer: 0,
     discoTimer: 0,
     jackolanternTimer: 0,
+    spiderTimer: 0,
     extraTimer: 0,
     isSpider: false,
     angle: spawnAngle,
@@ -1562,6 +1564,14 @@ function stepPlayerPhysics(p, dt) {
     if (h.jackolanternTimer > 0) {
       h.jackolanternTimer = Math.max(0, h.jackolanternTimer - dt);
     }
+    if (h.spiderTimer > 0) {
+      h.spiderTimer = Math.max(0, h.spiderTimer - dt);
+      if (h.spiderTimer <= 0) {
+        h.isSpider = false;
+      } else {
+        h.isSpider = true;
+      }
+    }
     if (hIdx > 0 && h.extraTimer > 0) {
       h.extraTimer = Math.max(0, h.extraTimer - dt);
     }
@@ -1654,6 +1664,10 @@ function stepPlayerPhysics(p, dt) {
       }
       if (pType === 'spider' && p.hammers.every((hm) => hm.isSpider)) {
         // All of the player's current hammers are already spiders
+        continue;
+      }
+      if (pType === 'health' && p.hp >= p.maxHp) {
+        // Player is already at full health; cannot pick up a health powerup
         continue;
       }
 
@@ -1751,7 +1765,7 @@ function stepPlayerPhysics(p, dt) {
           x: Math.round(p.x),
           y: Math.round(p.y),
         });
-        label = 'DISCO BALL HAMMER! (20s DANCE FEVER)';
+        label = 'DISCO BALL HAMMER! (120s DANCE FEVER)';
         color = '#f687b3';
       } else if (pType === 'jackolantern') {
         const nonJack = p.hammers.filter((hm) => (hm.jackolanternTimer || 0) <= 0);
@@ -1763,19 +1777,20 @@ function stepPlayerPhysics(p, dt) {
           x: Math.round(p.x),
           y: Math.round(p.y),
         });
-        label = 'JACK-O-LANTERN HAMMER! (60s)';
+        label = 'JACK-O-LANTERN HAMMER! (120s)';
         color = '#ed8936';
       } else if (pType === 'spider') {
-        const nonSpider = p.hammers.filter((hm) => !hm.isSpider);
+        const nonSpider = p.hammers.filter((hm) => !hm.isSpider && (hm.spiderTimer || 0) <= 0);
         const poolH = nonSpider.length > 0 ? nonSpider : p.hammers;
         const targetH = poolH[Math.floor(Math.random() * poolH.length)];
+        targetH.spiderTimer = SPIDER_HAMMER_DURATION;
         targetH.isSpider = true;
         pendingEvents.push({
           type: 'spider_pickup',
           x: Math.round(p.x),
           y: Math.round(p.y),
         });
-        label = 'SPIDER HAMMER! (WEBS ZOMBIES FOR 30s)';
+        label = 'SPIDER HAMMER! (120s, WEBS ZOMBIES FOR 30s)';
         color = '#e2e8f0';
       } else if (pType === 'link') {
         const underMax = p.hammers.filter(
@@ -1832,10 +1847,6 @@ function stepPlayerPhysics(p, dt) {
         p.speedMultiplier = +(p.speedMultiplier * 1.05).toFixed(4);
         label = '+5% SPEED';
         color = '#63b3ed';
-      } else if (pType === 'traction') {
-        p.tractionMultiplier = +(p.tractionMultiplier * 1.05).toFixed(4);
-        label = '+5% TRACTION';
-        color = '#d69e2e';
       } else if (pType === 'flame') {
         const unflamed = p.hammers.filter((hm) => (hm.flameCharges || 0) === 0);
         const poolH = unflamed.length > 0 ? unflamed : p.hammers;
@@ -3299,6 +3310,7 @@ function buildGameStatePayload() {
       flameTimer: +(h.flameTimer || 0).toFixed(2),
       discoTimer: +(h.discoTimer || 0).toFixed(2),
       jackolanternTimer: +(h.jackolanternTimer || 0).toFixed(2),
+      spiderTimer: +(h.spiderTimer || 0).toFixed(2),
       extraTimer: +(h.extraTimer || 0).toFixed(2),
       isSpider: !!h.isSpider,
       angle: +h.angle.toFixed(3),
@@ -3455,6 +3467,7 @@ module.exports = {
   RARE_JACKOLANTERN_DROP_CHANCE,
   RARE_SPIDER_DROP_CHANCE,
   ZOMBIE_WEB_DURATION,
+  SPIDER_HAMMER_DURATION,
   JACKOLANTERN_HAMMER_DURATION,
   DISCO_HAMMER_DURATION,
   ZOMBIE_DANCE_DURATION,

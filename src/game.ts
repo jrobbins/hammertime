@@ -20,7 +20,7 @@
   const mountLabelEl = document.getElementById('mount-label');
   const mountHpTextEl = document.getElementById('mount-hp-text');
   const mountHpBarFillEl = document.getElementById('mount-hp-bar-fill');
-  const chainLinksValEl = document.getElementById('chain-links-val');
+  const hammerMassValEl = document.getElementById('hammer-mass-val');
   const chainLengthValEl = document.getElementById('chain-length-val');
   const hammerSpeedValEl = document.getElementById('hammer-speed-val');
   const killsValEl = document.getElementById('kills-val');
@@ -29,8 +29,6 @@
   const observerBannerEl = document.getElementById('observer-banner');
   const observerTitleEl = document.getElementById('observer-title');
   const observerSubtitleEl = document.getElementById('observer-subtitle');
-  const coordsTextEl = document.getElementById('coords-text');
-  const waveBadgeEl = document.getElementById('wave-badge');
 
   const gameOverModal = document.getElementById('game-over-modal');
   const finalKillsEl = document.getElementById('final-kills');
@@ -93,26 +91,27 @@
   const EXPLOSION_RADIUS = 420;          // Blast area radius of the 'bomb' impact explosion
 
   // Pickup types divided evenly (plus rare extra-hammer, horse, earthquake, fear, and even rarer elephant powerups)
-  const PICKUP_TYPES = ['link', 'weight', 'health', 'bomb', 'speed', 'traction', 'flame'];
+  const PICKUP_TYPES = ['link', 'weight', 'health', 'bomb', 'speed', 'flame'];
   const PICKUP_RADIUS = 10;
   const MAX_PICKUP_COUNT = 40;
   const MAX_HAMMERS_PER_PLAYER = 2;
   const EXTRA_HAMMER_DURATION = 120.0;
-  const RARE_HAMMER_DROP_CHANCE = 0.0024;
-  const RARE_HORSE_DROP_CHANCE = 0.0016;
-  const RARE_TORTOISE_DROP_CHANCE = 0.0016;
-  const RARE_ELEPHANT_DROP_CHANCE = 0.00072;
-  const RARE_BULLDOZER_DROP_CHANCE = 0.0006;
-  const RARE_EARTHQUAKE_DROP_CHANCE = 0.0016;
-  const RARE_FEAR_DROP_CHANCE = 0.0016;
-  const RARE_DISCO_DROP_CHANCE = 0.0016;
-  const RARE_JACKOLANTERN_DROP_CHANCE = 0.0016;
-  const RARE_SPIDER_DROP_CHANCE = 0.0016;
+  const RARE_HAMMER_DROP_CHANCE = 0.005;
+  const RARE_HORSE_DROP_CHANCE = 0.005;
+  const RARE_TORTOISE_DROP_CHANCE = 0.005;
+  const RARE_ELEPHANT_DROP_CHANCE = 0.005;
+  const RARE_BULLDOZER_DROP_CHANCE = 0.005;
+  const RARE_EARTHQUAKE_DROP_CHANCE = 0.005;
+  const RARE_FEAR_DROP_CHANCE = 0.005;
+  const RARE_DISCO_DROP_CHANCE = 0.005;
+  const RARE_JACKOLANTERN_DROP_CHANCE = 0.005;
+  const RARE_SPIDER_DROP_CHANCE = 0.005;
 
   const ZOMBIE_WEB_DURATION = 30.0;
+  const SPIDER_HAMMER_DURATION = 120.0;
 
-  const JACKOLANTERN_HAMMER_DURATION = 60.0;
-  const DISCO_HAMMER_DURATION = 20.0;
+  const JACKOLANTERN_HAMMER_DURATION = 120.0;
+  const DISCO_HAMMER_DURATION = 120.0;
   const ZOMBIE_DANCE_DURATION = 30.0;
   const ZOMBIE_DANCE_IMMUNE_DURATION = 45.0;
 
@@ -859,8 +858,9 @@
     bombCharges: 0,            // Next hammer impact triggers a large explosion when > 0
     flameCharges: 0,           // Next hammer impact sets zombie on fire when > 0
     flameTimer: 0,             // > 0 while Flaming Hammer is armed
-    discoTimer: 0,             // > 0 while transformed into a Disco Ball for 20s
-    jackolanternTimer: 0,      // > 0 while transformed into a Jack-o'-Lantern for 60s
+    discoTimer: 0,             // > 0 while transformed into a Disco Ball for 120s
+    jackolanternTimer: 0,      // > 0 while transformed into a Jack-o'-Lantern for 120s
+    spiderTimer: 0,            // > 0 while transformed into a Spider Hammer for 120s
     isSpider: false,           // true when transformed into a Spider Hammer
     angle: Math.PI / 2,
     currentTension: 0,
@@ -1290,6 +1290,7 @@
       flameTimer: 0,
       discoTimer: 0,
       jackolanternTimer: 0,
+      spiderTimer: 0,
       extraTimer: EXTRA_HAMMER_DURATION,
       isSpider: false,
       angle: spawnAngle,
@@ -1783,6 +1784,7 @@
                     flameTimer: sh.flameTimer || 0,
                     discoTimer: sh.discoTimer || 0,
                     jackolanternTimer: sh.jackolanternTimer || 0,
+                    spiderTimer: sh.spiderTimer || 0,
                     extraTimer: sh.extraTimer || 0,
                     isSpider: !!sh.isSpider,
                     angle: sh.angle || 0,
@@ -1821,6 +1823,7 @@
                   lh.flameTimer = sh.flameTimer || 0;
                   lh.discoTimer = sh.discoTimer || 0;
                   lh.jackolanternTimer = sh.jackolanternTimer || 0;
+                  lh.spiderTimer = sh.spiderTimer || 0;
                   lh.extraTimer = sh.extraTimer || 0;
                   lh.isSpider = !!sh.isSpider;
                   lh.currentStretch = sh.currentStretch || 0;
@@ -1924,6 +1927,7 @@
                     rh.flameTimer = sh.flameTimer || 0;
                     rh.discoTimer = sh.discoTimer || 0;
                     rh.jackolanternTimer = sh.jackolanternTimer || 0;
+                    rh.spiderTimer = sh.spiderTimer || 0;
                     rh.extraTimer = sh.extraTimer || 0;
                     rh.isSpider = !!sh.isSpider;
                     rh.currentStretch = sh.currentStretch || 0;
@@ -2706,6 +2710,7 @@
     hammer.flameTimer = 0;
     hammer.discoTimer = 0;
     hammer.jackolanternTimer = 0;
+    hammer.spiderTimer = 0;
     hammer.isSpider = false;
     hammer.angle = Math.PI / 2;
     hammer.currentTension = 0;
@@ -3277,6 +3282,14 @@
       }
       if (h.jackolanternTimer > 0) {
         h.jackolanternTimer = Math.max(0, h.jackolanternTimer - dt);
+      }
+      if (h.spiderTimer > 0) {
+        h.spiderTimer = Math.max(0, h.spiderTimer - dt);
+        if (h.spiderTimer <= 0) {
+          h.isSpider = false;
+        } else {
+          h.isSpider = true;
+        }
       }
       if (hIdx > 0 && h.extraTimer > 0) {
         h.extraTimer = Math.max(0, h.extraTimer - dt);
@@ -4102,6 +4115,10 @@
             // All current hammers are already spiders
             continue;
           }
+          if (pType === 'health' && warrior.hp >= warrior.maxHp) {
+            // Already at full health; cannot pick up a health powerup
+            continue;
+          }
 
           playCollectLinkSound();
 
@@ -4220,7 +4237,7 @@
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            'DISCO BALL HAMMER! (20s DANCE FEVER)',
+            'DISCO BALL HAMMER! (120s DANCE FEVER)',
             '#f687b3',
             1.2
           );
@@ -4236,23 +4253,24 @@
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            'JACK-O-LANTERN HAMMER! (60s)',
+            'JACK-O-LANTERN HAMMER! (120s)',
             '#ed8936',
             1.2
           );
           addParticles(c.x, c.y, '#ed8936', 20, 40, 190, 3.8);
           addParticles(c.x, c.y, '#f6e05e', 14, 35, 165, 3.2);
         } else if (pType === 'spider') {
-          const nonSpider = warrior.hammers.filter((hm) => !hm.isSpider);
+          const nonSpider = warrior.hammers.filter((hm) => !hm.isSpider && (hm.spiderTimer || 0) <= 0);
           const poolH = nonSpider.length > 0 ? nonSpider : warrior.hammers;
           const targetH = poolH[Math.floor(Math.random() * poolH.length)];
+          targetH.spiderTimer = SPIDER_HAMMER_DURATION;
           targetH.isSpider = true;
           playSpiderPickupSound();
           addShockwave(c.x, c.y, 170, '226, 232, 240');
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            'SPIDER HAMMER! (WEBS ZOMBIES FOR 30s)',
+            'SPIDER HAMMER! (120s, WEBS ZOMBIES FOR 30s)',
             '#e2e8f0',
             1.2
           );
@@ -4357,16 +4375,6 @@
             1.12
           );
           addParticles(c.x, c.y, '#63b3ed', 10, 30, 120, 3);
-        } else if (pType === 'traction') {
-          warrior.tractionMultiplier = +(warrior.tractionMultiplier * 1.05).toFixed(4);
-          addFloatingText(
-            warrior.x,
-            warrior.y - warrior.radius - 16,
-            '+5% TRACTION',
-            '#d69e2e',
-            1.12
-          );
-          addParticles(c.x, c.y, '#d69e2e', 10, 30, 120, 3);
         } else if (pType === 'flame') {
           const unflamed = warrior.hammers.filter((hm) => (hm.flameCharges || 0) === 0);
           const poolH = unflamed.length > 0 ? unflamed : warrior.hammers;
@@ -4744,15 +4752,17 @@
       }
     }
 
-    setTextIfChanged(waveBadgeEl, 'CO-OP ARENA');
-
     if (warrior.hammers.length > 1) {
       setTextIfChanged(
-        chainLinksValEl,
-        warrior.hammers.map((hm) => hm.chainLinks || INITIAL_CHAIN_LINKS).join('/')
+        hammerMassValEl,
+        warrior.hammers.map((hm) => (hm.mass || INITIAL_HAMMER_MASS).toFixed(2)).join('/')
       );
     } else {
-      setTextIfChanged(chainLinksValEl, String(warrior.chainLinks));
+      const primaryMass =
+        warrior.hammers[0] && warrior.hammers[0].mass
+          ? warrior.hammers[0].mass
+          : hammer.mass || INITIAL_HAMMER_MASS;
+      setTextIfChanged(hammerMassValEl, primaryMass.toFixed(2));
     }
     const lengthMeters = (
       getChainRestLength(warrior.hammers[0].chainLinks, warrior.hammers[0].linkLength) / 50
@@ -4780,10 +4790,6 @@
 
     const tensionPct = Math.min(100, (maxStretch / 140) * 100);
     setStyleIfChanged(tensionBarFillEl, 'width', `${tensionPct}%`);
-
-    const relX = Math.round((warrior.x - WORLD_WIDTH / 2) / 10);
-    const relY = Math.round((warrior.y - WORLD_HEIGHT / 2) / 10);
-    setTextIfChanged(coordsTextEl, `(${relX}, ${relY})`);
 
     // Count total and alive players
     const totalPlayers = 1 + remotePlayers.length;
@@ -5361,10 +5367,6 @@
       glowColor = 'rgba(99, 179, 237, 0.28)';
       strokeColor = '#63b3ed';
       sideColor = '#2a4365';
-    } else if (pType === 'traction') {
-      glowColor = 'rgba(214, 158, 46, 0.28)';
-      strokeColor = '#d69e2e';
-      sideColor = '#744210';
     } else if (pType === 'flame') {
       glowColor = 'rgba(255, 107, 53, 0.38)';
       strokeColor = '#ff6b35';
@@ -5497,17 +5499,6 @@
       ctx.moveTo(0.5, -3.2);
       ctx.lineTo(4.5, 0);
       ctx.lineTo(0.5, 3.2);
-      ctx.stroke();
-    } else if (pType === 'traction') {
-      ctx.beginPath();
-      ctx.moveTo(-4.8, -2);
-      ctx.lineTo(4.8, -2);
-      ctx.moveTo(-3.8, -2);
-      ctx.lineTo(-3.8, 3);
-      ctx.moveTo(0, -2);
-      ctx.lineTo(0, 3);
-      ctx.moveTo(3.8, -2);
-      ctx.lineTo(3.8, 3);
       ctx.stroke();
     } else if (pType === 'flame') {
       // Flickering multi-layered flame emblem
@@ -8719,6 +8710,7 @@
         RARE_JACKOLANTERN_DROP_CHANCE,
         RARE_SPIDER_DROP_CHANCE,
         ZOMBIE_WEB_DURATION,
+        SPIDER_HAMMER_DURATION,
         JACKOLANTERN_HAMMER_DURATION,
         DISCO_HAMMER_DURATION,
         ZOMBIE_DANCE_DURATION,
