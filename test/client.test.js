@@ -252,6 +252,10 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.PICKUP_RADIUS, 10);
     assert.equal(c.MAX_PICKUP_COUNT, srv.MAX_PICKUP_COUNT);
     assert.equal(c.MAX_PICKUP_COUNT, 40);
+    assert.equal(c.INITIAL_CHAIN_LINKS, srv.INITIAL_CHAIN_LINKS);
+    assert.equal(c.INITIAL_CHAIN_LINKS, 2);
+    assert.equal(c.INITIAL_HAMMER_MASS, srv.INITIAL_HAMMER_MASS);
+    assert.equal(c.INITIAL_HAMMER_MASS, 0.875);
     assert.equal(c.MAX_CHAIN_LINKS, srv.MAX_CHAIN_LINKS);
     assert.equal(c.MAX_CHAIN_LINKS, 9);
     assert.equal(c.MAX_HAMMERS_PER_PLAYER, srv.MAX_HAMMERS_PER_PLAYER);
@@ -273,6 +277,11 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.BULLDOZER_RADIUS, srv.BULLDOZER_RADIUS);
     assert.deepEqual(JSON.parse(JSON.stringify(c.STONE_COLUMNS)), srv.STONE_COLUMNS);
     assert.deepEqual(JSON.parse(JSON.stringify(api.stoneColumns)), srv.STONE_COLUMNS);
+
+    const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+    assert.equal(indexHtml.includes('toggle-deadzone-btn'), false);
+    assert.equal(indexHtml.includes('reset-game-btn'), false);
+    assert.equal(indexHtml.includes('hud-actions'), false);
   });
 
   it('handles all 17 standalone pickups, extra hammer 120s expiration, spider web, disco, and bulldozer', () => {
@@ -285,7 +294,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: pType });
       api.stepPhysics(0.016);
     }
-    assert.equal(w.hammers[0].chainLinks, 4);
+    assert.equal(w.hammers[0].chainLinks, 3);
     assert.ok(w.hammers[0].mass > api.constants.INITIAL_HAMMER_MASS);
     assert.equal(w.hp, 80);
     assert.equal(w.hammers[0].bombCharges, 1);
@@ -336,7 +345,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(w.hammers.length, 1);
 
     // Link pickups cap at 9 links and then increase linkLength
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 6; i++) {
       api.blackCircles.push({ x: w.x, y: w.y, pulse: 0, type: 'link' });
       api.stepPhysics(0.016);
     }

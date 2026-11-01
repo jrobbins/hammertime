@@ -32,8 +32,6 @@
   const coordsTextEl = document.getElementById('coords-text');
   const waveBadgeEl = document.getElementById('wave-badge');
 
-  const toggleDeadzoneBtn = document.getElementById('toggle-deadzone-btn');
-  const resetGameBtn = document.getElementById('reset-game-btn');
   const gameOverModal = document.getElementById('game-over-modal');
   const finalKillsEl = document.getElementById('final-kills');
   const finalLinksEl = document.getElementById('final-links');
@@ -65,8 +63,8 @@
   const PHYSICS_SUBSTEPS = 4;
   const TILT_Y = 0.66; // 2.5D oblique camera pitch foreshortening factor
 
-  // Chain constants (Initial rest length reduced by 40%: 59px instead of 98px)
-  const INITIAL_CHAIN_LINKS = 3;
+  // Chain constants
+  const INITIAL_CHAIN_LINKS = 2;
   const MAX_CHAIN_LINKS = 9;
   const BASE_CHAIN_OFFSET = 20; // Handle/attachment offset
   const LENGTH_PER_LINK = 13;   // Each black circle adds 13px of rest length
@@ -90,7 +88,7 @@
   const DAMAGE_PER_IMPULSE = 0.135;      // Scales impulse J to HP damage
   const CHAIN_MOMENTUM_FACTOR = 1 / 3;   // Chain transfers 1/3 of hammer momentum
   const CHAIN_DAMAGE_FACTOR = (1 / 3) * 1.2; // Chain damage increased by 20% (0.4 of hammer damage)
-  const INITIAL_HAMMER_MASS = 1.75;      // Base mass of the warhammer
+  const INITIAL_HAMMER_MASS = 0.875;     // Base mass of the warhammer
   const HAMMER_WEIGHT_BONUS = 0.35;      // Mass added per 'weight' pickup
   const EXPLOSION_RADIUS = 420;          // Blast area radius of the 'bomb' impact explosion
 
@@ -787,7 +785,6 @@
   // --- Game State ---
   let viewportWidth = window.innerWidth;
   let viewportHeight = window.innerHeight;
-  let showDeadzoneBox = false;
 
   const camera = {
     x: 0,
@@ -5223,25 +5220,6 @@
       ctx.restore();
     }
 
-    // Optional visual overlay for the Center 1/3 Viewport Box
-    if (showDeadzoneBox) {
-      ctx.save();
-      const bx = viewportWidth / 3;
-      const by = viewportHeight / 3;
-      const bw = viewportWidth / 3;
-      const bh = viewportHeight / 3;
-
-      ctx.strokeStyle = 'rgba(246, 224, 94, 0.55)';
-      ctx.lineWidth = 1.5;
-      ctx.setLineDash([7, 6]);
-      ctx.strokeRect(bx, by, bw, bh);
-
-      ctx.fillStyle = 'rgba(246, 224, 94, 0.8)';
-      ctx.font = '600 11px "JetBrains Mono", monospace';
-      ctx.fillText('CENTER 1/3 VIEWPORT CAMERA BOUNDARY', bx + 10, by - 8);
-      ctx.restore();
-    }
-
     if (minimapAccumSec >= MINIMAP_UPDATE_INTERVAL) {
       minimapAccumSec = 0;
       renderMinimap();
@@ -8504,20 +8482,6 @@
   }
 
   // --- UI Controls ---
-  toggleDeadzoneBtn.addEventListener('click', () => {
-    showDeadzoneBox = !showDeadzoneBox;
-    toggleDeadzoneBtn.classList.toggle('active', showDeadzoneBox);
-    toggleDeadzoneBtn.textContent = showDeadzoneBox
-      ? 'Hide 1/3 Viewport Box'
-      : 'Show 1/3 Viewport Box';
-    toggleDeadzoneBtn.blur();
-  });
-
-  resetGameBtn.addEventListener('click', () => {
-    initGame();
-    resetGameBtn.blur();
-  });
-
   playAgainBtn.addEventListener('click', () => {
     initGame();
   });

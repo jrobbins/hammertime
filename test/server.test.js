@@ -75,7 +75,8 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.WORLD_WIDTH, 4200);
     assert.equal(srv.WORLD_HEIGHT, 4200);
     assert.equal(srv.STONE_COLUMN_COUNT, 4);
-    assert.equal(srv.INITIAL_CHAIN_LINKS, 3);
+    assert.equal(srv.INITIAL_CHAIN_LINKS, 2);
+    assert.equal(srv.INITIAL_HAMMER_MASS, 0.875);
     assert.equal(srv.MAX_CHAIN_LINKS, 9);
     assert.equal(srv.MAX_HAMMERS_PER_PLAYER, 2);
     assert.equal(srv.EXTRA_HAMMER_DURATION, 120.0);
@@ -131,14 +132,15 @@ describe('World Initialization, Stone Columns & Player Creation', () => {
     assert.equal('stoneColumns' in statePayload, false, 'stoneColumns should not be in game state JSON');
   });
 
-  it('creates player with 0 automatic HP regeneration and 3 chain links', () => {
+  it('creates player with 0 automatic HP regeneration and 2 chain links', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     assert.equal(p.hp, 100);
     assert.equal(p.maxHp, 100);
     assert.equal(p.regenRate, 0);
-    assert.equal(p.chainLinks, 3);
+    assert.equal(p.chainLinks, 2);
     assert.equal(p.hammers.length, 1);
-    assert.equal(p.hammer.chainNodes.length, 4);
+    assert.equal(p.hammer.mass, 0.875);
+    assert.equal(p.hammer.chainNodes.length, 3);
 
     // Verify warrior does not automatically heal over time
     p.hp = 50;
@@ -167,15 +169,15 @@ describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed, Traction)',
     const p = addTestPlayer('p1', 2100, 2100);
     p.hp = 60;
 
-    // Link (+1 link from initial 3 = 4 links, 5 nodes)
+    // Link (+1 link from initial 2 = 3 links, 4 nodes)
     srv.blackCircles.push({ id: 1, x: 2100, y: 2100, radius: 10, type: 'link' });
     srv.stepPlayerPhysics(p, 0.016);
-    assert.equal(p.hammer.chainLinks, 4);
-    assert.equal(p.hammer.chainNodes.length, 5);
+    assert.equal(p.hammer.chainLinks, 3);
+    assert.equal(p.hammer.chainNodes.length, 4);
     assert.equal(p.hammer.linkLength, srv.LENGTH_PER_LINK);
 
     // Collect links up to the maximum of 9 links
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 6; i++) {
       srv.blackCircles.push({ id: 100 + i, x: p.x, y: p.y, type: 'link' });
       srv.stepPlayerPhysics(p, 0.016);
     }

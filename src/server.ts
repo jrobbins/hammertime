@@ -22,8 +22,8 @@ const LOW_LOAD_PHYSICS_SUBSTEPS = 2;
 const TICK_LOAD_THRESHOLD_MS = 10.0; // Step down fidelity when rolling tick exceeds 60% of 16.7ms budget
 const TICK_RECOVERY_THRESHOLD_MS = 6.5; // Hysteresis threshold to restore full simulation fidelity
 
-// Chain constants (Initial rest length reduced by 40%: 59px instead of 98px)
-const INITIAL_CHAIN_LINKS = 3;
+// Chain constants
+const INITIAL_CHAIN_LINKS = 2;
 const MAX_CHAIN_LINKS = 9;
 const BASE_CHAIN_OFFSET = 20;
 const LENGTH_PER_LINK = 13;
@@ -48,7 +48,7 @@ const HAMMER_ENEMY_RESTITUTION = 0.58;
 const DAMAGE_PER_IMPULSE = 0.135;
 const CHAIN_MOMENTUM_FACTOR = 1 / 3;
 const CHAIN_DAMAGE_FACTOR = (1 / 3) * 1.2; // Increased chain damage by 20% (0.4)
-const INITIAL_HAMMER_MASS = 1.75;
+const INITIAL_HAMMER_MASS = 0.875;
 const HAMMER_WEIGHT_BONUS = 0.35;
 const EXPLOSION_RADIUS = 420;
 
