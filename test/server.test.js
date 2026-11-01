@@ -20,6 +20,10 @@ function resetTestWorld() {
     teamKills: 0,
     victoryInfo: null,
     pendingEvents: [],
+    activePhysicsSubsteps: srv.PHYSICS_SUBSTEPS,
+    activeChainRelaxIters: srv.CHAIN_RELAX_ITERS,
+    avgTickMs: 0,
+    isReducedFidelity: false,
   });
 }
 
@@ -808,5 +812,59 @@ describe('Server Stats Telemetry & /stats Dashboard', () => {
     assert.ok(html.includes('chart-players'));
     assert.ok(html.includes('chart-rps'));
     assert.ok(html.includes('chart-latency'));
+  });
+});
+
+describe('Adaptive Server Simulation Fidelity Under Load', () => {
+  beforeEach(() => {
+    resetTestWorld();
+  });
+
+  it('steps down PHYSICS_SUBSTEPS (4 -> 2) and CHAIN_RELAX_ITERS (10 -> 5) under load and recovers when tick time drops', () => {
+    const p = addTestPlayer('p1', 2100, 2100);
+    p.input.mouseWorldX = 2400;
+    p.input.mouseWorldY = 2200;
+    addTestEnemy(2200, 2100, 100);
+
+    // Initially at full simulation fidelity
+    let state = srv.getState();
+    assert.equal(state.activePhysicsSubsteps, 4);
+    assert.equal(state.activeChainRelaxIters, 10);
+    assert.equal(state.isReducedFidelity, false);
+
+    // Simulate sustained high tick duration (> 10ms budget threshold)
+    for (let i = 0; i < 8; i++) {
+      srv.updateServerSimulationFidelity(14.5);
+    }
+
+    state = srv.getState();
+    assert.equal(state.isReducedFidelity, true);
+    assert.equal(state.activePhysicsSubsteps, srv.LOW_LOAD_PHYSICS_SUBSTEPS);
+    assert.equal(state.activePhysicsSubsteps, 2);
+    assert.equal(state.activeChainRelaxIters, srv.LOW_LOAD_CHAIN_RELAX_ITERS);
+    assert.equal(state.activeChainRelaxIters, 5);
+
+    // Stepping the server under reduced fidelity still advances simulation cleanly
+    srv.tickServer(1 / 60);
+    assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y));
+    assert.ok(Number.isFinite(p.hammer.x) && Number.isFinite(p.hammer.y));
+
+    // Hysteresis: moderate tick time (e.g. 8ms, between 6.5ms and 10ms) keeps reduced fidelity to prevent oscillation
+    srv.setState({ avgTickMs: 8.0 });
+    srv.updateServerSimulationFidelity(8.0);
+    assert.equal(srv.getState().isReducedFidelity, true);
+    assert.equal(srv.getState().activePhysicsSubsteps, 2);
+
+    // Recovery: sustained fast ticks (< 6.5ms) restore full simulation fidelity (4 substeps, 10 relax iterations)
+    for (let i = 0; i < 15; i++) {
+      srv.updateServerSimulationFidelity(2.5);
+    }
+
+    state = srv.getState();
+    assert.equal(state.isReducedFidelity, false);
+    assert.equal(state.activePhysicsSubsteps, srv.PHYSICS_SUBSTEPS);
+    assert.equal(state.activePhysicsSubsteps, 4);
+    assert.equal(state.activeChainRelaxIters, srv.CHAIN_RELAX_ITERS);
+    assert.equal(state.activeChainRelaxIters, 10);
   });
 });

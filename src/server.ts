@@ -18,6 +18,9 @@ const WORLD_HEIGHT = 4200;
 const TICK_RATE = 60;
 const BroadcastRate = 30;
 const PHYSICS_SUBSTEPS = 4;
+const LOW_LOAD_PHYSICS_SUBSTEPS = 2;
+const TICK_LOAD_THRESHOLD_MS = 10.0; // Step down fidelity when rolling tick exceeds 60% of 16.7ms budget
+const TICK_RECOVERY_THRESHOLD_MS = 6.5; // Hysteresis threshold to restore full simulation fidelity
 
 // Chain constants (Initial rest length reduced by 40%: 59px instead of 98px)
 const INITIAL_CHAIN_LINKS = 3;
@@ -28,6 +31,7 @@ const CHAIN_SPRING_K = 32.5; // 20% less elastic stretch (26.0 / 0.8)
 const CHAIN_RADIAL_DAMP = 1.98; // 20% more radial damping (1.65 * 1.2)
 const CHAIN_LINK_RADIUS = 6.5;
 const CHAIN_RELAX_ITERS = 10;
+const LOW_LOAD_CHAIN_RELAX_ITERS = 5;
 
 // Stone column constants (4 immovable pillars at hard-coded locations)
 const STONE_COLUMN_COUNT = 4;
@@ -124,6 +128,30 @@ let roundState = 'playing'; // 'playing' | 'victory' | 'defeat'
 let teamKills = 0;
 let victoryInfo = null;
 let pendingEvents = [];
+let activePhysicsSubsteps = PHYSICS_SUBSTEPS;
+let activeChainRelaxIters = CHAIN_RELAX_ITERS;
+let avgTickMs = 0;
+let isReducedFidelity = false;
+
+function updateServerSimulationFidelity(tickDurationMs) {
+  if (
+    typeof tickDurationMs !== 'number' ||
+    !Number.isFinite(tickDurationMs) ||
+    tickDurationMs < 0
+  ) {
+    return;
+  }
+  avgTickMs = avgTickMs === 0 ? tickDurationMs : avgTickMs * 0.8 + tickDurationMs * 0.2;
+  if (!isReducedFidelity && avgTickMs > TICK_LOAD_THRESHOLD_MS) {
+    isReducedFidelity = true;
+    activePhysicsSubsteps = LOW_LOAD_PHYSICS_SUBSTEPS;
+    activeChainRelaxIters = LOW_LOAD_CHAIN_RELAX_ITERS;
+  } else if (isReducedFidelity && avgTickMs < TICK_RECOVERY_THRESHOLD_MS) {
+    isReducedFidelity = false;
+    activePhysicsSubsteps = PHYSICS_SUBSTEPS;
+    activeChainRelaxIters = CHAIN_RELAX_ITERS;
+  }
+}
 
 function initStoneColumns() {
   stoneColumns.length = 0;
@@ -950,6 +978,10 @@ function resetGameWorld() {
   spawnTimer = 0;
   earthquakeTimer = 0;
   roundRestartTimer = 0;
+  activePhysicsSubsteps = PHYSICS_SUBSTEPS;
+  activeChainRelaxIters = CHAIN_RELAX_ITERS;
+  avgTickMs = 0;
+  isReducedFidelity = false;
   initStoneColumns();
 
   for (const p of players.values()) {
@@ -1173,7 +1205,7 @@ function stepPlayerPhysics(p, dt) {
       }
     }
 
-    for (let iter = 0; iter < CHAIN_RELAX_ITERS; iter++) {
+    for (let iter = 0; iter < activeChainRelaxIters; iter++) {
       let iterTotalDist = 0;
       for (let i = 0; i < links; i++) {
         const sdx = h.chainNodes[i + 1].x - h.chainNodes[i].x;
@@ -2478,13 +2510,18 @@ function tickServer(dt) {
     roundRestartTimer = 0;
   }
 
-  const subDt = dt / PHYSICS_SUBSTEPS;
-  for (let s = 0; s < PHYSICS_SUBSTEPS; s++) {
+  const tickStartMs = performance.now();
+  const substeps = activePhysicsSubsteps;
+  const subDt = dt / substeps;
+  for (let s = 0; s < substeps; s++) {
     stepWorldPhysics(subDt);
     if (roundState === 'victory') break;
   }
 
-  if (roundState === 'victory') return;
+  if (roundState === 'victory') {
+    updateServerSimulationFidelity(performance.now() - tickStartMs);
+    return;
+  }
 
   // Per-frame player walk cycle and hurt flash decay (no automatic HP regeneration)
   for (const p of players.values()) {
@@ -2512,6 +2549,8 @@ function tickServer(dt) {
       spawnTimer = 0;
     }
   }
+
+  updateServerSimulationFidelity(performance.now() - tickStartMs);
 }
 
 // --- Native RFC 6455 WebSocket Framing Helpers ---
@@ -3313,6 +3352,9 @@ module.exports = {
   TICK_RATE,
   BroadcastRate,
   PHYSICS_SUBSTEPS,
+  LOW_LOAD_PHYSICS_SUBSTEPS,
+  TICK_LOAD_THRESHOLD_MS,
+  TICK_RECOVERY_THRESHOLD_MS,
   INITIAL_CHAIN_LINKS,
   MAX_CHAIN_LINKS,
   BASE_CHAIN_OFFSET,
@@ -3321,6 +3363,7 @@ module.exports = {
   CHAIN_RADIAL_DAMP,
   CHAIN_LINK_RADIUS,
   CHAIN_RELAX_ITERS,
+  LOW_LOAD_CHAIN_RELAX_ITERS,
   STONE_COLUMN_COUNT,
   STONE_COLUMN_RADIUS,
   STONE_COLUMNS,
@@ -3390,6 +3433,10 @@ module.exports = {
     teamKills,
     victoryInfo,
     pendingEvents,
+    activePhysicsSubsteps,
+    activeChainRelaxIters,
+    avgTickMs,
+    isReducedFidelity,
   }),
   setState: (patch) => {
     if ('elapsedGameTime' in patch) elapsedGameTime = patch.elapsedGameTime;
@@ -3400,8 +3447,13 @@ module.exports = {
     if ('teamKills' in patch) teamKills = patch.teamKills;
     if ('victoryInfo' in patch) victoryInfo = patch.victoryInfo;
     if ('pendingEvents' in patch) pendingEvents = patch.pendingEvents;
+    if ('activePhysicsSubsteps' in patch) activePhysicsSubsteps = patch.activePhysicsSubsteps;
+    if ('activeChainRelaxIters' in patch) activeChainRelaxIters = patch.activeChainRelaxIters;
+    if ('avgTickMs' in patch) avgTickMs = patch.avgTickMs;
+    if ('isReducedFidelity' in patch) isReducedFidelity = patch.isReducedFidelity;
   },
   // Core Functions
+  updateServerSimulationFidelity,
   initStoneColumns,
   getChainRestLength,
   initHammerChainNodes,
