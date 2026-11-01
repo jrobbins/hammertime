@@ -271,9 +271,13 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.RARE_DISCO_DROP_CHANCE, srv.RARE_DISCO_DROP_CHANCE);
     assert.equal(c.RARE_JACKOLANTERN_DROP_CHANCE, srv.RARE_JACKOLANTERN_DROP_CHANCE);
     assert.equal(c.RARE_SPIDER_DROP_CHANCE, srv.RARE_SPIDER_DROP_CHANCE);
+    assert.equal(c.RARE_THOR_DROP_CHANCE, srv.RARE_THOR_DROP_CHANCE);
     assert.equal(c.DISCO_HAMMER_DURATION, srv.DISCO_HAMMER_DURATION);
     assert.equal(c.JACKOLANTERN_HAMMER_DURATION, srv.JACKOLANTERN_HAMMER_DURATION);
     assert.equal(c.SPIDER_HAMMER_DURATION, srv.SPIDER_HAMMER_DURATION);
+    assert.equal(c.THOR_HAMMER_DURATION, srv.THOR_HAMMER_DURATION);
+    assert.equal(c.THOR_EXPLOSION_RADIUS, srv.THOR_EXPLOSION_RADIUS);
+    assert.equal(c.THOR_BLAST_DAMAGE_MULT, srv.THOR_BLAST_DAMAGE_MULT);
     assert.equal(c.ZOMBIE_WEB_DURATION, srv.ZOMBIE_WEB_DURATION);
     assert.equal(c.BULLDOZER_DURATION, srv.BULLDOZER_DURATION);
     assert.equal(c.BULLDOZER_TRACTION_MULT, srv.BULLDOZER_TRACTION_MULT);
@@ -409,6 +413,27 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(w.hammers[0].spiderTimer, 0);
     assert.equal(w.hammers[0].isSpider, false);
 
+    // Thor pickup + 1/2 damage, 1/2 blast radius explosion on hit
+    api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'thor' });
+    api.stepPhysics(0.016);
+    assert.ok(w.hammers[0].thorTimer > 119.9);
+
+    e.hitCooldown = 0;
+    e.hp = 1000;
+    e.maxHp = 1000;
+    e.x = 2200;
+    e.y = 2100;
+    w.hammers[0].x = 2190;
+    w.hammers[0].y = 2100;
+    w.hammers[0].vx = 600;
+    w.hammers[0].vy = 0;
+    api.stepPhysics(0.016);
+    assert.ok(e.hp < 800, 'Thor hammer triggers blast + impact damage on hit');
+
+    w.hammers[0].thorTimer = 0.01;
+    api.stepPhysics(0.05);
+    assert.equal(w.hammers[0].thorTimer, 0);
+
     // Bulldozer pickup & same-tick pickup guard
     w.speedMultiplier = 1.0;
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'speed' });
@@ -474,6 +499,8 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       { type: 'earthquake', x: 2100, y: 2100 },
       { type: 'spider_web', x: 2150, y: 2100 },
       { type: 'disco_dance', x: 2180, y: 2100 },
+      { type: 'thor_pickup', x: 2100, y: 2100 },
+      { type: 'explosion', x: 2120, y: 2100, radius: 210, isThor: true },
     ]);
     assert.equal(api.warrior.bulldozerTimer, api.constants.BULLDOZER_DURATION);
     assert.equal(api.warrior.radius, api.constants.BULLDOZER_RADIUS);
@@ -539,6 +566,11 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
 
     h.isSpider = true;
     api.drawHammer(h, h.trail);
+    h.isSpider = false;
+
+    h.thorTimer = 60;
+    api.drawHammer(h, h.trail);
+    h.thorTimer = 0;
 
     // 3. drawEnemy in Normal, Burning, Fireproof, Feared, Dancing, Dance-Immune, Webbed, and Knocked-Down states
     api.spawnEnemy(false);
@@ -591,6 +623,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       'disco',
       'jackolantern',
       'spider',
+      'thor',
     ];
     for (const pType of allPickupTypes) {
       api.drawBlackCircle({ x: 2100, y: 2100, pulse: 1.0, type: pType });
@@ -1157,5 +1190,46 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       0,
       'render() should run renderMinimap() and reset accumulator once >= 0.1s has elapsed'
     );
+  });
+
+  it('spawns and renders bomb blast and Thor lightning animations across their blast areas', () => {
+    const { api } = loadClientGame();
+    const c = api.constants;
+    api.shockwaves.length = 0;
+
+    // 1. Bomb explosion creates a 'bomb' blast animation across EXPLOSION_RADIUS (420)
+    api.triggerHammerExplosion(1200, 1300, api.hammer);
+    const bombWave = api.shockwaves.find((s) => s.kind === 'bomb');
+    assert.ok(bombWave, 'Expected a bomb blast animation entry in shockwaves');
+    assert.equal(bombWave.maxRadius, c.EXPLOSION_RADIUS);
+    assert.ok(Array.isArray(bombWave.rays) && bombWave.rays.length === 12);
+
+    // 2. Thor hammer hit creates a 'thor' lightning animation across THOR_EXPLOSION_RADIUS (210)
+    api.shockwaves.length = 0;
+    api.triggerHammerExplosion(1250, 1350, api.hammer, {
+      radius: c.THOR_EXPLOSION_RADIUS,
+      damageScale: c.THOR_BLAST_DAMAGE_MULT,
+      isThor: true,
+    });
+    const thorWave = api.shockwaves.find((s) => s.kind === 'thor');
+    assert.ok(thorWave, 'Expected a thor lightning animation entry in shockwaves');
+    assert.equal(thorWave.maxRadius, c.THOR_EXPLOSION_RADIUS);
+    assert.ok(Array.isArray(thorWave.bolts) && thorWave.bolts.length === 8);
+    assert.ok(Array.isArray(thorWave.skyBolt) && thorWave.skyBolt.length > 1);
+
+    // 3. Server explosion events also trigger the bomb and thor blast/lightning animations
+    api.shockwaves.length = 0;
+    api.processServerEvents([
+      { type: 'explosion', x: 1000, y: 1000, radius: 420, isThor: false },
+      { type: 'explosion', x: 1100, y: 1100, radius: 210, isThor: true },
+    ]);
+    assert.ok(api.shockwaves.some((s) => s.kind === 'bomb' && s.maxRadius === 420));
+    assert.ok(api.shockwaves.some((s) => s.kind === 'thor' && s.maxRadius === 210));
+
+    // 4. Stepping effects and rendering executes both ground-plane and 2.5D elevated animations cleanly
+    api.updateEffects(0.08);
+    assert.doesNotThrow(() => {
+      api.render();
+    });
   });
 });

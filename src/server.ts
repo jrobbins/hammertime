@@ -67,9 +67,13 @@ const RARE_FEAR_DROP_CHANCE = 0.005;
 const RARE_DISCO_DROP_CHANCE = 0.005;
 const RARE_JACKOLANTERN_DROP_CHANCE = 0.005;
 const RARE_SPIDER_DROP_CHANCE = 0.005;
+const RARE_THOR_DROP_CHANCE = 0.005;
 
 const ZOMBIE_WEB_DURATION = 30.0;
 const SPIDER_HAMMER_DURATION = 120.0;
+const THOR_HAMMER_DURATION = 120.0;
+const THOR_EXPLOSION_RADIUS = EXPLOSION_RADIUS * 0.5;
+const THOR_BLAST_DAMAGE_MULT = 0.5;
 
 const JACKOLANTERN_HAMMER_DURATION = 120.0;
 const DISCO_HAMMER_DURATION = 120.0;
@@ -225,6 +229,7 @@ function createPlayerHammer(p, spawnAngle = Math.PI / 2) {
     discoTimer: 0,
     jackolanternTimer: 0,
     spiderTimer: 0,
+    thorTimer: 0,
     extraTimer: 0,
     isSpider: false,
     angle: spawnAngle,
@@ -927,6 +932,21 @@ function defeatEnemy(index, killerPlayer) {
       RARE_HAMMER_DROP_CHANCE
   ) {
     pickupType = 'hammer';
+  } else if (
+    rareRoll <
+    RARE_BULLDOZER_DROP_CHANCE +
+      RARE_ELEPHANT_DROP_CHANCE +
+      RARE_HORSE_DROP_CHANCE +
+      RARE_TORTOISE_DROP_CHANCE +
+      RARE_EARTHQUAKE_DROP_CHANCE +
+      RARE_FEAR_DROP_CHANCE +
+      RARE_DISCO_DROP_CHANCE +
+      RARE_JACKOLANTERN_DROP_CHANCE +
+      RARE_SPIDER_DROP_CHANCE +
+      RARE_HAMMER_DROP_CHANCE +
+      RARE_THOR_DROP_CHANCE
+  ) {
+    pickupType = 'thor';
   } else {
     pickupType = pool[Math.floor(Math.random() * pool.length)];
   }
@@ -949,12 +969,18 @@ function defeatEnemy(index, killerPlayer) {
   }
 }
 
-function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer) {
+function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer, options: any = {}) {
+  const blastRadius =
+    options && typeof options.radius === 'number' ? options.radius : EXPLOSION_RADIUS;
+  const damageScale =
+    options && typeof options.damageScale === 'number' ? options.damageScale : 1.0;
+  const isThor = !!(options && options.isThor);
   pendingEvents.push({
     type: 'explosion',
     x: Math.round(ex),
     y: Math.round(ey),
-    radius: EXPLOSION_RADIUS,
+    radius: blastRadius,
+    isThor,
   });
 
   const isFlamingBlast =
@@ -966,10 +992,10 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer) {
     const bdx = target.x - ex;
     const bdy = target.y - ey;
     const bDist = Math.hypot(bdx, bdy);
-    if (bDist <= EXPLOSION_RADIUS + target.radius) {
-      const falloff = Math.max(0.35, 1 - bDist / (EXPLOSION_RADIUS + target.radius));
-      const blastDamage = Math.round(550 * falloff);
-      const blastImpulse = 2400 * falloff;
+    if (bDist <= blastRadius + target.radius) {
+      const falloff = Math.max(0.35, 1 - bDist / (blastRadius + target.radius));
+      const blastDamage = Math.round(550 * damageScale * falloff);
+      const blastImpulse = 2400 * damageScale * falloff;
       const bnx = bDist > 0.001 ? bdx / bDist : Math.cos(Math.random() * Math.PI * 2);
       const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
 
@@ -992,8 +1018,8 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer) {
         x: Math.round(target.x),
         y: Math.round(target.y - target.radius - 10),
         text: `-${blastDamage}`,
-        color: '#f6ad55',
-        scale: 1.35,
+        color: isThor ? '#90cdf4' : '#f6ad55',
+        scale: isThor ? 1.25 : 1.35,
       });
     }
   }
@@ -1572,6 +1598,9 @@ function stepPlayerPhysics(p, dt) {
         h.isSpider = true;
       }
     }
+    if (h.thorTimer > 0) {
+      h.thorTimer = Math.max(0, h.thorTimer - dt);
+    }
     if (hIdx > 0 && h.extraTimer > 0) {
       h.extraTimer = Math.max(0, h.extraTimer - dt);
     }
@@ -1792,6 +1821,18 @@ function stepPlayerPhysics(p, dt) {
         });
         label = 'SPIDER HAMMER! (120s, WEBS ZOMBIES FOR 30s)';
         color = '#e2e8f0';
+      } else if (pType === 'thor') {
+        const nonThor = p.hammers.filter((hm) => (hm.thorTimer || 0) <= 0);
+        const poolH = nonThor.length > 0 ? nonThor : p.hammers;
+        const targetH = poolH[Math.floor(Math.random() * poolH.length)];
+        targetH.thorTimer = THOR_HAMMER_DURATION;
+        pendingEvents.push({
+          type: 'thor_pickup',
+          x: Math.round(p.x),
+          y: Math.round(p.y),
+        });
+        label = 'THOR HAMMER! (120s, 1/2 BOMB BLAST ON EVERY HIT)';
+        color = '#63b3ed';
       } else if (pType === 'link') {
         const underMax = p.hammers.filter(
           (hm) => (hm.chainLinks || INITIAL_CHAIN_LINKS) < MAX_CHAIN_LINKS
@@ -2163,10 +2204,19 @@ function stepWorldPhysics(dt) {
               }
 
               let detonatedBomb = false;
+              let detonatedThor = false;
               if (h.bombCharges > 0) {
                 h.bombCharges -= 1;
                 detonatedBomb = true;
                 triggerHammerExplosion(h.x + nx * h.radius, h.y + ny * h.radius, p, h);
+              } else if ((h.thorTimer || 0) > 0 && e.hitCooldown <= 0) {
+                detonatedBomb = true;
+                detonatedThor = true;
+                triggerHammerExplosion(h.x + nx * h.radius, h.y + ny * h.radius, p, h, {
+                  radius: THOR_EXPLOSION_RADIUS,
+                  damageScale: THOR_BLAST_DAMAGE_MULT,
+                  isThor: true,
+                });
               }
 
               const rvx = h.vx - e.vx;
@@ -2205,6 +2255,10 @@ function stepWorldPhysics(dt) {
                     isChain: false,
                   });
                 }
+              }
+
+              if (detonatedThor && e.hitCooldown <= 0) {
+                e.hitCooldown = 0.09;
               }
 
               // Ensure a zombie newly ignited by the Flaming Hammer survives the initial hit to run on fire
@@ -3311,6 +3365,7 @@ function buildGameStatePayload() {
       discoTimer: +(h.discoTimer || 0).toFixed(2),
       jackolanternTimer: +(h.jackolanternTimer || 0).toFixed(2),
       spiderTimer: +(h.spiderTimer || 0).toFixed(2),
+      thorTimer: +(h.thorTimer || 0).toFixed(2),
       extraTimer: +(h.extraTimer || 0).toFixed(2),
       isSpider: !!h.isSpider,
       angle: +h.angle.toFixed(3),
@@ -3466,8 +3521,12 @@ module.exports = {
   RARE_DISCO_DROP_CHANCE,
   RARE_JACKOLANTERN_DROP_CHANCE,
   RARE_SPIDER_DROP_CHANCE,
+  RARE_THOR_DROP_CHANCE,
   ZOMBIE_WEB_DURATION,
   SPIDER_HAMMER_DURATION,
+  THOR_HAMMER_DURATION,
+  THOR_EXPLOSION_RADIUS,
+  THOR_BLAST_DAMAGE_MULT,
   JACKOLANTERN_HAMMER_DURATION,
   DISCO_HAMMER_DURATION,
   ZOMBIE_DANCE_DURATION,

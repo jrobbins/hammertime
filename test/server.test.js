@@ -98,6 +98,7 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.RARE_DISCO_DROP_CHANCE, 0.005);
     assert.equal(srv.RARE_JACKOLANTERN_DROP_CHANCE, 0.005);
     assert.equal(srv.RARE_SPIDER_DROP_CHANCE, 0.005);
+    assert.equal(srv.RARE_THOR_DROP_CHANCE, 0.005);
   });
 
   it('defines powerup durations and parameters', () => {
@@ -106,6 +107,9 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.ZOMBIE_DANCE_IMMUNE_DURATION, 45.0);
     assert.equal(srv.JACKOLANTERN_HAMMER_DURATION, 120.0);
     assert.equal(srv.SPIDER_HAMMER_DURATION, 120.0);
+    assert.equal(srv.THOR_HAMMER_DURATION, 120.0);
+    assert.equal(srv.THOR_EXPLOSION_RADIUS, srv.EXPLOSION_RADIUS * 0.5);
+    assert.equal(srv.THOR_BLAST_DAMAGE_MULT, 0.5);
     assert.equal(srv.ZOMBIE_WEB_DURATION, 30.0);
     assert.equal(srv.BULLDOZER_DURATION, 20.0);
     assert.equal(srv.BULLDOZER_RADIUS, 34);
@@ -523,6 +527,53 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     srv.stepPlayerPhysics(p, 0.05);
     assert.equal(p.hammer.spiderTimer, 0);
     assert.equal(p.hammer.isSpider, false);
+  });
+
+  it('Thor Hammer lasts 120s and triggers a 1/2 damage, 1/2 blast radius explosion on every enemy hit', () => {
+    const p = addTestPlayer('p1', 2100, 2100);
+    srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'thor' });
+    srv.stepPlayerPhysics(p, 0.016);
+    assert.ok(p.hammer.thorTimer > 119.9);
+
+    // Enemy 1 is directly hit by the Thor hammer; Enemy 2 is 150px away (inside 210px Thor blast radius);
+    // Enemy 3 is 300px away (outside 210px Thor blast radius, even though inside 420px normal bomb radius)
+    const e1 = addTestEnemy(2200, 2100, 1000);
+    const e2 = addTestEnemy(2200, 2250, 1000);
+    const e3 = addTestEnemy(2200, 2400, 1000);
+
+    // Compare against a normal bomb blast at the same distance (150px)
+    const bombRef = addTestEnemy(1000, 1150, 1000);
+    srv.triggerHammerExplosion(1000, 1000, p, p.hammer);
+    const fullBombDamageAt150 = 1000 - bombRef.hp;
+
+    p.hammer.x = 2190;
+    p.hammer.y = 2100;
+    p.hammer.vx = 550;
+    p.hammer.vy = 0;
+    srv.stepWorldPhysics(0.016);
+
+    const thorBlastDamageAt150 = 1000 - e2.hp;
+    assert.ok(e1.hp < 1000, 'Directly hit enemy takes Thor blast + impact damage');
+    assert.ok(thorBlastDamageAt150 > 0, 'Enemy within 1/2 blast radius (210px) takes blast damage');
+    assert.ok(
+      thorBlastDamageAt150 <= Math.ceil(fullBombDamageAt150 * 0.5),
+      'Thor blast deals at most 1/2 the damage of a normal bomb'
+    );
+    assert.equal(e3.hp, 1000, 'Enemy outside 1/2 blast radius (300px > 210px) is unharmed');
+
+    // Hitting another enemy later while thorTimer > 0 triggers another Thor explosion
+    const e4 = addTestEnemy(2300, 2100, 1000);
+    p.hammer.x = 2290;
+    p.hammer.y = 2100;
+    p.hammer.vx = 550;
+    p.hammer.vy = 0;
+    srv.stepWorldPhysics(0.016);
+    assert.ok(e4.hp < 1000);
+
+    // Thor hammer expires after 120s
+    p.hammer.thorTimer = 0.01;
+    srv.stepPlayerPhysics(p, 0.05);
+    assert.equal(p.hammer.thorTimer, 0);
   });
 
   it('Bulldozer mode grants 20s invincibility, crushes zombies, cannot move fixed stone columns, and blocks other pickups', () => {

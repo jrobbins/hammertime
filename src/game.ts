@@ -106,9 +106,13 @@
   const RARE_DISCO_DROP_CHANCE = 0.005;
   const RARE_JACKOLANTERN_DROP_CHANCE = 0.005;
   const RARE_SPIDER_DROP_CHANCE = 0.005;
+  const RARE_THOR_DROP_CHANCE = 0.005;
 
   const ZOMBIE_WEB_DURATION = 30.0;
   const SPIDER_HAMMER_DURATION = 120.0;
+  const THOR_HAMMER_DURATION = 120.0;
+  const THOR_EXPLOSION_RADIUS = EXPLOSION_RADIUS * 0.5;
+  const THOR_BLAST_DAMAGE_MULT = 0.5;
 
   const JACKOLANTERN_HAMMER_DURATION = 120.0;
   const DISCO_HAMMER_DURATION = 120.0;
@@ -659,6 +663,32 @@
   }
 
   /**
+   * Plays a thunderous heroic chord & electric crackle when the Thor Hammer powerup is collected.
+   */
+  function playThorPickupSound() {
+    const ctxAudio = ensureAudioContext();
+    if (!ctxAudio) return;
+
+    const now = ctxAudio.currentTime;
+    const notes = [293.66, 440, 587.33, 880];
+    for (let i = 0; i < notes.length; i++) {
+      const start = now + i * 0.06;
+      const dur = i === notes.length - 1 ? 0.28 : 0.1;
+      const osc = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(notes[i], start);
+      gain.gain.setValueAtTime(0.001, start);
+      gain.gain.linearRampToValueAtTime(0.15, start + 0.012);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + dur);
+      osc.connect(gain);
+      gain.connect(ctxAudio.destination);
+      osc.start(start);
+      osc.stop(start + dur + 0.01);
+    }
+  }
+
+  /**
    * Plays a celebratory ascending 3-note fanfare when the Victory Page appears.
    */
   function playVictorySound() {
@@ -861,6 +891,7 @@
     discoTimer: 0,             // > 0 while transformed into a Disco Ball for 120s
     jackolanternTimer: 0,      // > 0 while transformed into a Jack-o'-Lantern for 120s
     spiderTimer: 0,            // > 0 while transformed into a Spider Hammer for 120s
+    thorTimer: 0,              // > 0 while transformed into a Thor Hammer for 120s
     isSpider: false,           // true when transformed into a Spider Hammer
     angle: Math.PI / 2,
     currentTension: 0,
@@ -1291,6 +1322,7 @@
       discoTimer: 0,
       jackolanternTimer: 0,
       spiderTimer: 0,
+      thorTimer: 0,
       extraTimer: EXTRA_HAMMER_DURATION,
       isSpider: false,
       angle: spawnAngle,
@@ -1396,12 +1428,19 @@
       } else if (ev.type === 'explosion') {
         playExplosionSound();
         const blastR = ev.radius || EXPLOSION_RADIUS;
-        addShockwave(ev.x, ev.y, blastR, '251, 146, 60');
-        addShockwave(ev.x, ev.y, blastR * 0.62, '254, 240, 138');
-        addParticles(ev.x, ev.y, '#f6ad55', 45, 90, 520, 5.2);
-        addParticles(ev.x, ev.y, '#f56565', 32, 60, 420, 4.6);
-        addParticles(ev.x, ev.y, '#fefcbf', 18, 40, 280, 3.6);
-        camera.shake = Math.min(22, camera.shake + 14);
+        if (ev.isThor) {
+          addThorLightningAnimation(ev.x, ev.y, blastR);
+          addParticles(ev.x, ev.y, '#63b3ed', 28, 80, 420, 4.4);
+          addParticles(ev.x, ev.y, '#fef08a', 20, 60, 360, 4.0);
+          addParticles(ev.x, ev.y, '#ffffff', 12, 40, 240, 3.2);
+          camera.shake = Math.min(22, camera.shake + 9);
+        } else {
+          addBombBlastAnimation(ev.x, ev.y, blastR);
+          addParticles(ev.x, ev.y, '#f6ad55', 45, 90, 520, 5.2);
+          addParticles(ev.x, ev.y, '#f56565', 32, 60, 420, 4.6);
+          addParticles(ev.x, ev.y, '#fefcbf', 18, 40, 280, 3.6);
+          camera.shake = Math.min(22, camera.shake + 14);
+        }
       } else if (ev.type === 'player_hurt') {
         playPlayerHurtSound();
         if (ev.playerId === localPlayerId) {
@@ -1459,6 +1498,11 @@
         addShockwave(ev.x, ev.y, 170, '226, 232, 240');
         addParticles(ev.x, ev.y, '#ffffff', 20, 40, 190, 3.5);
         addParticles(ev.x, ev.y, '#e53e3e', 12, 35, 160, 3.0);
+      } else if (ev.type === 'thor_pickup') {
+        playThorPickupSound();
+        addShockwave(ev.x, ev.y, 170, '99, 179, 237');
+        addParticles(ev.x, ev.y, '#63b3ed', 20, 40, 190, 3.8);
+        addParticles(ev.x, ev.y, '#fef08a', 14, 35, 165, 3.2);
       } else if (ev.type === 'spider_web') {
         if (!isWorldPointVisible(ev.x, ev.y, cullMargin)) continue;
         playSpiderWebSound();
@@ -1785,6 +1829,7 @@
                     discoTimer: sh.discoTimer || 0,
                     jackolanternTimer: sh.jackolanternTimer || 0,
                     spiderTimer: sh.spiderTimer || 0,
+                    thorTimer: sh.thorTimer || 0,
                     extraTimer: sh.extraTimer || 0,
                     isSpider: !!sh.isSpider,
                     angle: sh.angle || 0,
@@ -1824,6 +1869,7 @@
                   lh.discoTimer = sh.discoTimer || 0;
                   lh.jackolanternTimer = sh.jackolanternTimer || 0;
                   lh.spiderTimer = sh.spiderTimer || 0;
+                  lh.thorTimer = sh.thorTimer || 0;
                   lh.extraTimer = sh.extraTimer || 0;
                   lh.isSpider = !!sh.isSpider;
                   lh.currentStretch = sh.currentStretch || 0;
@@ -1928,6 +1974,7 @@
                     rh.discoTimer = sh.discoTimer || 0;
                     rh.jackolanternTimer = sh.jackolanternTimer || 0;
                     rh.spiderTimer = sh.spiderTimer || 0;
+                    rh.thorTimer = sh.thorTimer || 0;
                     rh.extraTimer = sh.extraTimer || 0;
                     rh.isSpider = !!sh.isSpider;
                     rh.currentStretch = sh.currentStretch || 0;
@@ -2243,6 +2290,21 @@
         RARE_HAMMER_DROP_CHANCE
     ) {
       pickupType = 'hammer';
+    } else if (
+      roll <
+      RARE_BULLDOZER_DROP_CHANCE +
+        RARE_ELEPHANT_DROP_CHANCE +
+        RARE_HORSE_DROP_CHANCE +
+        RARE_TORTOISE_DROP_CHANCE +
+        RARE_EARTHQUAKE_DROP_CHANCE +
+        RARE_FEAR_DROP_CHANCE +
+        RARE_DISCO_DROP_CHANCE +
+        RARE_JACKOLANTERN_DROP_CHANCE +
+        RARE_SPIDER_DROP_CHANCE +
+        RARE_HAMMER_DROP_CHANCE +
+        RARE_THOR_DROP_CHANCE
+    ) {
+      pickupType = 'thor';
     } else {
       pickupType = PICKUP_TYPES[Math.floor(Math.random() * PICKUP_TYPES.length)];
     }
@@ -2268,24 +2330,36 @@
     }
   }
 
-  function triggerHammerExplosion(ex, ey, sourceHammer = hammer) {
+  function triggerHammerExplosion(ex, ey, sourceHammer = hammer, options: any = {}) {
+    const blastRadius =
+      options && typeof options.radius === 'number' ? options.radius : EXPLOSION_RADIUS;
+    const damageScale =
+      options && typeof options.damageScale === 'number' ? options.damageScale : 1.0;
+    const isThor = !!(options && options.isThor);
     playExplosionSound();
-    addShockwave(ex, ey, EXPLOSION_RADIUS, '251, 146, 60');
-    addShockwave(ex, ey, EXPLOSION_RADIUS * 0.62, '254, 240, 138');
-    addParticles(ex, ey, '#f6ad55', 45, 90, 520, 5.2);
-    addParticles(ex, ey, '#f56565', 32, 60, 420, 4.6);
-    addParticles(ex, ey, '#fefcbf', 18, 40, 280, 3.6);
-    camera.shake = Math.min(22, camera.shake + 14);
+    if (isThor) {
+      addThorLightningAnimation(ex, ey, blastRadius);
+      addParticles(ex, ey, '#63b3ed', 28, 80, 420, 4.4);
+      addParticles(ex, ey, '#fef08a', 20, 60, 360, 4.0);
+      addParticles(ex, ey, '#ffffff', 12, 40, 240, 3.2);
+      camera.shake = Math.min(22, camera.shake + 9);
+    } else {
+      addBombBlastAnimation(ex, ey, blastRadius);
+      addParticles(ex, ey, '#f6ad55', 45, 90, 520, 5.2);
+      addParticles(ex, ey, '#f56565', 32, 60, 420, 4.6);
+      addParticles(ex, ey, '#fefcbf', 18, 40, 280, 3.6);
+      camera.shake = Math.min(22, camera.shake + 14);
+    }
 
     for (let j = enemies.length - 1; j >= 0; j--) {
       const target = enemies[j];
       const bdx = target.x - ex;
       const bdy = target.y - ey;
       const bDist = Math.hypot(bdx, bdy);
-      if (bDist <= EXPLOSION_RADIUS + target.radius) {
-        const falloff = Math.max(0.35, 1 - bDist / (EXPLOSION_RADIUS + target.radius));
-        const blastDamage = Math.round(550 * falloff);
-        const blastImpulse = 2400 * falloff;
+      if (bDist <= blastRadius + target.radius) {
+        const falloff = Math.max(0.35, 1 - bDist / (blastRadius + target.radius));
+        const blastDamage = Math.round(550 * damageScale * falloff);
+        const blastImpulse = 2400 * damageScale * falloff;
         const bnx = bDist > 0.001 ? bdx / bDist : Math.cos(Math.random() * Math.PI * 2);
         const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
 
@@ -2306,8 +2380,8 @@
           target.x,
           target.y - target.radius - 10,
           `-${blastDamage}`,
-          '#f6ad55',
-          1.35
+          isThor ? '#90cdf4' : '#f6ad55',
+          isThor ? 1.25 : 1.35
         );
       }
     }
@@ -2648,6 +2722,90 @@
     });
   }
 
+  function addBombBlastAnimation(x, y, maxRadius = EXPLOSION_RADIUS) {
+    const rayCount = 12;
+    const rays = [];
+    for (let i = 0; i < rayCount; i++) {
+      const baseAngle = (i / rayCount) * Math.PI * 2;
+      rays.push({
+        angle: baseAngle + (Math.random() - 0.5) * 0.18,
+        lengthMult: 0.86 + Math.random() * 0.22,
+        spread: 0.11 + Math.random() * 0.06,
+      });
+    }
+    shockwaves.push({
+      kind: 'bomb',
+      x,
+      y,
+      radius: 14,
+      maxRadius,
+      rgb: '251, 146, 60',
+      life: 0.32,
+      maxLife: 0.32,
+      rays,
+    });
+    addShockwave(x, y, maxRadius * 0.62, '254, 240, 138');
+  }
+
+  function addThorLightningAnimation(x, y, maxRadius = THOR_EXPLOSION_RADIUS) {
+    const boltCount = 8;
+    const bolts = [];
+    for (let i = 0; i < boltCount; i++) {
+      const baseAngle = (i / boltCount) * Math.PI * 2 + (Math.random() - 0.5) * 0.28;
+      const dirX = Math.cos(baseAngle);
+      const dirY = Math.sin(baseAngle);
+      const perpX = -dirY;
+      const perpY = dirX;
+      const segments = 5;
+      const points = [{ x: 0, y: 0 }];
+      for (let s = 1; s <= segments; s++) {
+        const frac = s / segments;
+        const dist = maxRadius * frac;
+        const jitter =
+          s === segments ? (Math.random() - 0.5) * 10 : (Math.random() - 0.5) * (maxRadius * 0.22);
+        points.push({
+          x: dirX * dist + perpX * jitter,
+          y: dirY * dist + perpY * jitter,
+        });
+      }
+      const forkStartIdx = 2;
+      const forkOrigin = points[forkStartIdx];
+      const forkAngle = baseAngle + (Math.random() < 0.5 ? 1 : -1) * (0.42 + Math.random() * 0.28);
+      const branch = [
+        { x: forkOrigin.x, y: forkOrigin.y },
+        {
+          x: forkOrigin.x + Math.cos(forkAngle) * (maxRadius * 0.24),
+          y: forkOrigin.y + Math.sin(forkAngle) * (maxRadius * 0.24),
+        },
+        {
+          x: forkOrigin.x + Math.cos(forkAngle + (Math.random() - 0.5) * 0.35) * (maxRadius * 0.46),
+          y: forkOrigin.y + Math.sin(forkAngle + (Math.random() - 0.5) * 0.35) * (maxRadius * 0.46),
+        },
+      ];
+      bolts.push({ points, branch });
+    }
+    const skyBolt = [
+      { x: (Math.random() - 0.5) * 28, y: -165 },
+      { x: (Math.random() - 0.5) * 34, y: -120 },
+      { x: (Math.random() - 0.5) * 26, y: -76 },
+      { x: (Math.random() - 0.5) * 18, y: -36 },
+      { x: 0, y: 0 },
+    ];
+    shockwaves.push({
+      kind: 'thor',
+      x,
+      y,
+      radius: 12,
+      maxRadius,
+      rgb: '99, 179, 237',
+      life: 0.3,
+      maxLife: 0.3,
+      bolts,
+      skyBolt,
+    });
+    addShockwave(x, y, maxRadius * 0.62, '254, 240, 138');
+  }
+
   // --- Reset / Initialize Game ---
   function initGame() {
     if (isMultiplayer && ws && ws.readyState === WebSocket.OPEN) {
@@ -2711,6 +2869,7 @@
     hammer.discoTimer = 0;
     hammer.jackolanternTimer = 0;
     hammer.spiderTimer = 0;
+    hammer.thorTimer = 0;
     hammer.isSpider = false;
     hammer.angle = Math.PI / 2;
     hammer.currentTension = 0;
@@ -3291,6 +3450,9 @@
           h.isSpider = true;
         }
       }
+      if (h.thorTimer > 0) {
+        h.thorTimer = Math.max(0, h.thorTimer - dt);
+      }
       if (hIdx > 0 && h.extraTimer > 0) {
         h.extraTimer = Math.max(0, h.extraTimer - dt);
       }
@@ -3753,10 +3915,19 @@
               }
 
               let detonatedBomb = false;
+              let detonatedThor = false;
               if (h.bombCharges > 0) {
                 h.bombCharges -= 1;
                 detonatedBomb = true;
                 triggerHammerExplosion(h.x + nx * h.radius, h.y + ny * h.radius, h);
+              } else if ((h.thorTimer || 0) > 0 && e.hitCooldown <= 0) {
+                detonatedBomb = true;
+                detonatedThor = true;
+                triggerHammerExplosion(h.x + nx * h.radius, h.y + ny * h.radius, h, {
+                  radius: THOR_EXPLOSION_RADIUS,
+                  damageScale: THOR_BLAST_DAMAGE_MULT,
+                  isThor: true,
+                });
               }
 
               const rvx = h.vx - e.vx;
@@ -3797,6 +3968,10 @@
                   const dmgScale = damage >= 50 ? 1.25 : 1.0;
                   addFloatingText(e.x, e.y - e.radius - 6, `-${damage}`, dmgColor, dmgScale);
                 }
+              }
+
+              if (detonatedThor && e.hitCooldown <= 0) {
+                e.hitCooldown = 0.09;
               }
 
               if (justIgnited && !detonatedBomb && e.hp <= 0) {
@@ -4276,6 +4451,22 @@
           );
           addParticles(c.x, c.y, '#ffffff', 20, 40, 190, 3.5);
           addParticles(c.x, c.y, '#e53e3e', 12, 35, 160, 3.0);
+        } else if (pType === 'thor') {
+          const nonThor = warrior.hammers.filter((hm) => (hm.thorTimer || 0) <= 0);
+          const poolH = nonThor.length > 0 ? nonThor : warrior.hammers;
+          const targetH = poolH[Math.floor(Math.random() * poolH.length)];
+          targetH.thorTimer = THOR_HAMMER_DURATION;
+          playThorPickupSound();
+          addShockwave(c.x, c.y, 170, '99, 179, 237');
+          addFloatingText(
+            warrior.x,
+            warrior.y - warrior.radius - 16,
+            'THOR HAMMER! (120s, 1/2 BOMB BLAST ON EVERY HIT)',
+            '#63b3ed',
+            1.2
+          );
+          addParticles(c.x, c.y, '#63b3ed', 20, 40, 190, 3.8);
+          addParticles(c.x, c.y, '#fef08a', 14, 35, 165, 3.2);
         } else if (pType === 'hammer') {
           const spreadAngle =
             warrior.angle + Math.PI + (warrior.hammers.length === 1 ? 0.65 : -0.65);
@@ -4502,13 +4693,16 @@
         h.trail.length = 0;
       } else {
         const hammerSpeed = Math.hypot(h.vx, h.vy);
-        if (warrior.alive && (hammerSpeed > 180 || h.flameTimer > 0 || (h.discoTimer || 0) > 0)) {
+        if (
+          warrior.alive &&
+          (hammerSpeed > 180 || h.flameTimer > 0 || (h.discoTimer || 0) > 0 || (h.thorTimer || 0) > 0)
+        ) {
           h.trail.push({
             x: h.x,
             y: h.y,
             angle: h.angle,
             alpha:
-              h.flameTimer > 0 || (h.discoTimer || 0) > 0
+              h.flameTimer > 0 || (h.discoTimer || 0) > 0 || (h.thorTimer || 0) > 0
                 ? Math.max(0.38, Math.min(0.65, hammerSpeed / 700))
                 : Math.min(0.55, (hammerSpeed - 180) / 900),
           });
@@ -4530,6 +4724,16 @@
           h.x + (Math.random() - 0.5) * 18,
           h.y + (Math.random() - 0.5) * 18,
           discoColors[Math.floor(Math.random() * discoColors.length)],
+          1,
+          20,
+          70,
+          2.7
+        );
+      } else if (warrior.alive && (h.thorTimer || 0) > 0 && Math.random() < dt * 26) {
+        addParticles(
+          h.x + (Math.random() - 0.5) * 16,
+          h.y + (Math.random() - 0.5) * 16,
+          Math.random() < 0.6 ? '#63b3ed' : '#fef08a',
           1,
           20,
           70,
@@ -5009,15 +5213,116 @@
       ctx.fill();
     }
 
-    // 4. Shockwaves on the ground plane (automatically foreshortened into 2.5D ellipses)
+    // 4. Shockwaves & Blast / Lightning Animations on the ground plane (automatically foreshortened into 2.5D ellipses)
     for (let i = 0; i < shockwaves.length; i++) {
       const s = shockwaves[i];
       const alpha = Math.max(0, s.life / s.maxLife);
-      ctx.strokeStyle = `rgba(${s.rgb || '255, 232, 145'}, ${alpha * 0.82})`;
-      ctx.lineWidth = 4 * alpha;
-      ctx.beginPath();
-      ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
-      ctx.stroke();
+      const progress = 1 - alpha;
+      if (s.kind === 'bomb') {
+        const blastR = Math.max(24, s.radius);
+        const grad = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, blastR);
+        grad.addColorStop(0, `rgba(255, 255, 255, ${alpha * 0.88})`);
+        grad.addColorStop(0.28, `rgba(254, 240, 138, ${alpha * 0.74})`);
+        grad.addColorStop(0.65, `rgba(251, 146, 60, ${alpha * 0.54})`);
+        grad.addColorStop(0.9, `rgba(229, 62, 62, ${alpha * 0.3})`);
+        grad.addColorStop(1, 'rgba(229, 62, 62, 0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, blastR, 0, Math.PI * 2);
+        ctx.fill();
+
+        if (Array.isArray(s.rays)) {
+          ctx.fillStyle = `rgba(254, 240, 138, ${alpha * 0.72})`;
+          for (let r = 0; r < s.rays.length; r++) {
+            const ray = s.rays[r];
+            const innerR = blastR * 0.16;
+            const outerR = Math.min(s.maxRadius * 1.05, Math.max(36, blastR * ray.lengthMult));
+            ctx.beginPath();
+            ctx.moveTo(
+              s.x + Math.cos(ray.angle - ray.spread) * innerR,
+              s.y + Math.sin(ray.angle - ray.spread) * innerR
+            );
+            ctx.lineTo(s.x + Math.cos(ray.angle) * outerR, s.y + Math.sin(ray.angle) * outerR);
+            ctx.lineTo(
+              s.x + Math.cos(ray.angle + ray.spread) * innerR,
+              s.y + Math.sin(ray.angle + ray.spread) * innerR
+            );
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+
+        ctx.strokeStyle = `rgba(229, 62, 62, ${alpha * 0.42})`;
+        ctx.lineWidth = 2.5 * alpha;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.maxRadius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.strokeStyle = `rgba(251, 146, 60, ${alpha * 0.92})`;
+        ctx.lineWidth = 6 * alpha;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+        ctx.stroke();
+      } else if (s.kind === 'thor') {
+        const fieldR = Math.max(20, s.maxRadius * (0.45 + 0.55 * progress));
+        const grad = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, fieldR);
+        grad.addColorStop(0, `rgba(255, 255, 255, ${alpha * 0.85})`);
+        grad.addColorStop(0.35, `rgba(144, 205, 244, ${alpha * 0.55})`);
+        grad.addColorStop(0.75, `rgba(99, 179, 237, ${alpha * 0.28})`);
+        grad.addColorStop(1, 'rgba(99, 179, 237, 0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, fieldR, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.strokeStyle = `rgba(99, 179, 237, ${alpha * 0.48})`;
+        ctx.lineWidth = 2.5 * alpha;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.maxRadius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.strokeStyle = `rgba(144, 205, 244, ${alpha * 0.9})`;
+        ctx.lineWidth = 4.5 * alpha;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        if (Array.isArray(s.bolts)) {
+          const reach = Math.min(1, 0.42 + progress * 1.15);
+          for (let pass = 0; pass < 2; pass++) {
+            ctx.strokeStyle =
+              pass === 0
+                ? `rgba(99, 179, 237, ${alpha * 0.92})`
+                : `rgba(254, 240, 138, ${alpha * 0.98})`;
+            ctx.lineWidth = (pass === 0 ? 5.5 : 2.2) * alpha;
+            ctx.beginPath();
+            for (let b = 0; b < s.bolts.length; b++) {
+              const bolt = s.bolts[b];
+              const pts = bolt.points;
+              if (pts && pts.length > 1) {
+                ctx.moveTo(s.x + pts[0].x * reach, s.y + pts[0].y * reach);
+                for (let p = 1; p < pts.length; p++) {
+                  ctx.lineTo(s.x + pts[p].x * reach, s.y + pts[p].y * reach);
+                }
+              }
+              const br = bolt.branch;
+              if (br && br.length > 1) {
+                ctx.moveTo(s.x + br[0].x * reach, s.y + br[0].y * reach);
+                for (let p = 1; p < br.length; p++) {
+                  ctx.lineTo(s.x + br[p].x * reach, s.y + br[p].y * reach);
+                }
+              }
+            }
+            ctx.stroke();
+          }
+        }
+      } else {
+        ctx.strokeStyle = `rgba(${s.rgb || '255, 232, 145'}, ${alpha * 0.82})`;
+        ctx.lineWidth = 4 * alpha;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
 
     // Mouse target reticle on the ground plane
@@ -5240,6 +5545,40 @@
     // 10. South / Front 3D Timber Fence
     drawWorldBorderFront();
 
+    // 10b. 2.5D Elevated Bomb Fireball Domes & Thor Skyward Lightning Strikes
+    for (let i = 0; i < shockwaves.length; i++) {
+      const s = shockwaves[i];
+      const alpha = Math.max(0, s.life / s.maxLife);
+      if (s.kind === 'bomb') {
+        const sy = s.y * TILT_Y - (1 - alpha) * 32;
+        const domeR = Math.max(18, s.radius * 0.48);
+        const domeGrad = ctx.createRadialGradient(s.x, sy, 0, s.x, sy, domeR);
+        domeGrad.addColorStop(0, `rgba(255, 255, 255, ${alpha * 0.82})`);
+        domeGrad.addColorStop(0.4, `rgba(254, 240, 138, ${alpha * 0.62})`);
+        domeGrad.addColorStop(0.78, `rgba(251, 146, 60, ${alpha * 0.35})`);
+        domeGrad.addColorStop(1, 'rgba(229, 62, 62, 0)');
+        ctx.fillStyle = domeGrad;
+        ctx.beginPath();
+        ctx.arc(s.x, sy, domeR, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (s.kind === 'thor' && Array.isArray(s.skyBolt) && s.skyBolt.length > 1) {
+        const sy = s.y * TILT_Y;
+        for (let pass = 0; pass < 2; pass++) {
+          ctx.strokeStyle =
+            pass === 0
+              ? `rgba(99, 179, 237, ${alpha * 0.9})`
+              : `rgba(255, 255, 255, ${alpha * 0.98})`;
+          ctx.lineWidth = (pass === 0 ? 6.5 : 2.5) * alpha;
+          ctx.beginPath();
+          ctx.moveTo(s.x + s.skyBolt[0].x, sy + s.skyBolt[0].y);
+          for (let p = 1; p < s.skyBolt.length; p++) {
+            ctx.lineTo(s.x + s.skyBolt[p].x, sy + s.skyBolt[p].y);
+          }
+          ctx.stroke();
+        }
+      }
+    }
+
     // 11. 2.5D Elevated Particles & Floating Damage Numbers
     const drawParticleShadows = visualQualityTier === QUALITY_TIER_HIGH;
     for (let i = 0; i < particles.length; i++) {
@@ -5411,6 +5750,10 @@
       glowColor = 'rgba(226, 232, 240, 0.56)';
       strokeColor = '#ffffff';
       sideColor = '#2d3748';
+    } else if (pType === 'thor') {
+      glowColor = 'rgba(99, 179, 237, 0.56)';
+      strokeColor = '#63b3ed';
+      sideColor = '#2a4365';
     }
 
     ctx.save();
@@ -5773,6 +6116,33 @@
       ctx.arc(-0.7, -2.8, 0.6, 0, Math.PI * 2);
       ctx.arc(0.7, -2.8, 0.6, 0, Math.PI * 2);
       ctx.fill();
+    } else if (pType === 'thor') {
+      // Miniature Mjölnir (Thor's Hammer) & Lightning Bolt emblem
+      ctx.strokeStyle = '#d69e2e';
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      ctx.moveTo(0, 4.6);
+      ctx.lineTo(0, -0.8);
+      ctx.stroke();
+
+      // Rectangular beveled Uru steel warhammer head
+      ctx.fillStyle = '#cbd5e0';
+      ctx.strokeStyle = '#63b3ed';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.roundRect(-4.6, -4.4, 9.2, 4.4, 1.1);
+      ctx.fill();
+      ctx.stroke();
+
+      // Golden-yellow lightning bolt across the hammer head
+      ctx.strokeStyle = '#fef08a';
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.moveTo(1.2, -5.2);
+      ctx.lineTo(-1.0, -2.2);
+      ctx.lineTo(1.0, -2.2);
+      ctx.lineTo(-1.2, 0.8);
+      ctx.stroke();
     }
 
     ctx.restore();
@@ -6927,6 +7297,7 @@
     const isDisco = (h.discoTimer || 0) > 0;
     const isJackOLantern = !isDisco && (h.jackolanternTimer || 0) > 0;
     const isSpider = !isDisco && !isJackOLantern && !!h.isSpider;
+    const isThor = !isDisco && !isJackOLantern && !isSpider && (h.thorTimer || 0) > 0;
     const nowSec = performance.now() * 0.001;
     const discoPalette = ['#f687b3', '#63b3ed', '#f6e05e', '#68d391', '#b794f4', '#ffffff'];
 
@@ -6944,6 +7315,8 @@
               ? 0.48
               : isSpider
               ? 0.46
+              : isThor
+              ? 0.52
               : isFlaming
               ? 0.52
               : 0.34)
@@ -6959,6 +7332,10 @@
           ? i % 2 === 0
             ? '#ffffff'
             : '#2d3748'
+          : isThor
+          ? i % 2 === 0
+            ? '#63b3ed'
+            : '#fef08a'
           : isFlaming
           ? i % 2 === 0
             ? '#ff6b35'
@@ -6968,7 +7345,7 @@
         ctx.arc(
           0,
           0,
-          coreRadius * (isDisco || isJackOLantern || isFlaming ? 1.08 : 0.95),
+          coreRadius * (isDisco || isJackOLantern || isThor || isFlaming ? 1.08 : 0.95),
           0,
           Math.PI * 2
         );
@@ -7567,6 +7944,94 @@
         ctx.beginPath();
         ctx.arc(ex * spiderScale, ey * spiderScale, er * spiderScale, 0, Math.PI * 2);
         ctx.fill();
+      }
+
+      ctx.restore();
+      ctx.restore();
+      return;
+    }
+
+    // If transformed into a Thor Hammer (Mjölnir) for 120s, render a 2.5D Electrified Uru Warhammer!
+    if (isThor) {
+      const thorScale = massScale;
+
+      // A. Ground Shadow & Electric Cyan Glow Pool on the grass (z = 0)
+      ctx.save();
+      ctx.translate(sx + 3, syGround + 3);
+      ctx.scale(1, TILT_Y);
+      ctx.rotate(h.angle);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.42)';
+      ctx.beginPath();
+      ctx.roundRect(-12 * thorScale, -16 * thorScale, 24 * thorScale, 32 * thorScale, 4 * thorScale);
+      ctx.fill();
+      ctx.restore();
+
+      // B. Electric Storm Aura & Crackling Lightning Ring at height hammerZ
+      ctx.save();
+      ctx.translate(sx, syGround - hammerZ);
+      ctx.fillStyle = 'rgba(99, 179, 237, 0.28)';
+      ctx.strokeStyle = '#63b3ed';
+      ctx.lineWidth = 2.2;
+      const auraR = coreRadius * 1.55;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, auraR, auraR * TILT_Y, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // C. 3D Chiseled Uru Metal Mjölnir Head, Nordic Gold Trim, Handle & Lightning Arcs
+      ctx.save();
+      ctx.scale(1, 0.9);
+      ctx.rotate(h.angle);
+
+      // Leather-wrapped handle & golden pommel ring on trailing side (-x)
+      ctx.strokeStyle = '#975a16';
+      ctx.lineWidth = 5.2 * thorScale;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-20 * thorScale, 0);
+      ctx.lineTo(-6 * thorScale, 0);
+      ctx.stroke();
+
+      ctx.strokeStyle = '#ecc94b';
+      ctx.lineWidth = 2.0 * thorScale;
+      ctx.beginPath();
+      ctx.arc(-21 * thorScale, 0, 3.2 * thorScale, 0, Math.PI * 2);
+      ctx.stroke();
+
+      // Beveled rectangular Uru warhammer head (oriented perpendicular to handle)
+      const hw = 11.5 * thorScale;
+      const hh = 17.5 * thorScale;
+      const uruGrad = ctx.createLinearGradient(-hw, -hh, hw, hh);
+      uruGrad.addColorStop(0, '#f7fafc');
+      uruGrad.addColorStop(0.35, '#cbd5e0');
+      uruGrad.addColorStop(0.75, '#4a5568');
+      uruGrad.addColorStop(1, '#1a202c');
+
+      ctx.fillStyle = uruGrad;
+      ctx.strokeStyle = '#63b3ed';
+      ctx.lineWidth = 2.2 * thorScale;
+      ctx.beginPath();
+      ctx.roundRect(-hw * 0.85, -hh, hw * 1.85, hh * 2, 3.5 * thorScale);
+      ctx.fill();
+      ctx.stroke();
+
+      // Nordic gold center band & runes
+      ctx.strokeStyle = '#ecc94b';
+      ctx.lineWidth = 2.0 * thorScale;
+      ctx.strokeRect(-hw * 0.25, -hh * 0.92, hw * 0.65, hh * 1.84);
+
+      // Crackling animated lightning bolts arcing across the hammer head
+      ctx.strokeStyle = '#fef08a';
+      ctx.lineWidth = 1.8 * thorScale;
+      for (let b = 0; b < 3; b++) {
+        const phase = nowSec * 22 + b * 2.1;
+        const jx = Math.sin(phase) * 4.5 * thorScale;
+        const jy = Math.cos(phase * 1.3) * 5.0 * thorScale;
+        ctx.beginPath();
+        ctx.moveTo(-hw * 0.6, (b - 1) * hh * 0.65);
+        ctx.lineTo(jx, jy);
+        ctx.lineTo(hw * 0.9, (1 - b) * hh * 0.65);
+        ctx.stroke();
       }
 
       ctx.restore();
@@ -8709,8 +9174,12 @@
         RARE_DISCO_DROP_CHANCE,
         RARE_JACKOLANTERN_DROP_CHANCE,
         RARE_SPIDER_DROP_CHANCE,
+        RARE_THOR_DROP_CHANCE,
         ZOMBIE_WEB_DURATION,
         SPIDER_HAMMER_DURATION,
+        THOR_HAMMER_DURATION,
+        THOR_EXPLOSION_RADIUS,
+        THOR_BLAST_DAMAGE_MULT,
         JACKOLANTERN_HAMMER_DURATION,
         DISCO_HAMMER_DURATION,
         ZOMBIE_DANCE_DURATION,
@@ -8819,6 +9288,9 @@
       isWorldPointVisible,
       addParticles,
       addFloatingText,
+      addShockwave,
+      addBombBlastAnimation,
+      addThorLightningAnimation,
       updateWarriorBroadphaseBounds,
       stepLocalWarriorAndHammers,
       stepMultiplayerClient,
