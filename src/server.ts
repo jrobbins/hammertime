@@ -103,6 +103,18 @@ const VICTORY_KILL_TARGET = 1000;
 const VICTORY_DISPLAY_DURATION = 5.0;
 const LEADERBOARD_MAX_ENTRIES = 10;
 const MAX_NICKNAME_LENGTH = 20;
+const ZOMBIE_ATTACK_VARIATIONS = ['normal', 'heavy', 'fast'] as const;
+type ZombieAttackVariationKey = (typeof ZOMBIE_ATTACK_VARIATIONS)[number];
+const HURT_SOUNDS = ZOMBIE_ATTACK_VARIATIONS;
+const HURT_NOISES = ZOMBIE_ATTACK_VARIATIONS;
+type HurtSound = ZombieAttackVariationKey;
+type HurtNoise = ZombieAttackVariationKey;
+
+function getRandomZombieAttackVariation(): ZombieAttackVariationKey {
+  return ZOMBIE_ATTACK_VARIATIONS[Math.floor(Math.random() * ZOMBIE_ATTACK_VARIATIONS.length)];
+}
+const getRandomHurtSound = getRandomZombieAttackVariation;
+const getRandomHurtNoise = getRandomZombieAttackVariation;
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const DEFAULT_LEADERBOARD_FILE = path.join(PROJECT_ROOT, 'leaderboard.json');
 
@@ -2456,6 +2468,8 @@ function stepWorldPhysics(dt) {
             playerX: Math.round(p.x),
             playerY: Math.round(p.y - p.radius - 10),
             damage: e.contactDamage,
+            noise: getRandomHurtNoise(),
+            sound: getRandomHurtSound(),
           });
         }
       }
@@ -2760,6 +2774,8 @@ const MIME_TYPES = {
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.ico': 'image/x-icon',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
 };
 
 // --- Server-Side Telemetry & Metrics (Requests/sec, Latency, Player Count) ---
@@ -3568,6 +3584,12 @@ module.exports = {
   VICTORY_DISPLAY_DURATION,
   LEADERBOARD_MAX_ENTRIES,
   MAX_NICKNAME_LENGTH,
+  ZOMBIE_ATTACK_VARIATIONS,
+  getRandomZombieAttackVariation,
+  HURT_SOUNDS,
+  HURT_NOISES,
+  getRandomHurtSound,
+  getRandomHurtNoise,
   DEFAULT_LEADERBOARD_FILE,
   PLAYER_PALETTES,
   // State collections & accessors

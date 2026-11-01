@@ -85,6 +85,16 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.MAX_HAMMERS_PER_PLAYER, 2);
     assert.equal(srv.EXTRA_HAMMER_DURATION, 60.0);
     assert.equal(srv.EXPLOSION_RADIUS, 420);
+    assert.deepEqual([...srv.ZOMBIE_ATTACK_VARIATIONS], ['normal', 'heavy', 'fast']);
+    assert.deepEqual([...srv.HURT_SOUNDS], ['normal', 'heavy', 'fast']);
+    assert.deepEqual([...srv.HURT_NOISES], ['normal', 'heavy', 'fast']);
+    const sampledSounds = new Set();
+    for (let i = 0; i < 100; i++) {
+      const s = srv.getRandomZombieAttackVariation();
+      assert.ok(srv.ZOMBIE_ATTACK_VARIATIONS.includes(s));
+      sampledSounds.add(s);
+    }
+    assert.equal(sampledSounds.size, 3);
   });
 
   it('defines rare powerup drop probabilities', () => {
@@ -690,6 +700,18 @@ describe('Enemy Production Scaling (>2 Players) & Cooperative Victory Mode', () 
     p.lastActivityTime = Date.now() - 125000; // > 120s idle
     srv.tickServer(0.016);
     assert.equal(srv.players.size, 0);
+  });
+
+  it('emits player_hurt event with random hurt sound when warrior takes contact damage', () => {
+    resetTestWorld();
+    const p = addTestPlayer('p1', 2100, 2100);
+    const e = addTestEnemy(2110, 2100, 100);
+    e.contactCooldown = 0;
+    srv.stepWorldPhysics(0.016);
+    const hurtEvents = srv.getState().pendingEvents.filter((ev) => ev.type === 'player_hurt');
+    assert.ok(hurtEvents.length > 0);
+    assert.ok(srv.HURT_SOUNDS.includes(hurtEvents[0].sound));
+    assert.ok(srv.HURT_NOISES.includes(hurtEvents[0].noise));
   });
 
   it('maintains broadphase AABB bounds and handles 5-player 9-link 2-hammer chain collisions against 54 enemies', () => {

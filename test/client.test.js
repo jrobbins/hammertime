@@ -225,10 +225,15 @@ function loadClientGame(initialCookies = '') {
     console,
     encodeURIComponent,
     decodeURIComponent,
+    atob: (s) => Buffer.from(s, 'base64').toString('binary'),
+    btoa: (s) => Buffer.from(s, 'binary').toString('base64'),
+    Buffer,
   };
   sandbox.window.window = sandbox.window;
   sandbox.window.document = sandbox.document;
   sandbox.window.performance = sandbox.performance;
+  sandbox.window.atob = sandbox.atob;
+  sandbox.window.btoa = sandbox.btoa;
   sandbox.window.requestAnimationFrame = sandbox.requestAnimationFrame;
   sandbox.window.cancelAnimationFrame = sandbox.cancelAnimationFrame;
 
@@ -308,6 +313,10 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.deepEqual([...c.PICKUP_TYPES], srv.PICKUP_TYPES);
     assert.deepEqual([...c.PICKUP_TYPES], ['link', 'weight', 'health', 'bomb', 'speed', 'flame']);
     assert.equal(c.PICKUP_TYPES.includes('traction'), false);
+    assert.deepEqual([...c.ZOMBIE_ATTACK_VARIATIONS], srv.ZOMBIE_ATTACK_VARIATIONS);
+    assert.deepEqual([...c.ZOMBIE_ATTACK_VARIATIONS], ['normal', 'heavy', 'fast']);
+    assert.deepEqual([...c.HURT_SOUNDS], srv.HURT_SOUNDS);
+    assert.deepEqual([...c.HURT_NOISES], srv.HURT_NOISES);
     assert.deepEqual(JSON.parse(JSON.stringify(c.STONE_COLUMNS)), srv.STONE_COLUMNS);
     assert.deepEqual(JSON.parse(JSON.stringify(api.stoneColumns)), srv.STONE_COLUMNS);
 
@@ -1550,5 +1559,221 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     // When released, virtual target collapses to warrior so warrior stops cleanly
     assert.equal(api.mouse.screenX, api.warrior.x - api.camera.x);
     assert.equal(api.mouse.screenY, (api.warrior.y - api.camera.y) * api.constants.TILT_Y);
+  });
+
+  it('plays variations of the zombie bite attack sound (normal, heavy, fast) when warrior takes damage', () => {
+    // 1. Verify zombie attack variations are defined in constants
+    const expectedVariations = ['normal', 'heavy', 'fast'];
+    assert.deepEqual([...api.ZOMBIE_ATTACK_VARIATIONS], expectedVariations);
+    assert.deepEqual([...api.HURT_SOUNDS], expectedVariations);
+    assert.deepEqual([...api.HURT_NOISES], expectedVariations);
+
+    // 2. Set up mock Web Audio context to test sound playback and verify no procedural oscillators are used
+    let lastMockContext = null;
+    function createMockAudioContext() {
+      const oscillators = [];
+      const filters = [];
+      const gains = [];
+      const bufferSources = [];
+      const createParam = (init = 0) => ({
+        value: init,
+        setValueAtTime(v) { this.value = v; },
+        linearRampToValueAtTime(v) { this.value = v; },
+        exponentialRampToValueAtTime(v) { this.value = v; },
+      });
+      const ctx = {
+        currentTime: 0.5,
+        state: 'running',
+        destination: {},
+        oscillators,
+        filters,
+        gains,
+        bufferSources,
+        decodeAudioData(arrBuf, success) {
+          if (success) success({ duration: 1.04, numberOfChannels: 2, sampleRate: 44100 });
+        },
+        createBufferSource() {
+          const src = {
+            buffer: null,
+            playbackRate: createParam(1),
+            detune: createParam(0),
+            connect: () => {},
+            start: () => {},
+            stop: () => {},
+          };
+          bufferSources.push(src);
+          return src;
+        },
+        createOscillator() {
+          const osc = {
+            type: 'sawtooth',
+            frequency: createParam(100),
+            connect: () => {},
+            start: () => {},
+            stop: () => {},
+          };
+          oscillators.push(osc);
+          return osc;
+        },
+        createBiquadFilter() {
+          const filter = {
+            type: 'bandpass',
+            frequency: createParam(500),
+            Q: createParam(1),
+            connect: () => {},
+          };
+          filters.push(filter);
+          return filter;
+        },
+        createGain() {
+          const gain = {
+            gain: createParam(1),
+            connect: () => {},
+          };
+          gains.push(gain);
+          return gain;
+        },
+      };
+      lastMockContext = ctx;
+      return ctx;
+    }
+
+    win.AudioContext = createMockAudioContext;
+
+    // Decode audio sample first
+    assert.ok(api.ZOMBIE_BITE_AUDIO_BASE64.length > 20000, 'Embedded base64 audio must be present');
+    api.loadZombieBiteAudio();
+    assert.ok(api.getZombieBiteAudioBuffer(), 'Zombie bite audio buffer should be decoded');
+
+    // 3. Test explicit sound playback for normal, heavy, and fast variations
+    const expectedConfigs = {
+      normal: { rate: 1.0, detune: 0, gain: 0.2499 },
+      heavy: { rate: 0.86, detune: -280, gain: 0.2793 },
+      fast: { rate: 1.16, detune: 260, gain: 0.2352 },
+    };
+
+    for (const variation of expectedVariations) {
+      const prevBufSourceCount = lastMockContext.bufferSources.length;
+      const prevGainCount = lastMockContext.gains.length;
+      const prevOscCount = lastMockContext.oscillators.length;
+      const result = api.playPlayerHurtSound(variation);
+      assert.equal(result, variation);
+      assert.equal(api.getLastHurtSound(), variation);
+      assert.equal(api.getLastHurtNoise(), variation);
+      assert.ok(lastMockContext, 'Mock AudioContext should have been instantiated');
+      // Verify ONLY the sound file is played via AudioBufferSourceNode
+      assert.equal(
+        lastMockContext.bufferSources.length,
+        prevBufSourceCount + 1,
+        `Should create buffer source for zombie bite variation "${variation}"`
+      );
+      const createdSource = lastMockContext.bufferSources[lastMockContext.bufferSources.length - 1];
+      assert.equal(createdSource.playbackRate.value, expectedConfigs[variation].rate);
+      assert.equal(createdSource.detune.value, expectedConfigs[variation].detune);
+      assert.equal(
+        lastMockContext.gains.length,
+        prevGainCount + 1,
+        `Should create gain node for zombie bite variation "${variation}"`
+      );
+      const createdGain = lastMockContext.gains[lastMockContext.gains.length - 1];
+      assert.equal(createdGain.gain.value, expectedConfigs[variation].gain);
+      // Ensure NO procedural oscillators are used for enemy attack sounds
+      assert.equal(
+        lastMockContext.oscillators.length,
+        prevOscCount,
+        'Should NOT use procedural oscillators for zombie attack sounds'
+      );
+    }
+
+    // 4. Test random / varied selection when no variation is specified
+    const chosenVariations = [];
+    for (let i = 0; i < 20; i++) {
+      const chosen = api.playPlayerHurtSound();
+      assert.ok(
+        expectedVariations.includes(chosen),
+        `Chosen variation "${chosen}" should be in expected list`
+      );
+      chosenVariations.push(chosen);
+    }
+    // Consecutive calls should avoid picking the same variation twice in a row
+    for (let i = 1; i < chosenVariations.length; i++) {
+      assert.notEqual(
+        chosenVariations[i],
+        chosenVariations[i - 1],
+        `Consecutive hurt variation at index ${i} ("${chosenVariations[i]}") should differ from previous ("${chosenVariations[i-1]}") for variety`
+      );
+    }
+    const uniqueChosen = new Set(chosenVariations);
+    assert.equal(
+      uniqueChosen.size,
+      3,
+      'All 3 zombie attack variations (normal, heavy, fast) should be sampled across 20 hits'
+    );
+
+    // 5. Test player_hurt event triggers specified zombie bite variation
+    api.processServerEvents([
+      {
+        type: 'player_hurt',
+        playerId: 'local-1',
+        x: 2100,
+        y: 2100,
+        playerX: 2100,
+        playerY: 2090,
+        damage: 15,
+        variation: 'heavy',
+      },
+    ]);
+    assert.equal(api.getLastHurtSound(), 'heavy');
+
+    api.processServerEvents([
+      {
+        type: 'player_hurt',
+        playerId: 'local-1',
+        x: 2100,
+        y: 2100,
+        playerX: 2100,
+        playerY: 2090,
+        damage: 15,
+        sound: 'fast',
+      },
+    ]);
+    assert.equal(api.getLastHurtSound(), 'fast');
+
+    api.processServerEvents([
+      {
+        type: 'player_hurt',
+        playerId: 'local-1',
+        x: 2100,
+        y: 2100,
+        playerX: 2100,
+        playerY: 2090,
+        damage: 15,
+        noise: 'normal',
+      },
+    ]);
+    assert.equal(api.getLastHurtSound(), 'normal');
+
+    // 6. Test offline / single-player zombie contact damage triggers playPlayerHurtSound
+    api.warrior.hp = 100;
+    api.warrior.alive = true;
+    api.warrior.x = 2100;
+    api.warrior.y = 2100;
+    api.enemies.length = 0;
+    api.spawnEnemy(false);
+    const enemy = api.enemies[0];
+    enemy.x = 2110;
+    enemy.y = 2100;
+    enemy.contactCooldown = 0;
+    enemy.contactDamage = 12;
+    enemy.knockdownTimer = 0;
+    enemy.danceTimer = 0;
+    enemy.webTimer = 0;
+
+    api.stepPhysics(0.016);
+    assert.ok(api.warrior.hp < 100, 'Warrior should have taken damage from enemy contact');
+    assert.ok(
+      expectedVariations.includes(api.getLastHurtSound()),
+      'Warrior damage should have set lastHurtSound to a zombie attack variation'
+    );
   });
 });
