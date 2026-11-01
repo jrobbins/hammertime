@@ -116,7 +116,12 @@ const enemies = [];
 const blackCircles = [];
 const players = new Map(); // id -> player object
 const leaderboardRecords = new Map(); // lowercase nickname -> { name, kills, color, updatedAt }
-let leaderboardFilePath = process.env.LEADERBOARD_FILE || DEFAULT_LEADERBOARD_FILE;
+let leaderboardFilePath =
+  process.env.LEADERBOARD_FILE !== undefined
+    ? process.env.LEADERBOARD_FILE
+    : require.main === module
+    ? DEFAULT_LEADERBOARD_FILE
+    : null;
 let nextPlayerNum = 1;
 let nextEnemyId = 1;
 let nextPickupId = 1;
@@ -312,7 +317,14 @@ function getLeaderboardFilePath() {
 }
 
 function setLeaderboardFilePath(filePath) {
-  leaderboardFilePath = filePath === undefined ? DEFAULT_LEADERBOARD_FILE : filePath;
+  leaderboardFilePath =
+    filePath === undefined
+      ? process.env.LEADERBOARD_FILE !== undefined
+        ? process.env.LEADERBOARD_FILE
+        : require.main === module
+        ? DEFAULT_LEADERBOARD_FILE
+        : null
+      : filePath;
 }
 
 function sortLeaderboardEntries(entries) {
@@ -323,9 +335,56 @@ function sortLeaderboardEntries(entries) {
   });
 }
 
-function saveLeaderboardToFile(filePath = leaderboardFilePath) {
+function readLeaderboardEntriesFromDisk(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return [];
+  try {
+    const rawText = fs.readFileSync(filePath, 'utf8');
+    if (!rawText || !rawText.trim()) return [];
+    const parsed = JSON.parse(rawText);
+    return Array.isArray(parsed)
+      ? parsed
+      : parsed && Array.isArray(parsed.entries)
+      ? parsed.entries
+      : [];
+  } catch (_err) {
+    return [];
+  }
+}
+
+function mergeLeaderboardListIntoMap(list, targetMap = leaderboardRecords) {
+  for (let i = 0; i < list.length; i++) {
+    const item = list[i];
+    if (!item || typeof item !== 'object') continue;
+    const cleanName = sanitizeNickname(item.name, '');
+    if (!cleanName) continue;
+    const key = cleanName.toLowerCase();
+    const numericKills = Math.max(0, Math.floor(Number(item.kills) || 0));
+    const updatedAt =
+      typeof item.updatedAt === 'number' && Number.isFinite(item.updatedAt)
+        ? item.updatedAt
+        : Date.now() + i;
+    const color = typeof item.color === 'string' && item.color ? item.color : '#f6e05e';
+    const existing = targetMap.get(key);
+    if (!existing || numericKills > existing.kills) {
+      targetMap.set(key, {
+        name: cleanName,
+        kills: numericKills,
+        color,
+        updatedAt,
+      });
+    }
+  }
+}
+
+function saveLeaderboardToFile(filePath = leaderboardFilePath, options: any = {}) {
   if (!filePath) return false;
   try {
+    if (!options || !options.overwrite) {
+      const diskEntries = readLeaderboardEntriesFromDisk(filePath);
+      if (diskEntries.length > 0) {
+        mergeLeaderboardListIntoMap(diskEntries, leaderboardRecords);
+      }
+    }
     const sorted = sortLeaderboardEntries(Array.from(leaderboardRecords.values()));
     const payload = {
       updatedAt: new Date().toISOString(),
@@ -366,39 +425,9 @@ function loadLeaderboardFromFile(filePath = leaderboardFilePath) {
     if (!fs.existsSync(filePath)) {
       return getTopLeaderboard();
     }
-    const rawText = fs.readFileSync(filePath, 'utf8');
-    if (!rawText || !rawText.trim()) {
-      return getTopLeaderboard();
-    }
-    const parsed = JSON.parse(rawText);
-    const list = Array.isArray(parsed)
-      ? parsed
-      : parsed && Array.isArray(parsed.entries)
-      ? parsed.entries
-      : [];
+    const list = readLeaderboardEntriesFromDisk(filePath);
     leaderboardRecords.clear();
-    for (let i = 0; i < list.length; i++) {
-      const item = list[i];
-      if (!item || typeof item !== 'object') continue;
-      const cleanName = sanitizeNickname(item.name, '');
-      if (!cleanName) continue;
-      const key = cleanName.toLowerCase();
-      const numericKills = Math.max(0, Math.floor(Number(item.kills) || 0));
-      const updatedAt =
-        typeof item.updatedAt === 'number' && Number.isFinite(item.updatedAt)
-          ? item.updatedAt
-          : Date.now() + i;
-      const color = typeof item.color === 'string' && item.color ? item.color : '#f6e05e';
-      const existing = leaderboardRecords.get(key);
-      if (!existing || numericKills > existing.kills) {
-        leaderboardRecords.set(key, {
-          name: cleanName,
-          kills: numericKills,
-          color,
-          updatedAt,
-        });
-      }
-    }
+    mergeLeaderboardListIntoMap(list, leaderboardRecords);
   } catch (_err) {
     // Ignore missing or malformed file and keep current in-memory records
   }
@@ -487,7 +516,7 @@ function getTopLeaderboard() {
 function clearLeaderboard(options: any = {}) {
   leaderboardRecords.clear();
   if (options && options.persist) {
-    saveLeaderboardToFile();
+    saveLeaderboardToFile(leaderboardFilePath, { overwrite: true });
   }
 }
 
@@ -2475,6 +2504,7 @@ function tickServer(dt) {
           // Ignore socket write error
         }
       }
+      updateLeaderboardForPlayer(p);
       players.delete(pid);
     }
   }
@@ -3104,6 +3134,23 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  if (safeUrl === '/leaderboard' || safeUrl === '/leaderboard.json') {
+    const lbData = JSON.stringify(
+      {
+        updatedAt: new Date().toISOString(),
+        entries: getTopLeaderboard(),
+      },
+      null,
+      2
+    );
+    res.writeHead(200, {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+    });
+    res.end(lbData);
+    return;
+  }
+
   const relPath = safeUrl === '/' ? 'index.html' : safeUrl.replace(/^\/+/, '');
   const filePath = path.resolve(PROJECT_ROOT, relPath);
 
@@ -3178,6 +3225,20 @@ server.on('upgrade', (req, socket) => {
           setPlayerNickname(player, msg.nickname);
           player.lastActivityTime = Date.now();
         }
+        if (Array.isArray(msg.leaderboard)) {
+          for (let i = 0; i < msg.leaderboard.length; i++) {
+            const item = msg.leaderboard[i];
+            if (!item || typeof item !== 'object') continue;
+            const cleanName = sanitizeNickname(item.name, '');
+            if (!cleanName || cleanName === 'ImmortalChampion' || /^Warrior_\d+$/i.test(cleanName)) {
+              continue;
+            }
+            const numericKills = Math.max(0, Math.floor(Number(item.kills) || 0));
+            if (numericKills > 0) {
+              recordLeaderboardKillScore(cleanName, numericKills, item.color || player.color);
+            }
+          }
+        }
       } else if (msg.type === 'input') {
         if (typeof msg.nickname === 'string' && msg.nickname.trim()) {
           const desired = sanitizeNickname(msg.nickname, player.name);
@@ -3206,6 +3267,7 @@ server.on('upgrade', (req, socket) => {
       }
     },
     () => {
+      updateLeaderboardForPlayer(player);
       players.delete(playerId);
     }
   );
@@ -3213,6 +3275,9 @@ server.on('upgrade', (req, socket) => {
 
 // Initialize world and load persisted leaderboard
 loadLeaderboardFromFile();
+if (leaderboardFilePath && !fs.existsSync(leaderboardFilePath)) {
+  saveLeaderboardToFile();
+}
 initStoneColumns();
 for (let i = 0; i < INITIAL_ENEMY_COUNT; i++) {
   spawnEnemy(false);

@@ -658,10 +658,15 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(freshInstance.api.getState().hasEnteredGame, true);
     assert.equal(freshInstance.elements.get('enter-modal').classList.contains('hidden'), true);
 
-    // 3. User reloads page (simulated by passing the cookie jar into new instance)
+    // 3. Record leaderboard score and reload page (simulated by passing the cookie jar into new instance)
+    freshInstance.api.recordLocalLeaderboardScore('Sir Percival', 27);
     const reloadedInstance = loadClientGame(freshInstance.document.cookie);
     const input2 = reloadedInstance.elements.get('nickname-input');
     assert.equal(input2.value, 'Sir Percival');
+    const restoredBoard = reloadedInstance.api.getTopLocalLeaderboard();
+    assert.equal(restoredBoard.length, 1);
+    assert.equal(restoredBoard[0].name, 'Sir Percival');
+    assert.equal(restoredBoard[0].kills, 27);
   });
 
   it('performs local client prediction with smooth reconciliation and remote entity snapshot interpolation', () => {

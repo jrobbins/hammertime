@@ -3,12 +3,16 @@
 const { describe, it, beforeEach } = require('./harness.js');
 const assert = require('node:assert/strict');
 const { EventEmitter } = require('node:events');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const srv = require('../dist/server.js');
 
 function resetTestWorld() {
   srv.players.clear();
   srv.enemies.length = 0;
   srv.blackCircles.length = 0;
+  srv.setLeaderboardFilePath(null);
   srv.clearLeaderboard();
   srv.initStoneColumns();
   srv.setState({
@@ -779,6 +783,58 @@ describe('Player Nicknames & Top 10 Enemies Killed Leaderboard', () => {
     assert.equal(p.kills, 0);
     assert.equal(srv.getTopLeaderboard()[0].name, 'ImmortalChampion');
     assert.equal(srv.getTopLeaderboard()[0].kills, 120);
+  });
+
+  it('persists leaderboard scores to disk, merges existing disk records without data loss, and never overwrites production leaderboard.json during tests', () => {
+    assert.equal(
+      srv.getLeaderboardFilePath(),
+      null,
+      'Unit test imports should default leaderboardFilePath to null so leaderboard.json is not overwritten'
+    );
+
+    const tmpFile = path.join(os.tmpdir(), `hammertime-leaderboard-test-${process.pid}-${Date.now()}.json`);
+    try {
+      // Seed an existing high score on disk before the server records new scores
+      fs.writeFileSync(
+        tmpFile,
+        JSON.stringify({
+          updatedAt: new Date().toISOString(),
+          entries: [{ rank: 1, name: 'Sir Lancelot', kills: 45, color: '#63b3ed', updatedAt: 1000 }],
+        }),
+        'utf8'
+      );
+
+      srv.setLeaderboardFilePath(tmpFile);
+      const p = addTestPlayer('p_disk', 2100, 2100);
+      srv.setPlayerNickname(p, 'Lady Guinevere');
+      for (let i = 0; i < 12; i++) {
+        addTestEnemy(2200, 2100, 50);
+        srv.defeatEnemy(srv.enemies.length - 1, p);
+      }
+
+      assert.ok(fs.existsSync(tmpFile), 'Expected leaderboard JSON file to be written to disk');
+      const savedDisk = JSON.parse(fs.readFileSync(tmpFile, 'utf8'));
+      assert.equal(savedDisk.entries.length, 2);
+      assert.equal(savedDisk.entries[0].name, 'Sir Lancelot');
+      assert.equal(savedDisk.entries[0].kills, 45);
+      assert.equal(savedDisk.entries[1].name, 'Lady Guinevere');
+      assert.equal(savedDisk.entries[1].kills, 12);
+
+      // Simulate server restart: clear in-memory map and reload from disk
+      srv.clearLeaderboard();
+      assert.equal(srv.leaderboardRecords.size, 0);
+      const reloaded = srv.loadLeaderboardFromFile(tmpFile);
+      assert.equal(reloaded.length, 2);
+      assert.equal(reloaded[0].name, 'Sir Lancelot');
+      assert.equal(reloaded[0].kills, 45);
+      assert.equal(reloaded[1].name, 'Lady Guinevere');
+      assert.equal(reloaded[1].kills, 12);
+    } finally {
+      srv.setLeaderboardFilePath(null);
+      if (fs.existsSync(tmpFile)) {
+        fs.unlinkSync(tmpFile);
+      }
+    }
   });
 });
 

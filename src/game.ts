@@ -902,6 +902,8 @@
   let isGameOver = false;
 
   const NICKNAME_COOKIE_NAME = 'hammertime_nickname';
+  const LEADERBOARD_COOKIE_NAME = 'hammertime_leaderboard';
+  let lastSavedLeaderboardJson = '';
   const MEDIEVAL_NAME_SUGGESTIONS = [
     'Sir Galahad',
     'Lady Guinevere',
@@ -994,6 +996,102 @@
     return cleaned || fallback;
   }
 
+  function saveLocalLeaderboardToStorage() {
+    try {
+      const top = getTopLocalLeaderboard();
+      const json = JSON.stringify(top);
+      if (json === lastSavedLeaderboardJson) return;
+      lastSavedLeaderboardJson = json;
+      if (win && win.localStorage && typeof win.localStorage.setItem === 'function') {
+        try {
+          win.localStorage.setItem(LEADERBOARD_COOKIE_NAME, json);
+        } catch (_lsErr) {
+          // Ignore storage quota / security errors
+        }
+      }
+      setCookie(LEADERBOARD_COOKIE_NAME, json);
+    } catch (_err) {
+      // Ignore serialization error
+    }
+  }
+
+  function loadLocalLeaderboardFromStorage() {
+    let raw = null;
+    if (win && win.localStorage && typeof win.localStorage.getItem === 'function') {
+      try {
+        raw = win.localStorage.getItem(LEADERBOARD_COOKIE_NAME);
+      } catch (_lsErr) {
+        raw = null;
+      }
+    }
+    if (!raw) {
+      raw = getCookie(LEADERBOARD_COOKIE_NAME);
+    }
+    if (!raw) return getTopLocalLeaderboard();
+    try {
+      const parsed = JSON.parse(raw);
+      const list = Array.isArray(parsed)
+        ? parsed
+        : parsed && Array.isArray(parsed.entries)
+        ? parsed.entries
+        : [];
+      for (let i = 0; i < list.length; i++) {
+        const item = list[i];
+        if (!item || typeof item !== 'object') continue;
+        const cleanName = sanitizeNickname(item.name, '');
+        if (!cleanName) continue;
+        const key = cleanName.toLowerCase();
+        const numericKills = Math.max(0, Math.floor(Number(item.kills) || 0));
+        const existing = localLeaderboardRecords.get(key);
+        if (!existing || numericKills > existing.kills) {
+          localLeaderboardRecords.set(key, {
+            name: cleanName,
+            kills: numericKills,
+            color: item.color || '#f6e05e',
+            updatedAt:
+              typeof item.updatedAt === 'number' && Number.isFinite(item.updatedAt)
+                ? item.updatedAt
+                : Date.now() + i,
+          });
+        }
+      }
+      lastSavedLeaderboardJson = JSON.stringify(getTopLocalLeaderboard());
+    } catch (_err) {
+      // Ignore malformed storage data
+    }
+    if (!isMultiplayer) {
+      leaderboard = getTopLocalLeaderboard();
+    }
+    return leaderboard;
+  }
+
+  function syncServerLeaderboard(serverEntries) {
+    if (!Array.isArray(serverEntries)) return;
+    let changed = false;
+    for (let i = 0; i < serverEntries.length; i++) {
+      const item = serverEntries[i];
+      if (!item || typeof item !== 'object') continue;
+      const cleanName = sanitizeNickname(item.name, '');
+      if (!cleanName) continue;
+      const key = cleanName.toLowerCase();
+      const numericKills = Math.max(0, Math.floor(Number(item.kills) || 0));
+      const existing = localLeaderboardRecords.get(key);
+      if (!existing || numericKills > existing.kills) {
+        localLeaderboardRecords.set(key, {
+          name: cleanName,
+          kills: numericKills,
+          color: item.color || '#f6e05e',
+          updatedAt: Date.now() + i,
+        });
+        changed = true;
+      }
+    }
+    leaderboard = serverEntries;
+    if (changed) {
+      saveLocalLeaderboardToStorage();
+    }
+  }
+
   function recordLocalLeaderboardScore(name, killsCount, color = '#f6e05e') {
     const cleanName = sanitizeNickname(name, '');
     if (!cleanName) return null;
@@ -1018,6 +1116,7 @@
     if (!isMultiplayer) {
       leaderboard = getTopLocalLeaderboard();
     }
+    saveLocalLeaderboardToStorage();
     return localLeaderboardRecords.get(key);
   }
 
@@ -1039,6 +1138,15 @@
     localLeaderboardRecords.clear();
     leaderboard = [];
     lastLeaderboardSignature = '';
+    lastSavedLeaderboardJson = '';
+    if (win && win.localStorage && typeof win.localStorage.removeItem === 'function') {
+      try {
+        win.localStorage.removeItem(LEADERBOARD_COOKIE_NAME);
+      } catch (_lsErr) {
+        // Ignore storage error
+      }
+    }
+    setCookie(LEADERBOARD_COOKIE_NAME, '', 0);
   }
 
   function getLeaderboardSignature(entries) {
@@ -1055,8 +1163,9 @@
     if (!leaderboardListEl) return;
     const entries = (Array.isArray(leaderboard) ? leaderboard : []).slice(0, LEADERBOARD_MAX_ENTRIES);
     const sig = getLeaderboardSignature(entries);
-    const hasChildren =
-      Array.isArray(leaderboardListEl.children) && leaderboardListEl.children.length > 0;
+    const hasChildren = Boolean(
+      leaderboardListEl.children && leaderboardListEl.children.length > 0
+    );
     if (!force && sig === lastLeaderboardSignature && hasChildren) {
       return;
     }
@@ -1501,6 +1610,7 @@
           JSON.stringify({
             type: 'set_nickname',
             nickname: warrior.name,
+            leaderboard: getTopLocalLeaderboard(),
           })
         );
       }
@@ -1531,11 +1641,12 @@
             JSON.stringify({
               type: 'set_nickname',
               nickname: warrior.name,
+              leaderboard: getTopLocalLeaderboard(),
             })
           );
         }
         if (Array.isArray(msg.leaderboard)) {
-          leaderboard = msg.leaderboard;
+          syncServerLeaderboard(msg.leaderboard);
           renderLeaderboard();
         }
       } else if (msg.type === 'state' && isMultiplayer) {
@@ -1551,7 +1662,7 @@
         if (typeof msg.teamKills === 'number') teamKills = msg.teamKills;
         victoryInfo = msg.victoryInfo || null;
         if (Array.isArray(msg.leaderboard)) {
-          leaderboard = msg.leaderboard;
+          syncServerLeaderboard(msg.leaderboard);
         }
 
         const hasRoundReset =
@@ -8561,6 +8672,7 @@
   }
 
   // Start up (waits for user click on #enter-modal before connecting to server)
+  loadLocalLeaderboardFromStorage();
   generateWorldScenery();
   resizeCanvas();
   initGame();
@@ -8703,6 +8815,9 @@
       getInitialSuggestedNickname,
       populateNicknameSuggestion,
       sanitizeNickname,
+      saveLocalLeaderboardToStorage,
+      loadLocalLeaderboardFromStorage,
+      syncServerLeaderboard,
       recordLocalLeaderboardScore,
       getTopLocalLeaderboard,
       clearLocalLeaderboard,
