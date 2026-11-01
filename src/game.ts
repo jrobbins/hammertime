@@ -52,6 +52,7 @@
   const enterModal = document.getElementById('enter-modal');
   const enterModalSubtitleEl = document.getElementById('enter-modal-subtitle');
   const nicknameInputEl = document.getElementById('nickname-input') as HTMLInputElement | null;
+  const nicknameDiceBtn = document.getElementById('nickname-dice-btn') as HTMLButtonElement | null;
   const enterGameBtn = document.getElementById('enter-game-btn');
   const leaderboardListEl = document.getElementById('leaderboard-list');
   const touchWheelEl = document.getElementById('touch-wheel');
@@ -1202,32 +1203,190 @@
   const NICKNAME_COOKIE_NAME = 'hammertime_nickname';
   const LEADERBOARD_COOKIE_NAME = 'hammertime_leaderboard';
   let lastSavedLeaderboardJson = '';
-  const MEDIEVAL_NAME_SUGGESTIONS = [
-    'Sir Galahad',
-    'Lady Guinevere',
-    'Sir Roland',
-    'Lady Eleanor',
-    'Sir Lancelot',
-    'Sir Bedivere',
-    'Lady Isolde',
-    'Sir Percival',
-    'Lady Rowena',
-    'Sir Gareth',
-    'Lady Morwenna',
-    'Sir Gawain',
-    'Lady Beatrix',
-    'Sir Tristram',
-    'Lady Matilda',
-    'Sir Godfrey',
-    'Lady Yvaine',
-    'Sir Baldwin',
-    'Lady Clarice',
-    'Sir Roderick',
-    'Lady Astrid',
-    'Sir Cedric',
-    'Lady Vivienne',
-    'Sir Aldous',
-  ];
+
+  const MALE_TITLES = [
+    'King',
+    'Sir',
+    'Lord',
+    'Duke',
+    'Baron',
+    'Earl',
+    'Prince',
+    'Count',
+  ] as const;
+
+  const MALE_NAMES = [
+    'Galahad',
+    'Roland',
+    'Lancelot',
+    'Bedivere',
+    'Percival',
+    'Gareth',
+    'Gawain',
+    'Tristram',
+    'Godfrey',
+    'Baldwin',
+    'Roderick',
+    'Cedric',
+    'Aldous',
+  ] as const;
+
+  const FEMALE_TITLES = [
+    'Queen',
+    'Lady',
+    'Dame',
+    'Duchess',
+    'Baroness',
+    'Countess',
+    'Princess',
+  ] as const;
+
+  const FEMALE_NAMES = [
+    'Guinevere',
+    'Eleanor',
+    'Isolde',
+    'Rowena',
+    'Morwenna',
+    'Beatrix',
+    'Matilda',
+    'Yvaine',
+    'Clarice',
+    'Astrid',
+    'Vivienne',
+  ] as const;
+
+  const COLOR_OR_ANIMAL_DESCRIPTORS = [
+    // Interesting Colors
+    'Crimson',
+    'Scarlet',
+    'Azure',
+    'Emerald',
+    'Cobalt',
+    'Amber',
+    'Obsidian',
+    'Amethyst',
+    'Onyx',
+    'Ruby',
+    'Sapphire',
+    'Verdant',
+    'Cerulean',
+    'Indigo',
+    'Violet',
+    'Copper',
+    'Bronze',
+    'Silver',
+    'Gold',
+    'Iron',
+    'Ashen',
+    'Russet',
+    'Green',
+    'Red',
+    'Blue',
+    'Grey',
+    // Animals
+    'Wolf',
+    'Whale',
+    'Snake',
+    'Bear',
+    'Hawk',
+    'Eagle',
+    'Lion',
+    'Tiger',
+    'Stag',
+    'Boar',
+    'Raven',
+    'Fox',
+    'Viper',
+    'Falcon',
+    'Dragon',
+  ] as const;
+
+  const WARRIOR_TYPES = [
+    'Knight',
+    'Warrior',
+    'Paladin',
+    'Squire',
+    'Huntsman',
+    'Champion',
+    'Berserker',
+    'Guardian',
+    'Crusader',
+    'Slayer',
+    'Ranger',
+    'Sentinel',
+    'Vanguard',
+  ] as const;
+
+  const LOCATION_TITLES = [
+    'King',
+    'Queen',
+    'Lord',
+    'Lady',
+    'Duke',
+    'Duchess',
+    'Baron',
+    'Baroness',
+    'Prince',
+    'Princess',
+    'Earl',
+    'Countess',
+  ] as const;
+
+  const FANTASY_LOCATIONS = [
+    'Highshire',
+    'Ironhold',
+    'Oakhaven',
+    'Ravenrock',
+    'Stormfall',
+    'Sunspire',
+    'Frostpeak',
+    'Windmere',
+    'Deepwood',
+    'Riverbend',
+    'Greymoor',
+    'Dunhollow',
+    'Goldcrest',
+    'Thornhill',
+    'Stonehaven',
+  ] as const;
+
+  const MEDIEVAL_NAME_SUGGESTIONS: string[] = [];
+  // 1. Male combinations
+  for (let tIdx = 0; tIdx < MALE_TITLES.length; tIdx++) {
+    for (let nIdx = 0; nIdx < MALE_NAMES.length; nIdx++) {
+      const name = `${MALE_TITLES[tIdx]} ${MALE_NAMES[nIdx]}`;
+      if (name.length <= MAX_NICKNAME_LENGTH) {
+        MEDIEVAL_NAME_SUGGESTIONS.push(name);
+      }
+    }
+  }
+  // 2. Female combinations
+  for (let tIdx = 0; tIdx < FEMALE_TITLES.length; tIdx++) {
+    for (let nIdx = 0; nIdx < FEMALE_NAMES.length; nIdx++) {
+      const name = `${FEMALE_TITLES[tIdx]} ${FEMALE_NAMES[nIdx]}`;
+      if (name.length <= MAX_NICKNAME_LENGTH) {
+        MEDIEVAL_NAME_SUGGESTIONS.push(name);
+      }
+    }
+  }
+  // 3. Non-gendered descriptor + warrior type
+  for (let dIdx = 0; dIdx < COLOR_OR_ANIMAL_DESCRIPTORS.length; dIdx++) {
+    for (let wIdx = 0; wIdx < WARRIOR_TYPES.length; wIdx++) {
+      const name = `${COLOR_OR_ANIMAL_DESCRIPTORS[dIdx]} ${WARRIOR_TYPES[wIdx]}`;
+      if (name.length <= MAX_NICKNAME_LENGTH) {
+        MEDIEVAL_NAME_SUGGESTIONS.push(name);
+      }
+    }
+  }
+  // 4. Location-based
+  for (let tIdx = 0; tIdx < LOCATION_TITLES.length; tIdx++) {
+    for (let lIdx = 0; lIdx < FANTASY_LOCATIONS.length; lIdx++) {
+      const name = `${LOCATION_TITLES[tIdx]} of ${FANTASY_LOCATIONS[lIdx]}`;
+      if (name.length <= MAX_NICKNAME_LENGTH) {
+        MEDIEVAL_NAME_SUGGESTIONS.push(name);
+      }
+    }
+  }
 
   function getCookie(name) {
     if (typeof document === 'undefined' || !document.cookie) return null;
@@ -1253,9 +1412,68 @@
     document.cookie = `${name}=${encoded}; path=/; max-age=${maxAge}; SameSite=Lax`;
   }
 
-  function getRandomMedievalName() {
-    const idx = Math.floor(Math.random() * MEDIEVAL_NAME_SUGGESTIONS.length);
-    return MEDIEVAL_NAME_SUGGESTIONS[idx];
+  function getRandomMedievalName(
+    preferredCategory?: 'male' | 'female' | 'descriptor' | 'location'
+  ): string {
+    const categories: Array<'male' | 'female' | 'descriptor' | 'location'> = [
+      'male',
+      'female',
+      'descriptor',
+      'location',
+    ];
+    const category =
+      preferredCategory || categories[Math.floor(Math.random() * categories.length)];
+
+    if (category === 'male') {
+      const title = MALE_TITLES[Math.floor(Math.random() * MALE_TITLES.length)];
+      const name = MALE_NAMES[Math.floor(Math.random() * MALE_NAMES.length)];
+      return `${title} ${name}`;
+    } else if (category === 'female') {
+      const title = FEMALE_TITLES[Math.floor(Math.random() * FEMALE_TITLES.length)];
+      const name = FEMALE_NAMES[Math.floor(Math.random() * FEMALE_NAMES.length)];
+      return `${title} ${name}`;
+    } else if (category === 'descriptor') {
+      const desc =
+        COLOR_OR_ANIMAL_DESCRIPTORS[
+          Math.floor(Math.random() * COLOR_OR_ANIMAL_DESCRIPTORS.length)
+        ];
+      const warrior = WARRIOR_TYPES[Math.floor(Math.random() * WARRIOR_TYPES.length)];
+      return `${desc} ${warrior}`;
+    } else {
+      // category === 'location'
+      let candidate = '';
+      for (let attempts = 0; attempts < 12; attempts++) {
+        const title = LOCATION_TITLES[Math.floor(Math.random() * LOCATION_TITLES.length)];
+        const loc = FANTASY_LOCATIONS[Math.floor(Math.random() * FANTASY_LOCATIONS.length)];
+        candidate = `${title} of ${loc}`;
+        if (candidate.length <= MAX_NICKNAME_LENGTH) {
+          return candidate;
+        }
+      }
+      return candidate.slice(0, MAX_NICKNAME_LENGTH);
+    }
+  }
+
+  const HEROIC_CALLS_TO_ACTION = [
+    'Let there be blood!',
+    'Beat them back!',
+    'Onward to glory!',
+    'Smash the undead!',
+    'Defend the realm!',
+    'Crush the horde!',
+    'Charge into battle!',
+    'To arms, warriors!',
+    'No mercy for monsters!',
+    'Strike with fury!',
+    'Stand and fight!',
+    'Claim victory!',
+    'Hold the line!',
+    'Unleash the mace!',
+  ] as const;
+
+  function getRandomHeroicCallToAction(): string {
+    const idx = Math.floor(Math.random() * HEROIC_CALLS_TO_ACTION.length);
+    return HEROIC_CALLS_TO_ACTION[idx];
   }
 
   function getInitialSuggestedNickname() {
@@ -1267,10 +1485,46 @@
   }
 
   function populateNicknameSuggestion() {
+    if (enterGameBtn) {
+      enterGameBtn.textContent = getRandomHeroicCallToAction();
+    }
     if (!nicknameInputEl) return;
     if (!nicknameInputEl.value || !nicknameInputEl.value.trim()) {
       nicknameInputEl.value = getInitialSuggestedNickname();
     }
+  }
+
+  function rollRandomNickname(): string {
+    if (!nicknameInputEl) return '';
+    const current = (nicknameInputEl.value || '').trim();
+    let nextName = getRandomMedievalName();
+    for (let attempts = 0; attempts < 15 && nextName === current; attempts++) {
+      nextName = getRandomMedievalName();
+    }
+    nicknameInputEl.value = nextName;
+    nicknameInputEl.classList.remove('input-error');
+    if (enterModalSubtitleEl) {
+      enterModalSubtitleEl.textContent =
+        'Swing your mace to protect the grasslands from a horde of zombies!';
+    }
+    if (enterGameBtn) {
+      enterGameBtn.textContent = getRandomHeroicCallToAction();
+    }
+    if (nicknameDiceBtn) {
+      nicknameDiceBtn.classList.remove('rolling');
+      void (nicknameDiceBtn as any).offsetWidth;
+      nicknameDiceBtn.classList.add('rolling');
+      setTimeout(() => {
+        nicknameDiceBtn?.classList.remove('rolling');
+      }, 420);
+    }
+    if (typeof nicknameInputEl.focus === 'function') {
+      nicknameInputEl.focus();
+    }
+    if (typeof (nicknameInputEl as any).select === 'function') {
+      (nicknameInputEl as any).select();
+    }
+    return nextName;
   }
 
   // --- Helper Functions ---
@@ -9410,6 +9664,10 @@
   if (nicknameInputEl) {
     nicknameInputEl.addEventListener('input', () => {
       nicknameInputEl.classList.remove('input-error');
+      if (enterModalSubtitleEl && enterModalSubtitleEl.textContent?.includes('Please enter a nickname')) {
+        enterModalSubtitleEl.textContent =
+          'Swing your mace to protect the grasslands from a horde of zombies!';
+      }
     });
     nicknameInputEl.addEventListener('keydown', (e) => {
       e.stopPropagation();
@@ -9425,6 +9683,13 @@
     if (nicknameInputEl && typeof (nicknameInputEl as any).select === 'function') {
       (nicknameInputEl as any).select();
     }
+  }
+
+  if (nicknameDiceBtn) {
+    nicknameDiceBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      rollRandomNickname();
+    });
   }
 
   // --- Main Animation Loop ---
@@ -9682,6 +9947,18 @@
       defeatEnemy,
       spawnEnemy,
       createExtraHammer,
+      MALE_TITLES,
+      FEMALE_TITLES,
+      MALE_NAMES,
+      FEMALE_NAMES,
+      COLOR_OR_ANIMAL_DESCRIPTORS,
+      WARRIOR_TYPES,
+      LOCATION_TITLES,
+      FANTASY_LOCATIONS,
+      MEDIEVAL_NAME_SUGGESTIONS,
+      rollRandomNickname,
+      HEROIC_CALLS_TO_ACTION,
+      getRandomHeroicCallToAction,
       playPlayerHurtSound,
       getLastHurtSound: () => lastHurtSound,
       getLastHurtNoise: () => lastHurtSound,

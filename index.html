@@ -107,25 +107,42 @@
     <!-- Initial Click-to-Enter Modal (prevents idle open tabs from consuming server CPU) -->
     <section id="enter-modal" class="modal" aria-hidden="false">
       <div class="modal-card enter-card">
-        <span class="badge victory-badge">2.5D MULTIPLAYER ARENA</span>
         <h2>HAMMERTIME</h2>
         <p id="enter-modal-subtitle">
-          Enter a nickname to wield your chain-tethered spikey mace across the grasslands.
+          Swing your mace to protect the grasslands from a horde of zombies!
         </p>
         <div class="nickname-field">
-          <label for="nickname-input" class="stat-caption">ENTER YOUR NICKNAME</label>
-          <input
-            id="nickname-input"
-            class="nickname-input"
-            type="text"
-            maxlength="20"
-            placeholder="Warrior nickname..."
-            autocomplete="off"
-            spellcheck="false"
-          />
+          <label for="nickname-input" class="stat-caption">CHOOSE A NICKNAME</label>
+          <div class="nickname-input-group">
+            <input
+              id="nickname-input"
+              class="nickname-input"
+              type="text"
+              maxlength="20"
+              placeholder="Choose a nickname"
+              autocomplete="off"
+              spellcheck="false"
+            />
+            <button
+              id="nickname-dice-btn"
+              class="nickname-dice-btn"
+              type="button"
+              title="Roll random nickname"
+              aria-label="Roll random nickname"
+            >
+              <svg class="dice-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="3" width="18" height="18" rx="4" ry="4" fill="hsla(45, 95%, 58%, 0.15)" stroke="currentColor"/>
+                <circle cx="8" cy="8" r="1.5" fill="currentColor"/>
+                <circle cx="16" cy="8" r="1.5" fill="currentColor"/>
+                <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
+                <circle cx="8" cy="16" r="1.5" fill="currentColor"/>
+                <circle cx="16" cy="16" r="1.5" fill="currentColor"/>
+              </svg>
+            </button>
+          </div>
         </div>
         <button id="enter-game-btn" class="primary-btn" type="button">
-          Enter Battlefield
+          Onward to glory!
         </button>
       </div>
     </section>

@@ -734,9 +734,21 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     const freshInstance = loadClientGame('');
     const input1 = freshInstance.elements.get('nickname-input');
     assert.ok(input1.value && input1.value.length > 0);
+    assert.ok(input1.value.length <= 20, `Prepopulated nickname exceeds 20 characters: "${input1.value}"`);
+
+    const validMaleTitles = freshInstance.api.MALE_TITLES;
+    const validFemaleTitles = freshInstance.api.FEMALE_TITLES;
+    const validDescriptors = freshInstance.api.COLOR_OR_ANIMAL_DESCRIPTORS;
+    const validLocationTitles = freshInstance.api.LOCATION_TITLES;
+
+    const matchesGroup =
+      validMaleTitles.some((t) => input1.value.startsWith(`${t} `)) ||
+      validFemaleTitles.some((t) => input1.value.startsWith(`${t} `)) ||
+      validDescriptors.some((d) => input1.value.startsWith(`${d} `)) ||
+      validLocationTitles.some((t) => input1.value.startsWith(`${t} of `));
     assert.ok(
-      input1.value.startsWith('Sir ') || input1.value.startsWith('Lady '),
-      `Expected medieval name suggestion, got: ${input1.value}`
+      matchesGroup,
+      `Expected nickname to match one of the 4 medieval nickname groups, got: "${input1.value}"`
     );
 
     // 2. User sets their own custom nickname and enters game -> waits for server connection
@@ -763,6 +775,180 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(restoredBoard.length, 1);
     assert.equal(restoredBoard[0].name, 'Sir Percival');
     assert.equal(restoredBoard[0].kills, 27);
+  });
+
+  it('generates medieval nickname combinations across 4 groups (male, female, non-gendered, location) and allows regenerating via dice button', () => {
+    const instance = loadClientGame('');
+    const input = instance.elements.get('nickname-input');
+    const diceBtn = instance.elements.get('nickname-dice-btn');
+
+    // 1. Verify male titles and names are defined (Knight removed as title)
+    const expectedMaleTitles = ['King', 'Sir', 'Lord', 'Duke', 'Baron', 'Earl', 'Prince', 'Count'];
+    assert.deepEqual([...instance.api.MALE_TITLES], expectedMaleTitles);
+    assert.equal(instance.api.MALE_TITLES.includes('Knight'), false, 'Knight must be removed as a title');
+
+    const expectedMaleNames = [
+      'Galahad',
+      'Roland',
+      'Lancelot',
+      'Bedivere',
+      'Percival',
+      'Gareth',
+      'Gawain',
+      'Tristram',
+      'Godfrey',
+      'Baldwin',
+      'Roderick',
+      'Cedric',
+      'Aldous',
+    ];
+    assert.deepEqual([...instance.api.MALE_NAMES], expectedMaleNames);
+
+    // 2. Verify female titles and names are defined
+    const expectedFemaleTitles = ['Queen', 'Lady', 'Dame', 'Duchess', 'Baroness', 'Countess', 'Princess'];
+    assert.deepEqual([...instance.api.FEMALE_TITLES], expectedFemaleTitles);
+
+    const expectedFemaleNames = [
+      'Guinevere',
+      'Eleanor',
+      'Isolde',
+      'Rowena',
+      'Morwenna',
+      'Beatrix',
+      'Matilda',
+      'Yvaine',
+      'Clarice',
+      'Astrid',
+      'Vivienne',
+    ];
+    assert.deepEqual([...instance.api.FEMALE_NAMES], expectedFemaleNames);
+
+    // 3. Verify non-gendered group (color or animal descriptor + warrior type)
+    const expectedDescriptors = [
+      'Crimson', 'Scarlet', 'Azure', 'Emerald', 'Cobalt', 'Amber', 'Obsidian', 'Amethyst',
+      'Onyx', 'Ruby', 'Sapphire', 'Verdant', 'Cerulean', 'Indigo', 'Violet', 'Copper', 'Bronze',
+      'Silver', 'Gold', 'Iron', 'Ashen', 'Russet', 'Green', 'Red', 'Blue', 'Grey',
+      'Wolf', 'Whale', 'Snake', 'Bear', 'Hawk', 'Eagle', 'Lion', 'Tiger', 'Stag', 'Boar', 'Raven', 'Fox', 'Viper', 'Falcon', 'Dragon'
+    ];
+    assert.deepEqual([...instance.api.COLOR_OR_ANIMAL_DESCRIPTORS], expectedDescriptors);
+    assert.equal(instance.api.COLOR_OR_ANIMAL_DESCRIPTORS.includes('Black'), false, 'Black must be removed');
+    assert.equal(instance.api.COLOR_OR_ANIMAL_DESCRIPTORS.includes('White'), false, 'White must be removed');
+
+    const expectedWarriorTypes = [
+      'Knight', 'Warrior', 'Paladin', 'Squire', 'Huntsman', 'Champion', 'Berserker', 'Guardian', 'Crusader', 'Slayer', 'Ranger', 'Sentinel', 'Vanguard'
+    ];
+    assert.deepEqual([...instance.api.WARRIOR_TYPES], expectedWarriorTypes);
+
+    // Test expected descriptor combinations: "Green Warrior", "Wolf Paladin", "Whale Squire", "Snake Huntsman", "Obsidian Knight", "Crimson Berserker"
+    const exampleNonGendered = [
+      'Green Warrior',
+      'Wolf Paladin',
+      'Whale Squire',
+      'Snake Huntsman',
+      'Obsidian Knight',
+      'Emerald Paladin',
+      'Crimson Berserker',
+    ];
+    for (const eg of exampleNonGendered) {
+      assert.ok(instance.api.MEDIEVAL_NAME_SUGGESTIONS.includes(eg), `Pool should include example non-gendered name "${eg}"`);
+    }
+
+    // 4. Verify location-based group (title + "of" + fantasy location)
+    const expectedLocationTitles = [
+      'King', 'Queen', 'Lord', 'Lady', 'Duke', 'Duchess', 'Baron', 'Baroness', 'Prince', 'Princess', 'Earl', 'Countess'
+    ];
+    assert.deepEqual([...instance.api.LOCATION_TITLES], expectedLocationTitles);
+    assert.equal(instance.api.LOCATION_TITLES.includes('Knight'), false, 'Knight must not be in location titles');
+
+    const expectedLocations = [
+      'Highshire', 'Ironhold', 'Oakhaven', 'Ravenrock', 'Stormfall', 'Sunspire', 'Frostpeak', 'Windmere', 'Deepwood', 'Riverbend', 'Greymoor', 'Dunhollow', 'Goldcrest', 'Thornhill', 'Stonehaven'
+    ];
+    assert.deepEqual([...instance.api.FANTASY_LOCATIONS], expectedLocations);
+
+    // Test expected location combination: "King of Highshire"
+    assert.ok(
+      instance.api.MEDIEVAL_NAME_SUGGESTIONS.includes('King of Highshire'),
+      'Pool should include "King of Highshire"'
+    );
+
+    // 5. Verify total pool size and all combinations fit within MAX_NICKNAME_LENGTH (20 chars)
+    assert.ok(instance.api.MEDIEVAL_NAME_SUGGESTIONS.length > 500, 'Should offer over 500 nickname choices');
+    for (const name of instance.api.MEDIEVAL_NAME_SUGGESTIONS) {
+      assert.ok(name.length <= 20, `Name "${name}" exceeds 20 characters`);
+      assert.ok(name.length > 0, 'Name must not be empty');
+    }
+
+    // 6. Test specific random name generator categories
+    for (let i = 0; i < 30; i++) {
+      const maleName = instance.api.getRandomMedievalName('male');
+      const [titleM, nameM] = maleName.split(' ');
+      assert.ok(expectedMaleTitles.includes(titleM), `Expected male title, got "${titleM}"`);
+      assert.ok(expectedMaleNames.includes(nameM), `Expected male name, got "${nameM}"`);
+
+      const femaleName = instance.api.getRandomMedievalName('female');
+      const [titleF, nameF] = femaleName.split(' ');
+      assert.ok(expectedFemaleTitles.includes(titleF), `Expected female title, got "${titleF}"`);
+      assert.ok(expectedFemaleNames.includes(nameF), `Expected female name, got "${nameF}"`);
+
+      const descName = instance.api.getRandomMedievalName('descriptor');
+      const [desc, warrior] = descName.split(' ');
+      assert.ok(expectedDescriptors.includes(desc), `Expected color/animal descriptor, got "${desc}"`);
+      assert.ok(expectedWarriorTypes.includes(warrior), `Expected warrior type, got "${warrior}"`);
+
+      const locName = instance.api.getRandomMedievalName('location');
+      assert.ok(locName.includes(' of '), `Expected location name with " of ", got "${locName}"`);
+      const [locTitle, locPlace] = locName.split(' of ');
+      assert.ok(expectedLocationTitles.includes(locTitle), `Expected location title, got "${locTitle}"`);
+      assert.ok(expectedLocations.includes(locPlace), `Expected fantasy location, got "${locPlace}"`);
+      assert.ok(locName.length <= 20);
+    }
+
+    // 7. Test clicking the dice icon regenerates a new random nickname across all groups
+    const initialName = input.value;
+    assert.ok(initialName && initialName.length > 0);
+
+    const rolledNames = [initialName];
+    for (let i = 0; i < 30; i++) {
+      const prevVal = input.value;
+      diceBtn.dispatchEvent({ type: 'click', stopPropagation: () => {} });
+      const newVal = input.value;
+      assert.ok(newVal && newVal.length > 0);
+      assert.ok(newVal.length <= 20);
+      // Verify clicking dice regenerates a new name rather than staying on the same name
+      assert.notEqual(newVal, prevVal, `Roll ${i} should produce a new name different from previous`);
+      rolledNames.push(newVal);
+    }
+    const uniqueRolled = new Set(rolledNames);
+    assert.ok(uniqueRolled.size >= 15, 'Repeated dice clicks should offer a diverse set of nickname choices');
+
+    // 8. Test rollRandomNickname helper directly
+    const directRoll = instance.api.rollRandomNickname();
+    assert.equal(input.value, directRoll);
+
+    // 9. Test dialog subtitle, input help text, and random heroic calls to action on enter button
+    const enterBtn = instance.elements.get('enter-game-btn');
+    assert.ok(
+      instance.api.HEROIC_CALLS_TO_ACTION.length >= 12,
+      'Expected at least a dozen heroic calls to action'
+    );
+    assert.ok(instance.api.HEROIC_CALLS_TO_ACTION.includes('Let there be blood!'));
+    assert.ok(instance.api.HEROIC_CALLS_TO_ACTION.includes('Beat them back!'));
+    assert.ok(instance.api.HEROIC_CALLS_TO_ACTION.includes('Onward to glory!'));
+    assert.ok(
+      instance.api.HEROIC_CALLS_TO_ACTION.includes(enterBtn.textContent),
+      `Expected enter button text to be one of the heroic calls to action, got: "${enterBtn.textContent}"`
+    );
+
+    // Verify HTML template contains updated subtitle and help text
+    const indexHtml = fs.readFileSync(path.join(__dirname, '..', 'index.html'), 'utf8');
+    assert.ok(
+      indexHtml.includes('Swing your mace to protect the grasslands from a horde of zombies!'),
+      'index.html should have the updated dialog middle text'
+    );
+    assert.ok(
+      indexHtml.includes('placeholder="Choose a nickname"'),
+      'index.html should have the updated input field placeholder'
+    );
   });
 
   it('performs local client prediction with smooth reconciliation and remote entity snapshot interpolation', () => {
