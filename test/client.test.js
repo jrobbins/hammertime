@@ -98,7 +98,10 @@ function createMockElement(id) {
     getAttribute: () => null,
     addEventListener: () => {},
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 800 }),
-    getContext: () => createMockCanvasContext(),
+    getContext() {
+      if (!this._ctx) this._ctx = createMockCanvasContext();
+      return this._ctx;
+    },
     focus: () => {},
     blur: () => {},
   };
@@ -943,5 +946,172 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     // 5. Verify keyboard mode and keys state have been completely removed
     assert.equal('keys' in api, false);
     assert.equal('controlMode' in api.getState(), false);
+  });
+
+  it('adapts visual quality tiers (Dynamic LOD), caps/throttles effects & audio, and throttles minimap/HUD updates based on frame time', () => {
+    const c = api.constants;
+    assert.equal(api.getState().visualQualityTier, c.QUALITY_TIER_HIGH);
+
+    // 1. Frame-time EMA steps down from HIGH (2) -> MEDIUM (1) -> LOW (0) and recovers back to HIGH (2)
+    for (let i = 0; i < 12; i++) {
+      api.updateVisualQuality(0.023); // 23 ms (~43 FPS)
+    }
+    assert.equal(api.getState().visualQualityTier, c.QUALITY_TIER_MEDIUM);
+
+    for (let i = 0; i < 12; i++) {
+      api.updateVisualQuality(0.034); // 34 ms (~29 FPS)
+    }
+    assert.equal(api.getState().visualQualityTier, c.QUALITY_TIER_LOW);
+
+    for (let i = 0; i < 20; i++) {
+      api.updateVisualQuality(0.014); // 14 ms (~71 FPS)
+    }
+    assert.equal(api.getState().visualQualityTier, c.QUALITY_TIER_HIGH);
+
+    // 2. Particle & floating-text pool caps and spark count scaling per tier
+    api.particles.length = 0;
+    api.setState({ visualQualityTier: c.QUALITY_TIER_HIGH });
+    api.addParticles(2100, 2100, '#fff', 20, 10, 50);
+    assert.equal(api.particles.length, 20);
+
+    api.particles.length = 0;
+    api.setState({ visualQualityTier: c.QUALITY_TIER_MEDIUM });
+    api.addParticles(2100, 2100, '#fff', 20, 10, 50);
+    assert.equal(api.particles.length, 10); // 0.5x in MEDIUM
+
+    api.particles.length = 0;
+    api.setState({ visualQualityTier: c.QUALITY_TIER_LOW });
+    api.addParticles(2100, 2100, '#fff', 20, 10, 50);
+    assert.equal(api.particles.length, 5); // 0.25x in LOW
+
+    // Hard pool cap in LOW tier (90 particles, 16 floatingTexts)
+    for (let i = 0; i < 30; i++) {
+      api.addParticles(2100, 2100, '#fff', 20, 10, 50);
+      api.addFloatingText(2100, 2100, `hit-${i}`);
+    }
+    assert.equal(api.particles.length, c.MAX_PARTICLES_BY_TIER[c.QUALITY_TIER_LOW]);
+    assert.equal(api.floatingTexts.length, c.MAX_FLOATING_TEXTS_BY_TIER[c.QUALITY_TIER_LOW]);
+
+    // 3. Off-screen impact and enemy_die events are culled while on-screen or local-victim events are processed
+    api.particles.length = 0;
+    api.floatingTexts.length = 0;
+    api.setState({ visualQualityTier: c.QUALITY_TIER_HIGH, localPlayerId: 'local-1' });
+    // Far off-screen (camera is around 2100, 2100)
+    api.processServerEvents([
+      { type: 'impact', x: 50, y: 50, enemyX: 50, enemyY: 50, damage: 30 },
+      { type: 'enemy_die', x: 50, y: 50, color: '#567a4e' },
+    ]);
+    assert.equal(api.particles.length, 0);
+    assert.equal(api.floatingTexts.length, 0);
+
+    // On-screen impact spawns particles and floating text
+    api.processServerEvents([
+      { type: 'impact', x: 2100, y: 2100, enemyX: 2100, enemyY: 2100, damage: 30 },
+    ]);
+    assert.ok(api.particles.length > 0);
+    assert.equal(api.floatingTexts.length, 1);
+
+    // 4. Web Audio rate limiter caps sounds per 100ms window by tier
+    api.setState({
+      visualQualityTier: c.QUALITY_TIER_LOW,
+      soundWindowStartMs: -1000,
+      soundsInCurrentWindow: 0,
+    });
+    assert.equal(api.canPlayRateLimitedSound(1000), true);
+    assert.equal(api.canPlayRateLimitedSound(1010), true);
+    assert.equal(
+      api.canPlayRateLimitedSound(1020),
+      false,
+      'Low tier should cap at 2 sounds per 100ms window'
+    );
+    assert.equal(
+      api.canPlayRateLimitedSound(1105),
+      true,
+      'New 100ms window should reset sound budget'
+    );
+
+    // 5. Hammer trail length adapts by tier in updateEffects and render() executes across all tiers
+    api.warrior.alive = true;
+    api.hammer.vx = 500;
+    api.hammer.vy = 0;
+    api.hammer.flameTimer = 5;
+    api.setState({ visualQualityTier: c.QUALITY_TIER_MEDIUM });
+    for (let i = 0; i < 10; i++) {
+      api.updateEffects(0.005);
+    }
+    assert.ok(api.hammer.trail.length <= 4 && api.hammer.trail.length > 0);
+    api.render();
+
+    api.setState({ visualQualityTier: c.QUALITY_TIER_LOW });
+    api.updateEffects(0.005);
+    assert.equal(api.hammer.trail.length, 0);
+    api.render();
+
+    // Verify static ground scenery (grass blades, wildflowers, pebbles, meadow patches) never changes across tiers so grass never blinks
+    api.warrior.alive = false;
+    api.enemies.length = 0;
+    api.particles.length = 0;
+    api.floatingTexts.length = 0;
+    api.shockwaves.length = 0;
+    const gameCtx = elements.get('game-canvas')._ctx;
+    const countSceneryOps = (tier) => {
+      let lineToCount = 0;
+      let ellipseCount = 0;
+      let arcCount = 0;
+      gameCtx.lineTo = () => {
+        lineToCount++;
+      };
+      gameCtx.ellipse = () => {
+        ellipseCount++;
+      };
+      gameCtx.arc = () => {
+        arcCount++;
+      };
+      api.setState({ visualQualityTier: tier, minimapAccumSec: 0 });
+      api.render();
+      return { lineToCount, ellipseCount, arcCount };
+    };
+    const highOps = countSceneryOps(c.QUALITY_TIER_HIGH);
+    const medOps = countSceneryOps(c.QUALITY_TIER_MEDIUM);
+    const lowOps = countSceneryOps(c.QUALITY_TIER_LOW);
+    assert.ok(highOps.lineToCount > 50, 'Expected visible grass blades to be drawn');
+    assert.deepEqual(
+      medOps,
+      highOps,
+      'Grass blades, pebbles, and wildflowers must remain identical in MEDIUM tier (no blinking)'
+    );
+    assert.deepEqual(
+      lowOps,
+      highOps,
+      'Grass blades, pebbles, and wildflowers must remain identical in LOW tier (no blinking)'
+    );
+
+    // 6. Minimap throttled to 10 Hz (0.1s) and leaderboard DOM only rebuilt when entries change
+    const leaderboardList = elements.get('leaderboard-list');
+    api.recordLocalLeaderboardScore('Sir Cache', 10);
+    api.updateHUD();
+    const firstChildRef = leaderboardList.children[0];
+    assert.ok(firstChildRef);
+    api.updateHUD();
+    assert.equal(
+      leaderboardList.children[0],
+      firstChildRef,
+      'Unchanged leaderboard should not rebuild DOM nodes on every updateHUD() call'
+    );
+
+    api.setState({ minimapAccumSec: 0.02 });
+    api.render();
+    assert.equal(
+      api.getState().minimapAccumSec,
+      0.02,
+      'render() should skip renderMinimap() when < 0.1s has elapsed'
+    );
+    api.setState({ minimapAccumSec: 0.1 });
+    api.render();
+    assert.equal(
+      api.getState().minimapAccumSec,
+      0,
+      'render() should run renderMinimap() and reset accumulator once >= 0.1s has elapsed'
+    );
   });
 });

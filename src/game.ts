@@ -143,6 +143,40 @@
   const LEADERBOARD_MAX_ENTRIES = 10;
   const MAX_NICKNAME_LENGTH = 20;
 
+  // --- Adaptive Visual Quality (Dynamic LOD) Constants & State ---
+  const QUALITY_TIER_LOW = 0;
+  const QUALITY_TIER_MEDIUM = 1;
+  const QUALITY_TIER_HIGH = 2;
+  const MAX_PARTICLES_BY_TIER = [90, 200, 420];
+  const MAX_FLOATING_TEXTS_BY_TIER = [16, 32, 64];
+  const PARTICLE_SPAWN_SCALE_BY_TIER = [0.25, 0.5, 1.0];
+  const MAX_SOUNDS_PER_WINDOW_BY_TIER = [2, 4, 6];
+  const SOUND_RATE_WINDOW_MS = 100;
+  const MINIMAP_UPDATE_INTERVAL = 0.1; // 10 Hz minimap refresh rate
+
+  let avgFrameMs = 16.67;
+  let visualQualityTier = QUALITY_TIER_HIGH;
+  let soundWindowStartMs = -1000;
+  let soundsInCurrentWindow = 0;
+  let minimapAccumSec = MINIMAP_UPDATE_INTERVAL;
+  let lastLeaderboardSignature = '';
+
+  function canPlayRateLimitedSound(nowMs = performance.now()) {
+    if (nowMs - soundWindowStartMs >= SOUND_RATE_WINDOW_MS || nowMs < soundWindowStartMs) {
+      soundWindowStartMs = nowMs;
+      soundsInCurrentWindow = 0;
+    }
+    const maxSounds =
+      MAX_SOUNDS_PER_WINDOW_BY_TIER[visualQualityTier] != null
+        ? MAX_SOUNDS_PER_WINDOW_BY_TIER[visualQualityTier]
+        : 6;
+    if (soundsInCurrentWindow >= maxSounds) {
+      return false;
+    }
+    soundsInCurrentWindow += 1;
+    return true;
+  }
+
   // --- Web Audio API Sound Synthesizer ---
   let audioCtx = null;
 
@@ -163,6 +197,7 @@
    * Plays a short percussive impact sound scaled proportionally to the damage done.
    */
   function playImpactSound(damage, isChain = false) {
+    if (!canPlayRateLimitedSound()) return;
     const ctxAudio = ensureAudioContext();
     if (!ctxAudio) return;
 
@@ -190,26 +225,29 @@
     osc.start(now);
     osc.stop(now + duration + 0.005);
 
-    // Metallic overtone transient proportional to damage
-    const overtone = ctxAudio.createOscillator();
-    const overtoneGain = ctxAudio.createGain();
-    overtone.type = 'square';
-    overtone.frequency.setValueAtTime(isChain ? 520 : 310 + intensity * 160, now);
-    overtone.frequency.exponentialRampToValueAtTime(110, now + duration * 0.65);
+    // Metallic overtone transient proportional to damage (skipped in Low quality tier to halve audio nodes)
+    if (visualQualityTier > QUALITY_TIER_LOW) {
+      const overtone = ctxAudio.createOscillator();
+      const overtoneGain = ctxAudio.createGain();
+      overtone.type = 'square';
+      overtone.frequency.setValueAtTime(isChain ? 520 : 310 + intensity * 160, now);
+      overtone.frequency.exponentialRampToValueAtTime(110, now + duration * 0.65);
 
-    overtoneGain.gain.setValueAtTime(peakGain * 0.22, now);
-    overtoneGain.gain.exponentialRampToValueAtTime(0.0008, now + duration * 0.65);
+      overtoneGain.gain.setValueAtTime(peakGain * 0.22, now);
+      overtoneGain.gain.exponentialRampToValueAtTime(0.0008, now + duration * 0.65);
 
-    overtone.connect(overtoneGain);
-    overtoneGain.connect(ctxAudio.destination);
-    overtone.start(now);
-    overtone.stop(now + duration * 0.65 + 0.005);
+      overtone.connect(overtoneGain);
+      overtoneGain.connect(ctxAudio.destination);
+      overtone.start(now);
+      overtone.stop(now + duration * 0.65 + 0.005);
+    }
   }
 
   /**
    * Plays a very short downward pop sound when an enemy disappears (0 HP).
    */
   function playEnemyDisappearSound() {
+    if (!canPlayRateLimitedSound()) return;
     const ctxAudio = ensureAudioContext();
     if (!ctxAudio) return;
 
@@ -527,6 +565,7 @@
    * Plays a short funky synth pluck when a zombie starts dancing.
    */
   function playDiscoChimeSound() {
+    if (!canPlayRateLimitedSound()) return;
     const ctxAudio = ensureAudioContext();
     if (!ctxAudio) return;
 
@@ -603,6 +642,7 @@
    * Plays a snappy silky web-wrap sound when a Spider Hammer wraps a zombie in webbing.
    */
   function playSpiderWebSound() {
+    if (!canPlayRateLimitedSound()) return;
     const ctxAudio = ensureAudioContext();
     if (!ctxAudio) return;
 
@@ -1001,11 +1041,30 @@
   function clearLocalLeaderboard() {
     localLeaderboardRecords.clear();
     leaderboard = [];
+    lastLeaderboardSignature = '';
   }
 
-  function renderLeaderboard() {
+  function getLeaderboardSignature(entries) {
+    const selfNameLower = (warrior.name || '').toLowerCase();
+    let sig = `${selfNameLower}#${entries.length}`;
+    for (let i = 0; i < entries.length; i++) {
+      const e = entries[i];
+      sig += `|${e.rank || i + 1}:${e.name}:${e.kills != null ? e.kills : 0}:${e.color || ''}`;
+    }
+    return sig;
+  }
+
+  function renderLeaderboard(force = true) {
     if (!leaderboardListEl) return;
     const entries = (Array.isArray(leaderboard) ? leaderboard : []).slice(0, LEADERBOARD_MAX_ENTRIES);
+    const sig = getLeaderboardSignature(entries);
+    const hasChildren =
+      Array.isArray(leaderboardListEl.children) && leaderboardListEl.children.length > 0;
+    if (!force && sig === lastLeaderboardSignature && hasChildren) {
+      return;
+    }
+    lastLeaderboardSignature = sig;
+
     if (Array.isArray(leaderboardListEl.children)) {
       leaderboardListEl.children.length = 0;
     }
@@ -1158,11 +1217,30 @@
     return { x, y };
   }
 
+  function isWorldPointVisible(x, y, margin = 240) {
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return true;
+    const viewLeft = camera.x - margin;
+    const viewRight = camera.x + viewportWidth + margin;
+    const viewTop = camera.y - margin;
+    const viewBottom = camera.y + viewportHeight / TILT_Y + margin;
+    return x >= viewLeft && x <= viewRight && y >= viewTop && y <= viewBottom;
+  }
+
   function processServerEvents(events) {
     if (!Array.isArray(events)) return;
+    const cullMargin =
+      visualQualityTier === QUALITY_TIER_HIGH
+        ? 320
+        : visualQualityTier === QUALITY_TIER_MEDIUM
+        ? 160
+        : 60;
     for (let i = 0; i < events.length; i++) {
       const ev = events[i];
       if (ev.type === 'impact') {
+        const isLocalVictim = ev.victimPlayerId && ev.victimPlayerId === localPlayerId;
+        if (!isLocalVictim && !isWorldPointVisible(ev.x, ev.y, cullMargin)) {
+          continue;
+        }
         playImpactSound(ev.damage, !!ev.isChain);
         if (ev.victimPlayerId) {
           playPlayerHurtSound();
@@ -1182,6 +1260,9 @@
           addFloatingText(ev.enemyX, ev.enemyY, `-${ev.damage}`, dmgColor, dmgScale);
         }
       } else if (ev.type === 'enemy_die') {
+        if (!isWorldPointVisible(ev.x, ev.y, cullMargin)) {
+          continue;
+        }
         playEnemyDisappearSound();
         addParticles(ev.x, ev.y, ev.color || '#567a4e', 18, 40, 210, 4.5);
         addParticles(ev.x, ev.y, '#22331d', 8, 20, 90, 3.5);
@@ -1222,6 +1303,7 @@
         addFloatingText(ev.playerX, ev.playerY, `-${ev.damage}`, '#fc8181', 1.05);
         addParticles(ev.x, ev.y, '#fc8181', 6, 40, 130, 3);
       } else if (ev.type === 'ignite') {
+        if (!isWorldPointVisible(ev.x, ev.y, cullMargin)) continue;
         addParticles(ev.x, ev.y, '#ff6b35', 10, 35, 150, 3.6);
         addParticles(ev.x, ev.y, '#f6e05e', 6, 25, 110, 2.8);
       } else if (ev.type === 'earthquake') {
@@ -1243,6 +1325,7 @@
         addShockwave(ev.x, ev.y, r * 0.65, '128, 90, 213');
         addParticles(ev.x, ev.y, '#b794f4', 32, 60, 320, 4.2);
       } else if (ev.type === 'fear_taint') {
+        if (!isWorldPointVisible(ev.x, ev.y, cullMargin)) continue;
         addParticles(ev.x, ev.y, '#b794f4', 8, 30, 130, 3.2);
         addParticles(ev.x, ev.y, '#81e6d9', 5, 20, 100, 2.6);
       } else if (ev.type === 'bulldozer') {
@@ -1270,15 +1353,18 @@
         addParticles(ev.x, ev.y, '#ffffff', 20, 40, 190, 3.5);
         addParticles(ev.x, ev.y, '#e53e3e', 12, 35, 160, 3.0);
       } else if (ev.type === 'spider_web') {
+        if (!isWorldPointVisible(ev.x, ev.y, cullMargin)) continue;
         playSpiderWebSound();
         addParticles(ev.x, ev.y, '#ffffff', 12, 30, 130, 3.2);
         addFloatingText(ev.x, ev.y - 26, 'WEBBED! (30s)', '#ffffff', 1.05);
       } else if (ev.type === 'disco_dance') {
+        if (!isWorldPointVisible(ev.x, ev.y, cullMargin)) continue;
         playDiscoChimeSound();
         addParticles(ev.x, ev.y, '#f687b3', 8, 30, 120, 3.0);
         addParticles(ev.x, ev.y, '#63b3ed', 6, 25, 105, 2.8);
         addFloatingText(ev.x, ev.y - 26, '♪ DANCING! ♪', '#f687b3', 1.05);
       } else if (ev.type === 'floating_text') {
+        if (!isWorldPointVisible(ev.x, ev.y, cullMargin)) continue;
         addFloatingText(ev.x, ev.y, ev.text, ev.color || '#fff', ev.scale || 1);
       } else if (ev.type === 'victory') {
         playVictorySound();
@@ -2334,8 +2420,75 @@
     return true;
   }
 
+  function updateVisualQuality(rawDt) {
+    if (Number.isFinite(rawDt) && rawDt > 0 && rawDt <= 0.25) {
+      const sampleMs = rawDt * 1000;
+      avgFrameMs = avgFrameMs * 0.8 + sampleMs * 0.2;
+    }
+
+    if (visualQualityTier === QUALITY_TIER_HIGH) {
+      if (avgFrameMs > 26.0) {
+        visualQualityTier = QUALITY_TIER_LOW;
+      } else if (avgFrameMs > 19.5) {
+        visualQualityTier = QUALITY_TIER_MEDIUM;
+      }
+    } else if (visualQualityTier === QUALITY_TIER_MEDIUM) {
+      if (avgFrameMs > 26.0) {
+        visualQualityTier = QUALITY_TIER_LOW;
+      } else if (avgFrameMs < 17.5) {
+        visualQualityTier = QUALITY_TIER_HIGH;
+      }
+    } else {
+      if (avgFrameMs < 17.5) {
+        visualQualityTier = QUALITY_TIER_HIGH;
+      } else if (avgFrameMs < 22.5) {
+        visualQualityTier = QUALITY_TIER_MEDIUM;
+      }
+    }
+
+    const maxParticles =
+      MAX_PARTICLES_BY_TIER[visualQualityTier] != null
+        ? MAX_PARTICLES_BY_TIER[visualQualityTier]
+        : 420;
+    if (particles.length > maxParticles) {
+      particles.splice(0, particles.length - maxParticles);
+    }
+
+    const maxTexts =
+      MAX_FLOATING_TEXTS_BY_TIER[visualQualityTier] != null
+        ? MAX_FLOATING_TEXTS_BY_TIER[visualQualityTier]
+        : 64;
+    if (floatingTexts.length > maxTexts) {
+      floatingTexts.splice(0, floatingTexts.length - maxTexts);
+    }
+  }
+
   function addParticles(x, y, color, count, minSpeed, maxSpeed, size = 3.5) {
-    for (let i = 0; i < count; i++) {
+    const scale =
+      PARTICLE_SPAWN_SCALE_BY_TIER[visualQualityTier] != null
+        ? PARTICLE_SPAWN_SCALE_BY_TIER[visualQualityTier]
+        : 1.0;
+    let effectiveCount = count;
+    if (scale < 1.0) {
+      if (count <= 1) {
+        effectiveCount = Math.random() < scale ? 1 : 0;
+      } else {
+        effectiveCount = Math.max(1, Math.round(count * scale));
+      }
+    }
+    if (effectiveCount <= 0) return;
+
+    const maxParticles =
+      MAX_PARTICLES_BY_TIER[visualQualityTier] != null
+        ? MAX_PARTICLES_BY_TIER[visualQualityTier]
+        : 420;
+    const overflow = particles.length + effectiveCount - maxParticles;
+    if (overflow > 0) {
+      particles.splice(0, Math.min(particles.length, overflow));
+    }
+
+    for (let i = 0; i < effectiveCount; i++) {
+      if (particles.length >= maxParticles) break;
       const ang = Math.random() * Math.PI * 2;
       const spd = minSpeed + Math.random() * (maxSpeed - minSpeed);
       particles.push({
@@ -2352,6 +2505,13 @@
   }
 
   function addFloatingText(x, y, text, color = '#fff', scale = 1) {
+    const maxTexts =
+      MAX_FLOATING_TEXTS_BY_TIER[visualQualityTier] != null
+        ? MAX_FLOATING_TEXTS_BY_TIER[visualQualityTier]
+        : 64;
+    if (floatingTexts.length >= maxTexts) {
+      floatingTexts.splice(0, floatingTexts.length - maxTexts + 1);
+    }
     floatingTexts.push({
       x,
       y,
@@ -2389,6 +2549,8 @@
     localVictoryTimer = 0;
     teamKills = 0;
     victoryInfo = null;
+    minimapAccumSec = MINIMAP_UPDATE_INTERVAL;
+    lastLeaderboardSignature = '';
     gameOverModal.classList.add('hidden');
     gameOverModal.setAttribute('aria-hidden', 'true');
     if (victoryModal) {
@@ -4211,28 +4373,38 @@
     }
 
     // Hammer motion trails & live fire ember particles across all hammers
+    const maxTrailLen =
+      visualQualityTier === QUALITY_TIER_HIGH
+        ? 9
+        : visualQualityTier === QUALITY_TIER_MEDIUM
+        ? 4
+        : 0;
     for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
       const h = warrior.hammers[hIdx];
       if (!h.trail) h.trail = [];
-      const hammerSpeed = Math.hypot(h.vx, h.vy);
-      if (warrior.alive && (hammerSpeed > 180 || h.flameTimer > 0 || (h.discoTimer || 0) > 0)) {
-        h.trail.push({
-          x: h.x,
-          y: h.y,
-          angle: h.angle,
-          alpha:
-            h.flameTimer > 0 || (h.discoTimer || 0) > 0
-              ? Math.max(0.38, Math.min(0.65, hammerSpeed / 700))
-              : Math.min(0.55, (hammerSpeed - 180) / 900),
-        });
-      }
-      while (h.trail.length > 9) {
-        h.trail.shift();
-      }
-      for (let i = h.trail.length - 1; i >= 0; i--) {
-        h.trail[i].alpha -= dt * 2.4;
-        if (h.trail[i].alpha <= 0) {
-          h.trail.splice(i, 1);
+      if (maxTrailLen === 0) {
+        h.trail.length = 0;
+      } else {
+        const hammerSpeed = Math.hypot(h.vx, h.vy);
+        if (warrior.alive && (hammerSpeed > 180 || h.flameTimer > 0 || (h.discoTimer || 0) > 0)) {
+          h.trail.push({
+            x: h.x,
+            y: h.y,
+            angle: h.angle,
+            alpha:
+              h.flameTimer > 0 || (h.discoTimer || 0) > 0
+                ? Math.max(0.38, Math.min(0.65, hammerSpeed / 700))
+                : Math.min(0.55, (hammerSpeed - 180) / 900),
+          });
+        }
+        while (h.trail.length > maxTrailLen) {
+          h.trail.shift();
+        }
+        for (let i = h.trail.length - 1; i >= 0; i--) {
+          h.trail[i].alpha -= dt * 2.4;
+          if (h.trail[i].alpha <= 0) {
+            h.trail.splice(i, 1);
+          }
         }
       }
 
@@ -4261,7 +4433,7 @@
     }
     for (let i = 0; i < remotePlayers.length; i++) {
       const rp = remotePlayers[i];
-      if (!rp.alive) continue;
+      if (!rp.alive || !isWorldPointVisible(rp.x, rp.y, 160)) continue;
       if ((rp.bulldozerTimer || 0) > 0 && Math.random() < dt * 14) {
         const exhaustX = rp.x + Math.cos(rp.angle) * 6 - Math.sin(rp.angle) * 10;
         const exhaustY = rp.y + Math.sin(rp.angle) * 6 + Math.cos(rp.angle) * 10;
@@ -4309,6 +4481,8 @@
     }
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i];
+      if ((e.burnTimer || 0) <= 0 && (e.danceTimer || 0) <= 0) continue;
+      if (!isWorldPointVisible(e.x, e.y, 120)) continue;
       if (e.burnTimer > 0 && Math.random() < dt * 36) {
         addParticles(
           e.x + (Math.random() - 0.5) * e.radius * 1.2,
@@ -4379,17 +4553,41 @@
     }
   }
 
+  function setTextIfChanged(el, text) {
+    if (el && el.textContent !== text) {
+      el.textContent = text;
+    }
+  }
+
+  function setStyleIfChanged(el, prop, val) {
+    if (el && el.style && el.style[prop] !== val) {
+      el.style[prop] = val;
+    }
+  }
+
   function updateHUD() {
     const hpPct = Math.max(0, Math.min(100, (warrior.hp / warrior.maxHp) * 100));
-    hpTextEl.textContent = `${Math.ceil(warrior.hp)} / ${warrior.maxHp}`;
-    hpBarFillEl.style.width = `${hpPct}%`;
+    setTextIfChanged(hpTextEl, `${Math.ceil(warrior.hp)} / ${warrior.maxHp}`);
+    setStyleIfChanged(hpBarFillEl, 'width', `${hpPct}%`);
 
     if (hpPct > 55) {
-      hpBarFillEl.style.background = 'linear-gradient(90deg, hsl(134, 62%, 38%), hsl(134, 70%, 50%))';
+      setStyleIfChanged(
+        hpBarFillEl,
+        'background',
+        'linear-gradient(90deg, hsl(134, 62%, 38%), hsl(134, 70%, 50%))'
+      );
     } else if (hpPct > 25) {
-      hpBarFillEl.style.background = 'linear-gradient(90deg, hsl(38, 88%, 45%), hsl(45, 92%, 55%))';
+      setStyleIfChanged(
+        hpBarFillEl,
+        'background',
+        'linear-gradient(90deg, hsl(38, 88%, 45%), hsl(45, 92%, 55%))'
+      );
     } else {
-      hpBarFillEl.style.background = 'linear-gradient(90deg, hsl(0, 78%, 46%), hsl(12, 88%, 56%))';
+      setStyleIfChanged(
+        hpBarFillEl,
+        'background',
+        'linear-gradient(90deg, hsl(0, 78%, 46%), hsl(12, 88%, 56%))'
+      );
     }
 
     if (mountStatGroupEl) {
@@ -4399,61 +4597,62 @@
           0,
           Math.min(100, (warrior.bulldozerTimer / BULLDOZER_DURATION) * 100)
         );
-        if (mountLabelEl) {
-          mountLabelEl.textContent = 'BULLDOZER MODE';
-        }
-        if (mountHpTextEl) {
-          mountHpTextEl.textContent = `${warrior.bulldozerTimer.toFixed(1)}s / ${BULLDOZER_DURATION}s`;
-        }
-        if (mountHpBarFillEl) {
-          mountHpBarFillEl.style.width = `${dozerPct}%`;
-          mountHpBarFillEl.style.background = 'linear-gradient(90deg, #d69e2e, #ecc94b)';
-        }
+        setTextIfChanged(mountLabelEl, 'BULLDOZER MODE');
+        setTextIfChanged(
+          mountHpTextEl,
+          `${warrior.bulldozerTimer.toFixed(1)}s / ${BULLDOZER_DURATION}s`
+        );
+        setStyleIfChanged(mountHpBarFillEl, 'width', `${dozerPct}%`);
+        setStyleIfChanged(
+          mountHpBarFillEl,
+          'background',
+          'linear-gradient(90deg, #d69e2e, #ecc94b)'
+        );
       } else if (warrior.mountType && warrior.mountHp > 0) {
         mountStatGroupEl.classList.remove('hidden');
         const mountMax = Math.max(1, warrior.mountMaxHp || warrior.mountHp);
         const mountPct = Math.max(0, Math.min(100, (warrior.mountHp / mountMax) * 100));
-        if (mountLabelEl) {
-          mountLabelEl.textContent =
-            warrior.mountType === 'elephant'
-              ? 'WAR ELEPHANT HP'
-              : warrior.mountType === 'tortoise'
-              ? 'GIANT TORTOISE HP'
-              : 'WARHORSE HP';
-        }
-        if (mountHpTextEl) {
-          mountHpTextEl.textContent = `${Math.ceil(warrior.mountHp)} / ${mountMax}`;
-        }
-        if (mountHpBarFillEl) {
-          mountHpBarFillEl.style.width = `${mountPct}%`;
-          mountHpBarFillEl.style.background =
-            warrior.mountType === 'elephant'
-              ? 'linear-gradient(90deg, #4299e1, #90cdf4)'
-              : warrior.mountType === 'tortoise'
-              ? 'linear-gradient(90deg, #2f855a, #68d391)'
-              : 'linear-gradient(90deg, #dd6b20, #f6ad55)';
-        }
+        setTextIfChanged(
+          mountLabelEl,
+          warrior.mountType === 'elephant'
+            ? 'WAR ELEPHANT HP'
+            : warrior.mountType === 'tortoise'
+            ? 'GIANT TORTOISE HP'
+            : 'WARHORSE HP'
+        );
+        setTextIfChanged(mountHpTextEl, `${Math.ceil(warrior.mountHp)} / ${mountMax}`);
+        setStyleIfChanged(mountHpBarFillEl, 'width', `${mountPct}%`);
+        setStyleIfChanged(
+          mountHpBarFillEl,
+          'background',
+          warrior.mountType === 'elephant'
+            ? 'linear-gradient(90deg, #4299e1, #90cdf4)'
+            : warrior.mountType === 'tortoise'
+            ? 'linear-gradient(90deg, #2f855a, #68d391)'
+            : 'linear-gradient(90deg, #dd6b20, #f6ad55)'
+        );
       } else {
         mountStatGroupEl.classList.add('hidden');
       }
     }
 
-    if (waveBadgeEl) {
-      waveBadgeEl.textContent = 'CO-OP ARENA';
-    }
+    setTextIfChanged(waveBadgeEl, 'CO-OP ARENA');
 
     if (warrior.hammers.length > 1) {
-      chainLinksValEl.textContent = warrior.hammers
-        .map((hm) => hm.chainLinks || INITIAL_CHAIN_LINKS)
-        .join('/');
+      setTextIfChanged(
+        chainLinksValEl,
+        warrior.hammers.map((hm) => hm.chainLinks || INITIAL_CHAIN_LINKS).join('/')
+      );
     } else {
-      chainLinksValEl.textContent = String(warrior.chainLinks);
+      setTextIfChanged(chainLinksValEl, String(warrior.chainLinks));
     }
     const lengthMeters = (
       getChainRestLength(warrior.hammers[0].chainLinks, warrior.hammers[0].linkLength) / 50
     ).toFixed(1);
-    chainLengthValEl.textContent =
-      warrior.hammers.length > 1 ? `${lengthMeters}m (${warrior.hammers.length}x)` : `${lengthMeters}m`;
+    setTextIfChanged(
+      chainLengthValEl,
+      warrior.hammers.length > 1 ? `${lengthMeters}m (${warrior.hammers.length}x)` : `${lengthMeters}m`
+    );
 
     let maxHSpeed = 0;
     let maxStretch = 0;
@@ -4464,19 +4663,19 @@
       if ((hm.currentStretch || 0) > maxStretch) maxStretch = hm.currentStretch || 0;
     }
     const hSpeedMeters = (maxHSpeed / 50).toFixed(1);
-    hammerSpeedValEl.textContent = `${hSpeedMeters} m/s`;
+    setTextIfChanged(hammerSpeedValEl, `${hSpeedMeters} m/s`);
     if (isMultiplayer) {
-      killsValEl.textContent = `${kills} (${teamKills})`;
+      setTextIfChanged(killsValEl, `${kills} (${teamKills})`);
     } else {
-      killsValEl.textContent = String(kills);
+      setTextIfChanged(killsValEl, String(kills));
     }
 
     const tensionPct = Math.min(100, (maxStretch / 140) * 100);
-    tensionBarFillEl.style.width = `${tensionPct}%`;
+    setStyleIfChanged(tensionBarFillEl, 'width', `${tensionPct}%`);
 
     const relX = Math.round((warrior.x - WORLD_WIDTH / 2) / 10);
     const relY = Math.round((warrior.y - WORLD_HEIGHT / 2) / 10);
-    coordsTextEl.textContent = `(${relX}, ${relY})`;
+    setTextIfChanged(coordsTextEl, `(${relX}, ${relY})`);
 
     // Count total and alive players
     const totalPlayers = 1 + remotePlayers.length;
@@ -4484,11 +4683,9 @@
     for (let i = 0; i < remotePlayers.length; i++) {
       if (remotePlayers[i].alive) alivePlayers++;
     }
-    if (playersOnlineTextEl) {
-      playersOnlineTextEl.textContent = `${alivePlayers} / ${totalPlayers} ALIVE`;
-    }
+    setTextIfChanged(playersOnlineTextEl, `${alivePlayers} / ${totalPlayers} ALIVE`);
 
-    renderLeaderboard();
+    renderLeaderboard(false);
 
     // Victory Page Modal
     if (victoryModal) {
@@ -4667,7 +4864,7 @@
       ctx.restore();
     }
 
-    // 2. Meadow Patches (foreshortened on the ground plane)
+    // 2. Meadow Patches (foreshortened on the ground plane — always rendered so ground never blinks)
     for (let i = 0; i < grassPatches.length; i++) {
       const p = grassPatches[i];
       if (
@@ -4688,7 +4885,7 @@
       ctx.restore();
     }
 
-    // 3. Wildflowers on the turf
+    // 3. Wildflowers on the turf (always rendered consistently across all quality tiers)
     for (let i = 0; i < wildflowers.length; i++) {
       const f = wildflowers[i];
       if (f.x < viewLeft || f.x > viewRight || f.y < viewTop || f.y > viewBottom) continue;
@@ -4730,47 +4927,62 @@
     ctx.translate(-camX, -camY * TILT_Y);
 
     // 5. Standing Grass Tufts rising vertically (-z) from the tilted ground
+    // Always rendered in full so grass never blinks; batched by shade into 2 stroke() calls for speed
     ctx.lineWidth = 1.6;
     ctx.lineCap = 'round';
-    for (let i = 0; i < grassTufts.length; i++) {
-      const t = grassTufts[i];
-      if (t.x < viewLeft || t.x > viewRight || t.y < viewTop || t.y > viewBottom) continue;
-      const gy = t.y * TILT_Y;
-      ctx.strokeStyle = t.shade;
+    const grassShades = ['#2d6a32', '#438a3e'];
+    for (let sIdx = 0; sIdx < grassShades.length; sIdx++) {
+      const shade = grassShades[sIdx];
+      ctx.strokeStyle = shade;
       ctx.beginPath();
-      for (let b = 0; b < t.blades; b++) {
-        const spread = (b - (t.blades - 1) / 2) * 3.2;
-        ctx.moveTo(t.x + spread * 0.3, gy);
-        ctx.lineTo(t.x + spread, gy - t.size * 1.25);
+      for (let i = 0; i < grassTufts.length; i++) {
+        const t = grassTufts[i];
+        if (t.shade !== shade) continue;
+        if (t.x < viewLeft || t.x > viewRight || t.y < viewTop || t.y > viewBottom) continue;
+        const gy = t.y * TILT_Y;
+        for (let b = 0; b < t.blades; b++) {
+          const spread = (b - (t.blades - 1) / 2) * 3.2;
+          ctx.moveTo(t.x + spread * 0.3, gy);
+          ctx.lineTo(t.x + spread, gy - t.size * 1.25);
+        }
       }
       ctx.stroke();
     }
 
-    // 6. 3D Field Stones (with side extrusion and top highlight)
+    // 6. 3D Field Stones (always rendered so stones never blink; batched by pass into 3 fill() calls)
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
+    ctx.beginPath();
+    for (let i = 0; i < pebbles.length; i++) {
+      const p = pebbles[i];
+      if (p.x < viewLeft || p.x > viewRight || p.y < viewTop || p.y > viewBottom) continue;
+      const py = p.y * TILT_Y;
+      ctx.moveTo(p.x + 2 + p.rx * 1.15, py + 1.5);
+      ctx.ellipse(p.x + 2, py + 1.5, p.rx * 1.15, p.ry * TILT_Y, 0, 0, Math.PI * 2);
+    }
+    ctx.fill();
+
+    ctx.fillStyle = '#5a625a';
+    ctx.beginPath();
+    for (let i = 0; i < pebbles.length; i++) {
+      const p = pebbles[i];
+      if (p.x < viewLeft || p.x > viewRight || p.y < viewTop || p.y > viewBottom) continue;
+      const py = p.y * TILT_Y;
+      ctx.moveTo(p.x + p.rx * 1.1, py);
+      ctx.ellipse(p.x, py, p.rx * 1.1, p.ry * TILT_Y, 0, 0, Math.PI * 2);
+    }
+    ctx.fill();
+
+    ctx.fillStyle = '#8b9689';
+    ctx.beginPath();
     for (let i = 0; i < pebbles.length; i++) {
       const p = pebbles[i];
       if (p.x < viewLeft || p.x > viewRight || p.y < viewTop || p.y > viewBottom) continue;
       const py = p.y * TILT_Y;
       const h = p.ry * 0.95;
-
-      // Ground shadow
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.28)';
-      ctx.beginPath();
-      ctx.ellipse(p.x + 2, py + 1.5, p.rx * 1.15, p.ry * TILT_Y, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Shaded side face
-      ctx.fillStyle = '#5a625a';
-      ctx.beginPath();
-      ctx.ellipse(p.x, py, p.rx * 1.1, p.ry * TILT_Y, 0, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Elevated top face
-      ctx.fillStyle = '#8b9689';
-      ctx.beginPath();
+      ctx.moveTo(p.x + p.rx * 1.02, py - h);
       ctx.ellipse(p.x, py - h, p.rx * 1.02, p.ry * TILT_Y * 0.9, 0, 0, Math.PI * 2);
-      ctx.fill();
     }
+    ctx.fill();
 
     // 7. North / Back 3D Timber Fence
     drawWorldBorderBack();
@@ -4915,15 +5127,19 @@
     drawWorldBorderFront();
 
     // 11. 2.5D Elevated Particles & Floating Damage Numbers
+    const drawParticleShadows = visualQualityTier === QUALITY_TIER_HIGH;
     for (let i = 0; i < particles.length; i++) {
       const p = particles[i];
+      if (p.x < viewLeft || p.x > viewRight || p.y < viewTop || p.y > viewBottom) continue;
       const alpha = Math.max(0, p.life / p.maxLife);
       const zLift = Math.sin((1 - alpha) * Math.PI) * 18 + 10;
       ctx.globalAlpha = alpha;
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
-      ctx.beginPath();
-      ctx.ellipse(p.x, p.y * TILT_Y, p.size, p.size * TILT_Y, 0, 0, Math.PI * 2);
-      ctx.fill();
+      if (drawParticleShadows) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y * TILT_Y, p.size, p.size * TILT_Y, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
       ctx.fillStyle = p.color;
       ctx.beginPath();
@@ -4936,6 +5152,7 @@
     ctx.textBaseline = 'middle';
     for (let i = 0; i < floatingTexts.length; i++) {
       const ft = floatingTexts[i];
+      if (ft.x < viewLeft || ft.x > viewRight || ft.y < viewTop || ft.y > viewBottom) continue;
       const alpha = Math.max(0, ft.life / ft.maxLife);
       const screenY = ft.y * TILT_Y - 34;
       ctx.globalAlpha = alpha;
@@ -5025,7 +5242,10 @@
       ctx.restore();
     }
 
-    renderMinimap();
+    if (minimapAccumSec >= MINIMAP_UPDATE_INTERVAL) {
+      minimapAccumSec = 0;
+      renderMinimap();
+    }
   }
 
   function drawPickupCircle(c) {
@@ -5572,7 +5792,8 @@
     ctx.stroke();
     ctx.restore();
 
-    // 3. Individual 3D metallic chain links
+    // 3. Individual 3D metallic chain links (secondary torus shadow highlight scales with quality tier)
+    const drawSecondaryTorusHighlight = visualQualityTier === QUALITY_TIER_HIGH;
     for (let i = 0; i < n; i++) {
       const curr = nodes[i];
       const prev = nodes[Math.max(0, i - 1)];
@@ -5588,12 +5809,14 @@
       ctx.translate(sx, sy);
       ctx.rotate(localAngle + (i % 2 === 0 ? 0.2 : -0.2));
 
-      // Bottom/side thickness of link
-      ctx.strokeStyle = '#1a202c';
-      ctx.lineWidth = 3.2;
-      ctx.beginPath();
-      ctx.ellipse(0, 1.6, 6.2, 3.2, 0, 0, Math.PI * 2);
-      ctx.stroke();
+      if (drawSecondaryTorusHighlight) {
+        // Bottom/side thickness of link
+        ctx.strokeStyle = '#1a202c';
+        ctx.lineWidth = 3.2;
+        ctx.beginPath();
+        ctx.ellipse(0, 1.6, 6.2, 3.2, 0, 0, Math.PI * 2);
+        ctx.stroke();
+      }
 
       // Top lit link face (warms to glowing gold/amber under high elastic tension)
       if (tensionRatio > 0.05) {
@@ -6627,49 +6850,51 @@
     const nowSec = performance.now() * 0.001;
     const discoPalette = ['#f687b3', '#63b3ed', '#f6e05e', '#68d391', '#b794f4', '#ffffff'];
 
-    // 1. 2.5D Motion Blur Afterimages of the Spikey Mace (or Disco Ball / Jack-o'-Lantern / Spider) at height hammerZ
-    for (let i = 0; i < trail.length; i++) {
-      const tr = trail[i];
-      ctx.save();
-      ctx.globalAlpha = Math.max(
-        0,
-        tr.alpha *
-          (isDisco
-            ? 0.56
-            : isJackOLantern
-            ? 0.48
-            : isSpider
-            ? 0.46
-            : isFlaming
-            ? 0.52
-            : 0.34)
-      );
-      ctx.translate(tr.x, tr.y * TILT_Y - hammerZ);
-      ctx.fillStyle = isDisco
-        ? discoPalette[i % discoPalette.length]
-        : isJackOLantern
-        ? i % 2 === 0
-          ? '#ed8936'
-          : '#f6e05e'
-        : isSpider
-        ? i % 2 === 0
-          ? '#ffffff'
-          : '#2d3748'
-        : isFlaming
-        ? i % 2 === 0
-          ? '#ff6b35'
-          : '#f6e05e'
-        : '#cbd5e0';
-      ctx.beginPath();
-      ctx.arc(
-        0,
-        0,
-        coreRadius * (isDisco || isJackOLantern || isFlaming ? 1.08 : 0.95),
-        0,
-        Math.PI * 2
-      );
-      ctx.fill();
-      ctx.restore();
+    // 1. 2.5D Motion Blur Afterimages of the Spikey Mace (skipped in Low quality tier)
+    if (visualQualityTier > QUALITY_TIER_LOW && Array.isArray(trail)) {
+      for (let i = 0; i < trail.length; i++) {
+        const tr = trail[i];
+        ctx.save();
+        ctx.globalAlpha = Math.max(
+          0,
+          tr.alpha *
+            (isDisco
+              ? 0.56
+              : isJackOLantern
+              ? 0.48
+              : isSpider
+              ? 0.46
+              : isFlaming
+              ? 0.52
+              : 0.34)
+        );
+        ctx.translate(tr.x, tr.y * TILT_Y - hammerZ);
+        ctx.fillStyle = isDisco
+          ? discoPalette[i % discoPalette.length]
+          : isJackOLantern
+          ? i % 2 === 0
+            ? '#ed8936'
+            : '#f6e05e'
+          : isSpider
+          ? i % 2 === 0
+            ? '#ffffff'
+            : '#2d3748'
+          : isFlaming
+          ? i % 2 === 0
+            ? '#ff6b35'
+            : '#f6e05e'
+          : '#cbd5e0';
+        ctx.beginPath();
+        ctx.arc(
+          0,
+          0,
+          coreRadius * (isDisco || isJackOLantern || isFlaming ? 1.08 : 0.95),
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+        ctx.restore();
+      }
     }
 
     const sx = h.x;
@@ -7427,7 +7652,12 @@
 
     // 5. Animated Roaring Fire on the Flaming Hammer (when h.flameTimer > 0)
     if (isFlaming) {
-      const flameTongues = 9;
+      const flameTongues =
+        visualQualityTier === QUALITY_TIER_HIGH
+          ? 9
+          : visualQualityTier === QUALITY_TIER_MEDIUM
+          ? 5
+          : 3;
       for (let f = 0; f < flameTongues; f++) {
         const phase = nowSec * 14 + f * 1.35;
         const spreadAng = (f / flameTongues) * Math.PI * 2 + Math.sin(phase * 0.7) * 0.2;
@@ -7751,7 +7981,12 @@
       ctx.ellipse(0, 1, pulseR, pulseR * TILT_Y, 0, 0, Math.PI * 2);
       ctx.stroke();
 
-      const backTongues = 5;
+      const backTongues =
+        visualQualityTier === QUALITY_TIER_HIGH
+          ? 5
+          : visualQualityTier === QUALITY_TIER_MEDIUM
+          ? 3
+          : 2;
       for (let b = 0; b < backTongues; b++) {
         const bPhase = nowSec * 15 + b * 1.4 + e.walkPhase;
         const bx = ((b - 2) / 2.2) * e.radius * 0.95;
@@ -8029,7 +8264,12 @@
 
     // Animated flames engulfing burning zombies (when e.burnTimer > 0)
     if (isBurning) {
-      const tongues = 9;
+      const tongues =
+        visualQualityTier === QUALITY_TIER_HIGH
+          ? 9
+          : visualQualityTier === QUALITY_TIER_MEDIUM
+          ? 5
+          : 3;
       for (let f = 0; f < tongues; f++) {
         const phase = nowSec * 15 + f * 1.35 + e.walkPhase;
         const ox =
@@ -8118,7 +8358,7 @@
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 2.2 * visualScale;
       ctx.beginPath();
-      const bands = 6;
+      const bands = visualQualityTier === QUALITY_TIER_HIGH ? 6 : 3;
       for (let b = 0; b < bands; b++) {
         const frac = (b + 0.5) / bands;
         const by = -bodyHeight * 0.08 - frac * (bodyHeight * 1.08);
@@ -8322,7 +8562,9 @@
     gameTime = now * 0.001;
     const rawDt = (now - lastTime) / 1000;
     lastTime = now;
-    const frameDt = Math.min(rawDt, 0.05); // Cap delta time on tab switch
+    updateVisualQuality(rawDt);
+    const frameDt = Math.min(Math.max(0, rawDt), 0.05); // Cap delta time on tab switch
+    minimapAccumSec += frameDt;
 
     if (hasEnteredGame) {
       const idleSeconds = (now - lastUserActivityTime) / 1000;
@@ -8424,6 +8666,15 @@
         VICTORY_DISPLAY_DURATION,
         LEADERBOARD_MAX_ENTRIES,
         MAX_NICKNAME_LENGTH,
+        QUALITY_TIER_LOW,
+        QUALITY_TIER_MEDIUM,
+        QUALITY_TIER_HIGH,
+        MAX_PARTICLES_BY_TIER,
+        MAX_FLOATING_TEXTS_BY_TIER,
+        PARTICLE_SPAWN_SCALE_BY_TIER,
+        MAX_SOUNDS_PER_WINDOW_BY_TIER,
+        SOUND_RATE_WINDOW_MS,
+        MINIMAP_UPDATE_INTERVAL,
       },
       warrior,
       hammer,
@@ -8452,6 +8703,10 @@
         gameTime,
         leaderboard,
         ws,
+        avgFrameMs,
+        visualQualityTier,
+        minimapAccumSec,
+        soundsInCurrentWindow,
       }),
       setState: (patch) => {
         if ('hasEnteredGame' in patch) hasEnteredGame = patch.hasEnteredGame;
@@ -8468,6 +8723,11 @@
         if ('localKnockdownTimer' in patch) localKnockdownTimer = patch.localKnockdownTimer;
         if ('gameTime' in patch) gameTime = patch.gameTime;
         if ('leaderboard' in patch) leaderboard = patch.leaderboard;
+        if ('avgFrameMs' in patch) avgFrameMs = patch.avgFrameMs;
+        if ('visualQualityTier' in patch) visualQualityTier = patch.visualQualityTier;
+        if ('minimapAccumSec' in patch) minimapAccumSec = patch.minimapAccumSec;
+        if ('soundWindowStartMs' in patch) soundWindowStartMs = patch.soundWindowStartMs;
+        if ('soundsInCurrentWindow' in patch) soundsInCurrentWindow = patch.soundsInCurrentWindow;
       },
       initGame,
       enterGame,
@@ -8483,6 +8743,11 @@
       getTopLocalLeaderboard,
       clearLocalLeaderboard,
       renderLeaderboard,
+      updateVisualQuality,
+      canPlayRateLimitedSound,
+      isWorldPointVisible,
+      addParticles,
+      addFloatingText,
       updateWarriorBroadphaseBounds,
       stepLocalWarriorAndHammers,
       stepMultiplayerClient,
