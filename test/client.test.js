@@ -96,8 +96,18 @@ function createMockElement(id) {
     },
     setAttribute: () => {},
     getAttribute: () => null,
-    addEventListener: () => {},
-    getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 800 }),
+    listeners: {},
+    addEventListener(type, fn) {
+      if (!this.listeners[type]) this.listeners[type] = [];
+      this.listeners[type].push(fn);
+    },
+    dispatchEvent(ev) {
+      const list = this.listeners[ev.type] || [];
+      for (const fn of list) fn(ev);
+    },
+    setPointerCapture: () => {},
+    releasePointerCapture: () => {},
+    getBoundingClientRect: () => ({ left: 1100, top: 620, width: 140, height: 140 }),
     getContext() {
       if (!this._ctx) this._ctx = createMockCanvasContext();
       return this._ctx;
@@ -1339,5 +1349,206 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(api.isDialogShowing(), true);
     api.startAnimationLoop();
     assert.equal(api.getState().isLoopRunning, false, 'Should not start loop while game-over modal is showing');
+  });
+
+  it('provides a translucent touch-wheel in the lower-right corner for touch screen steering', () => {
+    const loaded = loadClientGame();
+    const { api, elements, window: testWin } = loaded;
+    const touchWheel = elements.get('touch-wheel');
+    const touchThumb = elements.get('touch-wheel-thumb');
+    assert.ok(touchWheel, 'touch-wheel DOM element should exist');
+    assert.ok(touchThumb, 'touch-wheel-thumb DOM element should exist');
+
+    // 1. Initial touch-wheel state is inactive
+    const initialState = api.getState().touchWheelState;
+    assert.equal(initialState.active, false);
+    assert.equal(initialState.intensity, 0);
+
+    // 2. Dragging touch wheel to the right (centerX=1170, centerY=690; target clientX=1230, clientY=690)
+    touchWheel.dispatchEvent({
+      type: 'pointerdown',
+      pointerId: 42,
+      clientX: 1230,
+      clientY: 690,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    });
+
+    const activeState = api.getState().touchWheelState;
+    assert.equal(activeState.active, true);
+    assert.equal(activeState.pointerId, 42);
+    assert.equal(touchWheel.classList.contains('active'), true);
+    assert.ok(activeState.vectorX > 0.99, 'Vector X should be pointed right');
+    assert.ok(Math.abs(activeState.vectorY) < 0.05, 'Vector Y should be near zero');
+    assert.ok(activeState.intensity > 0.8, 'Intensity should reflect drag distance');
+    assert.ok(touchThumb.style.transform.includes('translate3d('));
+
+    // Mouse coordinates should be offset to the right of screen center
+    assert.ok(
+      api.mouse.screenX > 1280 / 2,
+      'Virtual mouse screenX should be offset to the right of center'
+    );
+
+    // 3. Pointer move updates the touch wheel vector downward (clientX=1170, clientY=750)
+    touchWheel.dispatchEvent({
+      type: 'pointermove',
+      pointerId: 42,
+      clientX: 1170,
+      clientY: 750,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    });
+    assert.ok(Math.abs(activeState.vectorX) < 0.05);
+    assert.ok(activeState.vectorY > 0.99);
+    assert.ok(
+      api.mouse.screenY > 800 / 2,
+      'Virtual mouse screenY should be offset downward from center'
+    );
+
+    // 4. Pointer up releases the touch wheel and resets state
+    touchWheel.dispatchEvent({
+      type: 'pointerup',
+      pointerId: 42,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    });
+    assert.equal(activeState.active, false);
+    assert.equal(activeState.pointerId, null);
+    assert.equal(touchWheel.classList.contains('active'), false);
+    assert.equal(touchThumb.style.transform, 'translate3d(0, 0, 0)');
+    // Mouse coords should reset to center of screen when touch is released
+    assert.equal(api.mouse.screenX, 1280 / 2);
+    assert.equal(api.mouse.screenY, 800 / 2);
+
+    // 5. Window pointermove and mousemove update mouse coordinates responsively
+    testWin.dispatchEvent({
+      type: 'pointermove',
+      clientX: 850,
+      clientY: 320,
+    });
+    assert.equal(api.mouse.screenX, 850);
+    assert.equal(api.mouse.screenY, 320);
+
+    // 6. Client prediction quickly steers and brakes reverse velocity without 2-second backward walk
+    api.warrior.x = 2100;
+    api.warrior.y = 2100;
+    api.warrior.angle = 0; // Facing East
+    api.warrior.vx = 200;  // Running East
+    api.warrior.vy = 0;
+    api.camera.x = 2100 - 640;
+    api.camera.y = 2100 - 400 / api.constants.TILT_Y;
+    // Set mouse directly West of warrior (180 degrees opposite)
+    api.mouse.screenX = 640 - 250;
+    api.mouse.screenY = 400;
+
+    const initialX = api.warrior.x;
+    let maxOvershootX = initialX;
+
+    for (let frame = 0; frame < 12; frame++) {
+      api.stepMultiplayerClient(1 / 60);
+      if (api.warrior.x > maxOvershootX) maxOvershootX = api.warrior.x;
+    }
+
+    assert.ok(maxOvershootX - initialX < 10, 'Client prediction overshoot should be minimal (< 10px)');
+    assert.ok(Math.abs(api.warrior.angle) > Math.PI * 0.5, 'Warrior should turn toward West');
+    assert.ok(api.warrior.vx < 0, 'Warrior should move West toward the mouse cursor');
+  });
+
+  it('steers warrior accurately in tall/portrait windows with touch-wheel centered on warrior', () => {
+    const loaded = loadClientGame();
+    const { api, elements } = loaded;
+    const touchWheel = elements.get('touch-wheel');
+
+    // Simulate tall/portrait window: 600px width x 1600px height
+    loaded.window.innerWidth = 600;
+    loaded.window.innerHeight = 1600;
+    api.warrior.x = 2100;
+    api.warrior.y = 2100;
+    api.warrior.vx = 0;
+    api.warrior.vy = 0;
+    api.warrior.angle = 0;
+
+    // Simulate camera deadzone where warrior is down near maxScreenY (e.g. warriorScreenY = 1000 while screen height / 2 = 800)
+    // maxScreenY in 1600px height is 1600 * 2/3 = 1066px
+    api.camera.x = 2100 - 300;
+    api.camera.y = 2100 - 1000 / api.constants.TILT_Y;
+
+    const warriorScreenX = api.warrior.x - api.camera.x; // 300
+    const warriorScreenY = (api.warrior.y - api.camera.y) * api.constants.TILT_Y; // 1000
+    assert.equal(warriorScreenX, 300);
+    assert.equal(warriorScreenY, 1000);
+
+    // 1. Engage touch wheel directly DOWN (centerY=690, target clientY=750 -> vectorX=0, vectorY=1)
+    touchWheel.dispatchEvent({
+      type: 'pointerdown',
+      pointerId: 99,
+      clientX: 1170,
+      clientY: 750,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    });
+
+    const state = api.getState().touchWheelState;
+    assert.equal(state.active, true);
+    assert.ok(state.vectorY > 0.99, 'Touch-wheel vector should be pointed down');
+
+    // The virtual target must be strictly south of the warrior in both screen space and world space
+    const targetWorldX = api.camera.x + api.mouse.screenX;
+    const targetWorldY = api.camera.y + api.mouse.screenY / api.constants.TILT_Y;
+
+    assert.ok(
+      api.mouse.screenY > warriorScreenY,
+      `Target screenY (${api.mouse.screenY}) should be south of warriorScreenY (${warriorScreenY})`
+    );
+    assert.ok(
+      targetWorldY > api.warrior.y,
+      `Target worldY (${targetWorldY}) should be south of warrior.y (${api.warrior.y})`
+    );
+    assert.ok(
+      Math.abs(targetWorldX - api.warrior.x) < 5,
+      'Target worldX should stay aligned with warrior.x when steering down'
+    );
+    assert.ok(
+      targetWorldY - api.warrior.y > 150,
+      `Target world offset (${targetWorldY - api.warrior.y}) should extend south by virtualDistance`
+    );
+
+    // 2. Stepping client simulation moves the warrior down (South)
+    const prevY = api.warrior.y;
+    api.stepMultiplayerClient(0.05);
+    assert.ok(api.warrior.vy > 0, `Warrior vy should be positive (southward), was ${api.warrior.vy}`);
+    assert.ok(api.warrior.y > prevY, `Warrior y should advance south from ${prevY} to ${api.warrior.y}`);
+
+    // 3. Test 360-degree rotation of touch-wheel: target circle must remain centered on warrior
+    const virtualDist = 160 + state.intensity * 220;
+    for (let deg = 0; deg < 360; deg += 45) {
+      const rad = (deg * Math.PI) / 180;
+      state.vectorX = Math.cos(rad);
+      state.vectorY = Math.sin(rad);
+      api.updateTouchWheelTarget();
+
+      const curWorldX = api.camera.x + api.mouse.screenX;
+      const curWorldY = api.camera.y + api.mouse.screenY / api.constants.TILT_Y;
+      const mdx = curWorldX - api.warrior.x;
+      const mdy = curWorldY - api.warrior.y;
+      const distFromWarrior = Math.hypot(mdx, mdy);
+
+      assert.ok(
+        Math.abs(distFromWarrior - virtualDist) < 1,
+        `Target distance at ${deg}° should be exactly virtualDistance (${virtualDist}), got ${distFromWarrior}`
+      );
+    }
+
+    // 4. Release touch-wheel
+    touchWheel.dispatchEvent({
+      type: 'pointerup',
+      pointerId: 99,
+      preventDefault: () => {},
+      stopPropagation: () => {},
+    });
+    assert.equal(state.active, false);
+    // When released, virtual target collapses to warrior so warrior stops cleanly
+    assert.equal(api.mouse.screenX, api.warrior.x - api.camera.x);
+    assert.equal(api.mouse.screenY, (api.warrior.y - api.camera.y) * api.constants.TILT_Y);
   });
 });

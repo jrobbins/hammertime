@@ -577,6 +577,80 @@ kbd {
   color: hsl(45, 90%, 74%) !important;
 }
 
+/* Translucent Touch-Wheel in Lower-Right Corner */
+.touch-wheel {
+  position: absolute;
+  bottom: 24px;
+  right: 24px;
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at center,
+    hsla(115, 28%, 14%, 0.35) 0%,
+    hsla(115, 32%, 10%, 0.55) 70%,
+    hsla(115, 35%, 8%, 0.7) 100%
+  );
+  border: 2px solid hsla(42, 85%, 58%, 0.4);
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.45),
+    inset 0 0 16px hsla(42, 85%, 58%, 0.15);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 15;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.2s ease, border-color 0.2s ease, transform 0.15s ease;
+}
+
+.touch-wheel::before {
+  content: '';
+  position: absolute;
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  border: 1px dashed hsla(42, 85%, 58%, 0.35);
+  pointer-events: none;
+}
+
+.touch-wheel-thumb {
+  position: absolute;
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  background: radial-gradient(
+    circle at 35% 35%,
+    hsla(45, 95%, 72%, 0.85) 0%,
+    hsla(38, 90%, 52%, 0.75) 60%,
+    hsla(28, 85%, 42%, 0.7) 100%
+  );
+  border: 2px solid hsla(45, 95%, 80%, 0.7);
+  box-shadow:
+    0 4px 14px rgba(0, 0, 0, 0.45),
+    0 0 12px hsla(42, 88%, 58%, 0.45);
+  pointer-events: none;
+  transform: translate3d(0, 0, 0);
+  transition: box-shadow 0.15s ease;
+}
+
+.touch-wheel.active {
+  border-color: hsla(42, 92%, 62%, 0.75);
+  box-shadow:
+    0 10px 36px rgba(0, 0, 0, 0.55),
+    inset 0 0 20px hsla(42, 88%, 58%, 0.28);
+}
+
+.touch-wheel.active .touch-wheel-thumb {
+  box-shadow:
+    0 6px 18px rgba(0, 0, 0, 0.55),
+    0 0 18px hsla(42, 95%, 62%, 0.75);
+}
+
 @media (max-width: 720px) {
   #hud-top-left {
     width: 230px;

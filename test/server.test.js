@@ -169,6 +169,31 @@ describe('World Initialization, Stone Columns & Player Creation', () => {
     assert.ok(p.angle > 0);
     assert.ok(p.vy > 0);
   });
+
+  it('turns around quickly toward mouse behind warrior without backward lag or wrong-way overshoot', () => {
+    const p = addTestPlayer('p1', 1500, 1500);
+    p.angle = 0; // Facing East
+    p.vx = 200;  // Running East
+    p.vy = 0;
+    p.input.mouseWorldX = 1100; // Directly West (180 degrees behind)
+    p.input.mouseWorldY = 1500;
+
+    const startX = p.x;
+    let maxX = startX;
+
+    // Step physics for 0.2s (12 substeps of ~0.016s)
+    for (let i = 0; i < 12; i++) {
+      srv.stepPlayerPhysics(p, 1 / 60);
+      if (p.x > maxX) maxX = p.x;
+    }
+
+    // Wrong-way overshoot East should be small (< 10px instead of > 50px)
+    assert.ok(maxX - startX < 10, `Overshoot should be < 10px, was ${maxX - startX}`);
+    // Warrior should be facing toward West (angle magnitude > PI/2)
+    assert.ok(Math.abs(p.angle) > Math.PI * 0.5, 'Warrior should face toward West');
+    // Warrior vx should be negative (moving West toward mouse)
+    assert.ok(p.vx < 0, `Warrior vx should be negative toward mouse, was ${p.vx}`);
+  });
 });
 
 describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed)', () => {

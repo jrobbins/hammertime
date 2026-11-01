@@ -54,6 +54,8 @@
   const nicknameInputEl = document.getElementById('nickname-input') as HTMLInputElement | null;
   const enterGameBtn = document.getElementById('enter-game-btn');
   const leaderboardListEl = document.getElementById('leaderboard-list');
+  const touchWheelEl = document.getElementById('touch-wheel');
+  const touchWheelThumbEl = document.getElementById('touch-wheel-thumb');
 
   // --- World & Physics Constants ---
   const WORLD_WIDTH = 4200;
@@ -723,22 +725,136 @@
     screenY: window.innerHeight / 2,
   };
 
-  window.addEventListener('pointerdown', (e) => {
-    ensureAudioContext();
+  const touchWheelState = {
+    active: false,
+    pointerId: null as number | null,
+    vectorX: 0,
+    vectorY: 0,
+    intensity: 0,
+  };
+
+  function updateTouchWheelPosition(clientX: number, clientY: number) {
+    if (!touchWheelEl) return;
+    const rect = touchWheelEl.getBoundingClientRect();
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const maxRadius = (rect.width / 2) - 6;
+
+    let dx = clientX - centerX;
+    let dy = clientY - centerY;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist > 0.001) {
+      touchWheelState.vectorX = dx / dist;
+      touchWheelState.vectorY = dy / dist;
+      touchWheelState.intensity = Math.min(1, dist / maxRadius);
+    } else {
+      touchWheelState.vectorX = 0;
+      touchWheelState.vectorY = 0;
+      touchWheelState.intensity = 0;
+    }
+
+    const thumbDist = Math.min(dist, maxRadius);
+    const thumbX = (touchWheelState.vectorX * thumbDist).toFixed(1);
+    const thumbY = (touchWheelState.vectorY * thumbDist).toFixed(1);
+
+    if (touchWheelThumbEl) {
+      touchWheelThumbEl.style.transform = `translate3d(${thumbX}px, ${thumbY}px, 0)`;
+    }
+
+    updateTouchWheelTarget();
+  }
+
+  function updateTouchWheelTarget() {
+    if (!touchWheelState.active) return;
+    // Map touch-wheel vector directly relative to the warrior screen position so it is always
+    // centered on the warrior in any window size, aspect ratio, or camera deadzone offset
+    const warriorScreenX = warrior.x - camera.x;
+    const warriorScreenY = (warrior.y - camera.y) * TILT_Y;
+    const virtualDistance = 160 + touchWheelState.intensity * 220;
+    mouse.screenX = warriorScreenX + touchWheelState.vectorX * virtualDistance;
+    mouse.screenY = warriorScreenY + touchWheelState.vectorY * virtualDistance * TILT_Y;
     lastUserActivityTime = performance.now();
     hasRecentInput = true;
-    mouse.screenX = e.clientX;
-    mouse.screenY = e.clientY;
-  });
+  }
 
-  window.addEventListener('mousemove', (e) => {
+  function resetTouchWheel() {
+    touchWheelState.active = false;
+    touchWheelState.pointerId = null;
+    touchWheelState.vectorX = 0;
+    touchWheelState.vectorY = 0;
+    touchWheelState.intensity = 0;
+    if (touchWheelThumbEl) {
+      touchWheelThumbEl.style.transform = 'translate3d(0, 0, 0)';
+    }
+    if (touchWheelEl) {
+      touchWheelEl.classList.remove('active');
+    }
+    // Return virtual mouse coordinates directly to warrior screen position so warrior stops cleanly
+    mouse.screenX = warrior.x - camera.x;
+    mouse.screenY = (warrior.y - camera.y) * TILT_Y;
+  }
+
+  if (touchWheelEl) {
+    touchWheelEl.addEventListener('pointerdown', (e: any) => {
+      e.preventDefault();
+      e.stopPropagation();
+      ensureAudioContext();
+      touchWheelState.active = true;
+      touchWheelState.pointerId = e.pointerId != null ? e.pointerId : 1;
+      touchWheelEl.classList.add('active');
+      if (typeof touchWheelEl.setPointerCapture === 'function' && e.pointerId != null) {
+        try {
+          touchWheelEl.setPointerCapture(e.pointerId);
+        } catch (_err) {}
+      }
+      updateTouchWheelPosition(e.clientX, e.clientY);
+    });
+
+    touchWheelEl.addEventListener('pointermove', (e: any) => {
+      if (!touchWheelState.active) return;
+      if (touchWheelState.pointerId !== null && e.pointerId != null && e.pointerId !== touchWheelState.pointerId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      updateTouchWheelPosition(e.clientX, e.clientY);
+    });
+
+    const endPointerHandler = (e: any) => {
+      if (!touchWheelState.active) return;
+      if (touchWheelState.pointerId !== null && e.pointerId != null && e.pointerId !== touchWheelState.pointerId) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof touchWheelEl.releasePointerCapture === 'function' && e.pointerId != null) {
+        try {
+          touchWheelEl.releasePointerCapture(e.pointerId);
+        } catch (_err) {}
+      }
+      resetTouchWheel();
+    };
+
+    touchWheelEl.addEventListener('pointerup', endPointerHandler);
+    touchWheelEl.addEventListener('pointercancel', endPointerHandler);
+  }
+
+  function handlePointerMove(e: any) {
+    if (touchWheelState.active) return;
+    if (typeof e.clientX !== 'number' || typeof e.clientY !== 'number') return;
     if (e.clientX !== mouse.screenX || e.clientY !== mouse.screenY) {
       lastUserActivityTime = performance.now();
       hasRecentInput = true;
       mouse.screenX = e.clientX;
       mouse.screenY = e.clientY;
     }
+  }
+
+  window.addEventListener('pointerdown', (e) => {
+    if (touchWheelState.active) return;
+    ensureAudioContext();
+    handlePointerMove(e);
   });
+
+  window.addEventListener('pointermove', handlePointerMove);
+  window.addEventListener('mousemove', handlePointerMove);
 
   // --- Deterministic Scenery Generator for the Grassy Field ---
   const grassPatches = [];
@@ -3088,7 +3204,7 @@
         Math.sin(targetAngle - warrior.angle),
         Math.cos(targetAngle - warrior.angle)
       );
-      const maxTurn = warrior.turnSpeed * 2.2 * dt;
+      const maxTurn = warrior.turnSpeed * 6.0 * dt;
       if (Math.abs(angleDiff) <= maxTurn) {
         warrior.angle = targetAngle;
       } else {
@@ -3097,6 +3213,23 @@
     }
 
     if (distToMouse > 10) {
+      const targetAngle = Math.atan2(mdy, mdx);
+      const currentAngleDiff = Math.atan2(
+        Math.sin(targetAngle - warrior.angle),
+        Math.cos(targetAngle - warrior.angle)
+      );
+      const alignment = Math.max(0, Math.cos(currentAngleDiff));
+
+      // Actively brake any reverse momentum moving away from target mouse
+      const uTx = mdx / distToMouse;
+      const uTy = mdy / distToMouse;
+      const velAlongTarget = warrior.vx * uTx + warrior.vy * uTy;
+      if (velAlongTarget < 0) {
+        const brakeAccel = Math.min(-velAlongTarget / dt, warrior.walkThrust * 2.5);
+        warrior.vx += brakeAccel * uTx * dt;
+        warrior.vy += brakeAccel * uTy * dt;
+      }
+
       warrior.strideCharge = Math.min(1, warrior.strideCharge + dt * 1.4);
       const arrivalScale = Math.min(1, (distToMouse - 8) / 42);
       const thrust =
@@ -3104,7 +3237,8 @@
           (warrior.runThrust - warrior.walkThrust) * warrior.strideCharge) *
         totalSpeedMult *
         totalTractionMult *
-        arrivalScale;
+        arrivalScale *
+        alignment;
       warrior.vx += Math.cos(warrior.angle) * thrust * dt;
       warrior.vy += Math.sin(warrior.angle) * thrust * dt;
     } else {
@@ -9195,6 +9329,9 @@
     minimapAccumSec += frameDt;
 
     if (hasEnteredGame) {
+      if (touchWheelState.active) {
+        updateTouchWheelTarget();
+      }
       const idleSeconds = (now - lastUserActivityTime) / 1000;
       const maxIdleSeconds = warrior.alive ? 120 : 45;
       if (idleSeconds >= maxIdleSeconds) {
@@ -9349,6 +9486,7 @@
         isLoopRunning,
         animationFrameId,
         lastUserActivityTime,
+        touchWheelState,
       }),
       setState: (patch) => {
         if ('hasEnteredGame' in patch) hasEnteredGame = patch.hasEnteredGame;
@@ -9378,6 +9516,9 @@
       isDialogShowing,
       startAnimationLoop,
       stopAnimationLoop,
+      updateTouchWheelPosition,
+      updateTouchWheelTarget,
+      resetTouchWheel,
       connectMultiplayer,
       lerpAngle,
       getCookie,

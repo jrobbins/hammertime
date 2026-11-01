@@ -1165,7 +1165,7 @@ function stepPlayerPhysics(p, dt) {
       Math.sin(targetAngle - p.angle),
       Math.cos(targetAngle - p.angle)
     );
-    const maxTurn = p.turnSpeed * 2.2 * dt;
+    const maxTurn = p.turnSpeed * 6.0 * dt;
     if (Math.abs(angleDiff) <= maxTurn) {
       p.angle = targetAngle;
     } else {
@@ -1174,13 +1174,31 @@ function stepPlayerPhysics(p, dt) {
   }
 
   if (distToMouse > 10) {
+    const targetAngle = Math.atan2(mdy, mdx);
+    const currentAngleDiff = Math.atan2(
+      Math.sin(targetAngle - p.angle),
+      Math.cos(targetAngle - p.angle)
+    );
+    const alignment = Math.max(0, Math.cos(currentAngleDiff));
+
+    // Actively brake any reverse momentum moving away from target mouse
+    const uTx = mdx / distToMouse;
+    const uTy = mdy / distToMouse;
+    const velAlongTarget = p.vx * uTx + p.vy * uTy;
+    if (velAlongTarget < 0) {
+      const brakeAccel = Math.min(-velAlongTarget / dt, p.walkThrust * 2.5);
+      p.vx += brakeAccel * uTx * dt;
+      p.vy += brakeAccel * uTy * dt;
+    }
+
     p.strideCharge = Math.min(1, p.strideCharge + dt * 1.4);
     const arrivalScale = Math.min(1, (distToMouse - 8) / 42);
     const thrust =
       (p.walkThrust + (p.runThrust - p.walkThrust) * p.strideCharge) *
       totalSpeedMult *
       totalTractionMult *
-      arrivalScale;
+      arrivalScale *
+      alignment;
     p.vx += Math.cos(p.angle) * thrust * dt;
     p.vy += Math.sin(p.angle) * thrust * dt;
   } else {
