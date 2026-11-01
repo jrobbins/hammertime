@@ -83,7 +83,7 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.INITIAL_HAMMER_MASS, 0.875);
     assert.equal(srv.MAX_CHAIN_LINKS, 9);
     assert.equal(srv.MAX_HAMMERS_PER_PLAYER, 2);
-    assert.equal(srv.EXTRA_HAMMER_DURATION, 120.0);
+    assert.equal(srv.EXTRA_HAMMER_DURATION, 60.0);
     assert.equal(srv.EXPLOSION_RADIUS, 420);
   });
 
@@ -102,12 +102,12 @@ describe('Server Constants & Configuration', () => {
   });
 
   it('defines powerup durations and parameters', () => {
-    assert.equal(srv.DISCO_HAMMER_DURATION, 120.0);
+    assert.equal(srv.DISCO_HAMMER_DURATION, 60.0);
     assert.equal(srv.ZOMBIE_DANCE_DURATION, 30.0);
     assert.equal(srv.ZOMBIE_DANCE_IMMUNE_DURATION, 45.0);
-    assert.equal(srv.JACKOLANTERN_HAMMER_DURATION, 120.0);
-    assert.equal(srv.SPIDER_HAMMER_DURATION, 120.0);
-    assert.equal(srv.THOR_HAMMER_DURATION, 120.0);
+    assert.equal(srv.JACKOLANTERN_HAMMER_DURATION, 60.0);
+    assert.equal(srv.SPIDER_HAMMER_DURATION, 60.0);
+    assert.equal(srv.THOR_HAMMER_DURATION, 60.0);
     assert.equal(srv.THOR_EXPLOSION_RADIUS, srv.EXPLOSION_RADIUS * 0.5);
     assert.equal(srv.THOR_BLAST_DAMAGE_MULT, 0.5);
     assert.equal(srv.ZOMBIE_WEB_DURATION, 30.0);
@@ -311,15 +311,15 @@ describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed)', () => {
   });
 });
 
-describe('Rare Powerups: Extra Hammer (120s), Mounts (Horse, Tortoise, Elephant), Earthquake, Fear', () => {
+describe('Rare Powerups: Extra Hammer (60s), Mounts (Horse, Tortoise, Elephant), Earthquake, Fear', () => {
   beforeEach(resetTestWorld);
 
-  it('adds extra hammers up to 2 and expires them after 120 seconds', () => {
+  it('adds extra hammers up to 2 and expires them after 60 seconds', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'hammer' });
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(p.hammers.length, 2);
-    assert.ok(p.hammers[1].extraTimer > 119 && p.hammers[1].extraTimer <= 120);
+    assert.ok(p.hammers[1].extraTimer > 59 && p.hammers[1].extraTimer <= 60);
 
     // 3rd hammer pickup is ignored when already at max (2)
     srv.blackCircles.push({ id: 2, x: p.x, y: p.y, radius: 10, type: 'hammer' });
@@ -444,7 +444,7 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'disco' });
     srv.stepPlayerPhysics(p, 0.016);
-    assert.ok(p.hammer.discoTimer > 119.9);
+    assert.ok(p.hammer.discoTimer > 59.9 && p.hammer.discoTimer <= 60);
 
     // Place zombie directly in path of moving disco hammer
     const e1 = addTestEnemy(2200, 2100, 100);
@@ -470,11 +470,11 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     assert.equal(srv.startEnemyDance(e1), false);
   });
 
-  it('Jack-o-Lantern Hammer lasts 120s and deals normal impact damage', () => {
+  it('Jack-o-Lantern Hammer lasts 60s and deals normal impact damage', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'jackolantern' });
     srv.stepPlayerPhysics(p, 0.016);
-    assert.ok(p.hammer.jackolanternTimer > 119.9);
+    assert.ok(p.hammer.jackolanternTimer > 59.9 && p.hammer.jackolanternTimer <= 60);
 
     const e = addTestEnemy(2200, 2100, 200);
     p.hammer.x = 2190;
@@ -486,12 +486,12 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     assert.ok(e.hp < 200, 'Jack-o-lantern hammer should deal normal impact damage');
   });
 
-  it('Spider Hammer lasts 120s, deals normal damage, and wraps zombies in white webbing for 30s so they cannot move', () => {
+  it('Spider Hammer lasts 60s, deals normal damage, and wraps zombies in white webbing for 30s so they cannot move', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'spider' });
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(p.hammer.isSpider, true);
-    assert.ok(p.hammer.spiderTimer > 119.9);
+    assert.ok(p.hammer.spiderTimer > 59.9 && p.hammer.spiderTimer <= 60);
 
     // Cannot pick up another spider powerup when all hammers are already spiders
     srv.blackCircles.push({ id: 2, x: p.x, y: p.y, radius: 10, type: 'spider' });
@@ -522,18 +522,18 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     assert.equal(e.vx, 0);
     assert.equal(e.vy, 0);
 
-    // Spider hammer effect expires after 120s
+    // Spider hammer effect expires after 60s
     p.hammer.spiderTimer = 0.01;
     srv.stepPlayerPhysics(p, 0.05);
     assert.equal(p.hammer.spiderTimer, 0);
     assert.equal(p.hammer.isSpider, false);
   });
 
-  it('Thor Hammer lasts 120s and triggers a 1/2 damage, 1/2 blast radius explosion on every enemy hit', () => {
+  it('Thor Hammer lasts 60s and triggers a 1/2 damage, 1/2 blast radius explosion on every enemy hit', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'thor' });
     srv.stepPlayerPhysics(p, 0.016);
-    assert.ok(p.hammer.thorTimer > 119.9);
+    assert.ok(p.hammer.thorTimer > 59.9 && p.hammer.thorTimer <= 60);
 
     // Enemy 1 is directly hit by the Thor hammer; Enemy 2 is 150px away (inside 210px Thor blast radius);
     // Enemy 3 is 300px away (outside 210px Thor blast radius, even though inside 420px normal bomb radius)

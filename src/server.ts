@@ -56,7 +56,7 @@ const PICKUP_TYPES = ['link', 'weight', 'health', 'bomb', 'speed', 'flame'];
 const PICKUP_RADIUS = 10;
 const MAX_PICKUP_COUNT = 40;
 const MAX_HAMMERS_PER_PLAYER = 2;
-const EXTRA_HAMMER_DURATION = 120.0;
+const EXTRA_HAMMER_DURATION = 60.0;
 const RARE_HAMMER_DROP_CHANCE = 0.005;
 const RARE_HORSE_DROP_CHANCE = 0.005;
 const RARE_TORTOISE_DROP_CHANCE = 0.005;
@@ -70,13 +70,13 @@ const RARE_SPIDER_DROP_CHANCE = 0.005;
 const RARE_THOR_DROP_CHANCE = 0.005;
 
 const ZOMBIE_WEB_DURATION = 30.0;
-const SPIDER_HAMMER_DURATION = 120.0;
-const THOR_HAMMER_DURATION = 120.0;
+const SPIDER_HAMMER_DURATION = 60.0;
+const THOR_HAMMER_DURATION = 60.0;
 const THOR_EXPLOSION_RADIUS = EXPLOSION_RADIUS * 0.5;
 const THOR_BLAST_DAMAGE_MULT = 0.5;
 
-const JACKOLANTERN_HAMMER_DURATION = 120.0;
-const DISCO_HAMMER_DURATION = 120.0;
+const JACKOLANTERN_HAMMER_DURATION = 60.0;
+const DISCO_HAMMER_DURATION = 60.0;
 const ZOMBIE_DANCE_DURATION = 30.0;
 const ZOMBIE_DANCE_IMMUNE_DURATION = 45.0;
 
@@ -1721,7 +1721,7 @@ function stepPlayerPhysics(p, dt) {
         newH.vy = p.vy + Math.sin(spreadAngle) * 180;
         newH.extraTimer = EXTRA_HAMMER_DURATION;
         p.hammers.push(newH);
-        label = `+1 EXTRA HAMMER! (120s, ${p.hammers.length}/${MAX_HAMMERS_PER_PLAYER})`;
+        label = `+1 EXTRA HAMMER! (60s, ${p.hammers.length}/${MAX_HAMMERS_PER_PLAYER})`;
         color = '#b794f4';
       } else if (pType === 'horse') {
         p.mountType = 'horse';
@@ -1794,7 +1794,7 @@ function stepPlayerPhysics(p, dt) {
           x: Math.round(p.x),
           y: Math.round(p.y),
         });
-        label = 'DISCO BALL HAMMER! (120s DANCE FEVER)';
+        label = 'DISCO BALL HAMMER! (60s DANCE FEVER)';
         color = '#f687b3';
       } else if (pType === 'jackolantern') {
         const nonJack = p.hammers.filter((hm) => (hm.jackolanternTimer || 0) <= 0);
@@ -1806,7 +1806,7 @@ function stepPlayerPhysics(p, dt) {
           x: Math.round(p.x),
           y: Math.round(p.y),
         });
-        label = 'JACK-O-LANTERN HAMMER! (120s)';
+        label = 'JACK-O-LANTERN HAMMER! (60s)';
         color = '#ed8936';
       } else if (pType === 'spider') {
         const nonSpider = p.hammers.filter((hm) => !hm.isSpider && (hm.spiderTimer || 0) <= 0);
@@ -1819,7 +1819,7 @@ function stepPlayerPhysics(p, dt) {
           x: Math.round(p.x),
           y: Math.round(p.y),
         });
-        label = 'SPIDER HAMMER! (120s, WEBS ZOMBIES FOR 30s)';
+        label = 'SPIDER HAMMER! (60s, WEBS ZOMBIES FOR 30s)';
         color = '#e2e8f0';
       } else if (pType === 'thor') {
         const nonThor = p.hammers.filter((hm) => (hm.thorTimer || 0) <= 0);
@@ -1831,7 +1831,7 @@ function stepPlayerPhysics(p, dt) {
           x: Math.round(p.x),
           y: Math.round(p.y),
         });
-        label = 'THOR HAMMER! (120s, 1/2 BOMB BLAST ON EVERY HIT)';
+        label = 'THOR HAMMER! (60s, 1/2 BOMB BLAST ON EVERY HIT)';
         color = '#63b3ed';
       } else if (pType === 'link') {
         const underMax = p.hammers.filter(

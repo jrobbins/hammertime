@@ -168,6 +168,9 @@ function loadClientGame(initialCookies = '') {
   MockWebSocket.CLOSING = 2;
   MockWebSocket.CLOSED = 3;
 
+  let rafCounter = 0;
+  const rafCalls = [];
+  const cancelRafCalls = [];
   const windowListeners = {};
   const sandbox = {
     window: {
@@ -192,7 +195,14 @@ function loadClientGame(initialCookies = '') {
     performance: {
       now: () => Date.now(),
     },
-    requestAnimationFrame: () => 1,
+    requestAnimationFrame: (cb) => {
+      const id = ++rafCounter;
+      rafCalls.push({ id, cb });
+      return id;
+    },
+    cancelAnimationFrame: (id) => {
+      cancelRafCalls.push(id);
+    },
     setTimeout,
     clearTimeout,
     Math,
@@ -210,6 +220,7 @@ function loadClientGame(initialCookies = '') {
   sandbox.window.document = sandbox.document;
   sandbox.window.performance = sandbox.performance;
   sandbox.window.requestAnimationFrame = sandbox.requestAnimationFrame;
+  sandbox.window.cancelAnimationFrame = sandbox.cancelAnimationFrame;
 
   const code = fs.readFileSync(path.join(__dirname, '..', 'dist', 'game.js'), 'utf8');
   vm.runInNewContext(code, sandbox, { filename: 'game.js' });
@@ -218,6 +229,8 @@ function loadClientGame(initialCookies = '') {
     elements,
     document: mockDoc,
     window: sandbox.window,
+    rafCalls,
+    cancelRafCalls,
   };
 }
 
@@ -297,6 +310,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(indexHtml.includes('chain-links-val'), false);
     assert.equal(indexHtml.includes('hammer-mass-val'), true);
     assert.equal(indexHtml.includes('HAMMER MASS'), true);
+    assert.equal(indexHtml.includes('hud-bottom'), false);
     assert.equal(indexHtml.includes('<strong>Traction</strong>'), false);
 
     api.updateHUD();
@@ -305,7 +319,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(elements.has('wave-badge'), false);
   });
 
-  it('handles all 16 standalone pickups, extra hammer 120s expiration, spider web, disco, and bulldozer', () => {
+  it('handles all 16 standalone pickups, extra hammer 60s expiration, spider web, disco, and bulldozer', () => {
     const w = api.warrior;
 
     // Common pickups: link, weight, health, bomb, flame, speed
@@ -350,16 +364,16 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       api.stepPhysics(0.016);
     }
     assert.ok(api.getState().earthquakeTimer > 4.9);
-    assert.ok(w.hammers[0].discoTimer > 119.9);
-    assert.ok(w.hammers[0].jackolanternTimer > 119.9);
+    assert.ok(w.hammers[0].discoTimer > 59.9 && w.hammers[0].discoTimer <= 60);
+    assert.ok(w.hammers[0].jackolanternTimer > 59.9 && w.hammers[0].jackolanternTimer <= 60);
     w.hammers[0].discoTimer = 0;
     api.setState({ earthquakeTimer: 0, localKnockdownTimer: 0 });
 
-    // Extra hammer pickup (capped at 2) + 120s expiration
+    // Extra hammer pickup (capped at 2) + 60s expiration
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'hammer' });
     api.stepPhysics(0.016);
     assert.equal(w.hammers.length, 2);
-    assert.ok(w.hammers[1].extraTimer > 119);
+    assert.ok(w.hammers[1].extraTimer > 59 && w.hammers[1].extraTimer <= 60);
     api.updateHUD();
     assert.equal(elements.get('hammer-mass-val').textContent, '1.23/0.88');
     // 3rd hammer pickup is ignored when already at max 2
@@ -392,7 +406,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'spider' });
     api.stepPhysics(0.016);
     assert.equal(w.hammers[0].isSpider, true);
-    assert.ok(w.hammers[0].spiderTimer > 119.9);
+    assert.ok(w.hammers[0].spiderTimer > 59.9 && w.hammers[0].spiderTimer <= 60);
 
     api.spawnEnemy(false);
     const e = api.enemies[0];
@@ -416,7 +430,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     // Thor pickup + 1/2 damage, 1/2 blast radius explosion on hit
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'thor' });
     api.stepPhysics(0.016);
-    assert.ok(w.hammers[0].thorTimer > 119.9);
+    assert.ok(w.hammers[0].thorTimer > 59.9 && w.hammers[0].thorTimer <= 60);
 
     e.hitCooldown = 0;
     e.hp = 1000;
@@ -1231,5 +1245,99 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.doesNotThrow(() => {
       api.render();
     });
+  });
+
+  it('does not run any animation loop or simulation steps when a dialog box is showing', () => {
+    const loaded = loadClientGame();
+    const { api, elements, rafCalls, cancelRafCalls } = loaded;
+    const enterModal = elements.get('enter-modal');
+    const gameOverModal = elements.get('game-over-modal');
+    const victoryModal = elements.get('victory-modal');
+    const gameCtx = elements.get('game-canvas')._ctx;
+
+    // 1. On initial load, #enter-modal is showing -> no requestAnimationFrame loop is started
+    assert.equal(enterModal.classList.contains('hidden'), false);
+    assert.equal(api.isDialogShowing(), true);
+    assert.equal(api.getState().isLoopRunning, false);
+    assert.equal(rafCalls.length, 0, 'Should not schedule requestAnimationFrame on initial modal load');
+
+    // Calling gameLoop while #enter-modal is showing does not render, step physics, or schedule RAF
+    let fillRectCount = 0;
+    const origFillRect = gameCtx.fillRect;
+    gameCtx.fillRect = (...args) => {
+      fillRectCount++;
+      return origFillRect.apply(gameCtx, args);
+    };
+    const origWarriorX = api.warrior.x;
+    api.warrior.vx = 400;
+    api.gameLoop(Date.now() + 16);
+    assert.equal(fillRectCount, 0, 'Should not render while enter dialog is showing');
+    assert.equal(api.warrior.x, origWarriorX, 'Should not step physics while enter dialog is showing');
+    assert.equal(rafCalls.length, 0, 'Should not schedule RAF while enter dialog is showing');
+
+    // 2. Entering game: while "Connecting...", modal is still open -> loop still stopped
+    elements.get('nickname-input').value = 'Sir QuietFan';
+    api.enterGame();
+    assert.equal(enterModal.classList.contains('hidden'), false);
+    assert.equal(api.isDialogShowing(), true);
+    assert.equal(api.getState().isLoopRunning, false);
+    assert.equal(rafCalls.length, 0);
+
+    // 3. When WebSocket connects, #enter-modal hides and the animation loop starts
+    const ws = api.getState().ws;
+    ws.readyState = 1;
+    ws.emit('open', {});
+    assert.equal(enterModal.classList.contains('hidden'), true);
+    assert.equal(api.isDialogShowing(), false);
+    assert.equal(api.getState().isLoopRunning, true);
+    assert.equal(rafCalls.length, 1, 'Expected animation loop to start once dialog closes');
+
+    // Running a frame when no dialog is showing steps simulation, renders, and schedules next RAF
+    const nowMs = Date.now() + 16;
+    api.setState({ lastUserActivityTime: nowMs });
+    api.gameLoop(nowMs);
+    assert.ok(fillRectCount > 0, 'Expected render() to execute when no dialog is showing');
+    assert.equal(rafCalls.length, 2, 'Expected next animation frame to be scheduled');
+
+    // 4. When idle timeout triggers pauseForIdle (idle dialog box showing), loop stops and cancels RAF
+    fillRectCount = 0;
+    const rafCountBeforeIdle = rafCalls.length;
+    api.setState({ lastUserActivityTime: nowMs - 130000 });
+    api.gameLoop(nowMs + 16);
+    assert.equal(enterModal.classList.contains('hidden'), false, 'Idle dialog box should be visible');
+    assert.equal(api.isDialogShowing(), true);
+    assert.equal(api.getState().isLoopRunning, false);
+    assert.equal(fillRectCount, 0, 'Should not render on the frame that pauses for idle');
+    assert.equal(rafCalls.length, rafCountBeforeIdle, 'Should not schedule any new RAF when paused for idle');
+
+    // Calling pauseForIdle while loop is active cancels the pending animationFrameId
+    ws.readyState = 1;
+    ws.emit('open', {});
+    assert.equal(api.getState().isLoopRunning, true);
+    const pendingId = api.getState().animationFrameId;
+    assert.ok(pendingId !== null);
+    api.pauseForIdle('Paused for test');
+    assert.equal(api.getState().isLoopRunning, false);
+    assert.equal(api.getState().animationFrameId, null);
+    assert.ok(cancelRafCalls.includes(pendingId), 'Expected cancelAnimationFrame to be called with pending id');
+
+    // 5. Showing #victory-modal or #game-over-modal also stops the animation loop and simulation
+    ws.readyState = 1;
+    ws.emit('open', {});
+    assert.equal(api.getState().isLoopRunning, true);
+    victoryModal.classList.remove('hidden');
+    assert.equal(api.isDialogShowing(), true);
+    fillRectCount = 0;
+    const rafBeforeVictoryFrame = rafCalls.length;
+    api.gameLoop(Date.now() + 32);
+    assert.equal(api.getState().isLoopRunning, false);
+    assert.equal(fillRectCount, 0, 'Should not render while victory modal is showing');
+    assert.equal(rafCalls.length, rafBeforeVictoryFrame, 'Should not schedule RAF while victory modal is showing');
+
+    victoryModal.classList.add('hidden');
+    gameOverModal.classList.remove('hidden');
+    assert.equal(api.isDialogShowing(), true);
+    api.startAnimationLoop();
+    assert.equal(api.getState().isLoopRunning, false, 'Should not start loop while game-over modal is showing');
   });
 });

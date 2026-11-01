@@ -8,5 +8,9 @@
     "start": "node dist/server.js",
     "test": "./node_modules/.bin/tsc && node test/run.js"
   },
-  "private": true
+  "private": true,
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
 }

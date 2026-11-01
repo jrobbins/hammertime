@@ -95,7 +95,7 @@
   const PICKUP_RADIUS = 10;
   const MAX_PICKUP_COUNT = 40;
   const MAX_HAMMERS_PER_PLAYER = 2;
-  const EXTRA_HAMMER_DURATION = 120.0;
+  const EXTRA_HAMMER_DURATION = 60.0;
   const RARE_HAMMER_DROP_CHANCE = 0.005;
   const RARE_HORSE_DROP_CHANCE = 0.005;
   const RARE_TORTOISE_DROP_CHANCE = 0.005;
@@ -109,13 +109,13 @@
   const RARE_THOR_DROP_CHANCE = 0.005;
 
   const ZOMBIE_WEB_DURATION = 30.0;
-  const SPIDER_HAMMER_DURATION = 120.0;
-  const THOR_HAMMER_DURATION = 120.0;
+  const SPIDER_HAMMER_DURATION = 60.0;
+  const THOR_HAMMER_DURATION = 60.0;
   const THOR_EXPLOSION_RADIUS = EXPLOSION_RADIUS * 0.5;
   const THOR_BLAST_DAMAGE_MULT = 0.5;
 
-  const JACKOLANTERN_HAMMER_DURATION = 120.0;
-  const DISCO_HAMMER_DURATION = 120.0;
+  const JACKOLANTERN_HAMMER_DURATION = 60.0;
+  const DISCO_HAMMER_DURATION = 60.0;
   const ZOMBIE_DANCE_DURATION = 30.0;
   const ZOMBIE_DANCE_IMMUNE_DURATION = 45.0;
 
@@ -931,6 +931,41 @@
   let earthquakeTimer = 0;
   let localKnockdownTimer = 0;
   let isGameOver = false;
+  let animationFrameId: number | null = null;
+  let isLoopRunning = false;
+  let victoryAutoRestartTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  function isElementModalOpen(el) {
+    return Boolean(el && el.classList && !el.classList.contains('hidden'));
+  }
+
+  function isDialogShowing() {
+    return (
+      !hasEnteredGame ||
+      isElementModalOpen(enterModal) ||
+      isElementModalOpen(gameOverModal) ||
+      isElementModalOpen(victoryModal)
+    );
+  }
+
+  function stopAnimationLoop() {
+    isLoopRunning = false;
+    if (animationFrameId !== null) {
+      if (typeof cancelAnimationFrame === 'function') {
+        cancelAnimationFrame(animationFrameId);
+      } else if (win && typeof win.cancelAnimationFrame === 'function') {
+        win.cancelAnimationFrame(animationFrameId);
+      }
+      animationFrameId = null;
+    }
+  }
+
+  function startAnimationLoop() {
+    if (isLoopRunning || isDialogShowing()) return;
+    isLoopRunning = true;
+    lastTime = performance.now();
+    animationFrameId = requestAnimationFrame(gameLoop);
+  }
 
   const NICKNAME_COOKIE_NAME = 'hammertime_nickname';
   const LEADERBOARD_COOKIE_NAME = 'hammertime_leaderboard';
@@ -1537,6 +1572,10 @@
     isConnecting = false;
     isMultiplayer = false;
     hasSyncedInitialServerState = false;
+    if (victoryAutoRestartTimeout !== null) {
+      clearTimeout(victoryAutoRestartTimeout);
+      victoryAutoRestartTimeout = null;
+    }
     if (ws) {
       const sock = ws;
       ws = null;
@@ -1562,6 +1601,7 @@
       enterModal.classList.remove('hidden');
       enterModal.setAttribute('aria-hidden', 'false');
     }
+    stopAnimationLoop();
   }
 
   function completeEnterGame() {
@@ -1574,6 +1614,7 @@
       enterModal.setAttribute('aria-hidden', 'true');
     }
     renderLeaderboard();
+    startAnimationLoop();
   }
 
   function enterGame(customNickname?: string) {
@@ -1621,6 +1662,7 @@
     if (enterModalSubtitleEl) {
       enterModalSubtitleEl.textContent = 'Connecting...';
     }
+    stopAnimationLoop();
     connectMultiplayer();
     renderLeaderboard();
     return true;
@@ -1629,8 +1671,10 @@
   function connectMultiplayer() {
     if (!hasEnteredGame && !isConnecting) return;
     const WebSocketClass = win.WebSocket || (typeof WebSocket !== 'undefined' ? WebSocket : null);
-    if (!WebSocketClass) return;
-    if (!window.location.host || window.location.protocol === 'file:') return;
+    if (!WebSocketClass || !window.location.host || window.location.protocol === 'file:') {
+      completeEnterGame();
+      return;
+    }
     if (ws && ws.readyState === WebSocketClass.OPEN) {
       isMultiplayer = true;
       completeEnterGame();
@@ -1643,6 +1687,7 @@
     try {
       ws = new WebSocketClass(`${proto}//${window.location.host}`);
     } catch (_err) {
+      completeEnterGame();
       return;
     }
 
@@ -1708,6 +1753,22 @@
         victoryInfo = msg.victoryInfo || null;
         if (Array.isArray(msg.leaderboard)) {
           syncServerLeaderboard(msg.leaderboard);
+        }
+        if (roundState === 'victory') {
+          updateHUD();
+          stopAnimationLoop();
+          return;
+        }
+        if (victoryModal && !victoryModal.classList.contains('hidden')) {
+          victoryModal.classList.add('hidden');
+          victoryModal.setAttribute('aria-hidden', 'true');
+        }
+        if (isDialogShowing()) {
+          stopAnimationLoop();
+          return;
+        }
+        if (!isLoopRunning) {
+          startAnimationLoop();
         }
 
         const hasRoundReset =
@@ -2327,6 +2388,17 @@
         championName: warrior.name,
       };
       playVictorySound();
+      updateHUD();
+      stopAnimationLoop();
+      if (victoryAutoRestartTimeout !== null) {
+        clearTimeout(victoryAutoRestartTimeout);
+      }
+      victoryAutoRestartTimeout = setTimeout(() => {
+        victoryAutoRestartTimeout = null;
+        if (!isMultiplayer && roundState === 'victory') {
+          initGame();
+        }
+      }, VICTORY_DISPLAY_DURATION * 1000);
     }
   }
 
@@ -2808,8 +2880,22 @@
 
   // --- Reset / Initialize Game ---
   function initGame() {
+    if (victoryAutoRestartTimeout !== null) {
+      clearTimeout(victoryAutoRestartTimeout);
+      victoryAutoRestartTimeout = null;
+    }
     if (isMultiplayer && ws && ws.readyState === WebSocket.OPEN) {
+      roundState = 'playing';
+      if (victoryModal) {
+        victoryModal.classList.add('hidden');
+        victoryModal.setAttribute('aria-hidden', 'true');
+      }
+      if (gameOverModal) {
+        gameOverModal.classList.add('hidden');
+        gameOverModal.setAttribute('aria-hidden', 'true');
+      }
       ws.send(JSON.stringify({ type: 'reset' }));
+      startAnimationLoop();
       return;
     }
 
@@ -2904,6 +2990,11 @@
     }
 
     updateHUD();
+    if (!isDialogShowing()) {
+      startAnimationLoop();
+    } else {
+      stopAnimationLoop();
+    }
   }
 
   const nearbyChainColumns = [];
@@ -4412,7 +4503,7 @@
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            'DISCO BALL HAMMER! (120s DANCE FEVER)',
+            'DISCO BALL HAMMER! (60s DANCE FEVER)',
             '#f687b3',
             1.2
           );
@@ -4428,7 +4519,7 @@
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            'JACK-O-LANTERN HAMMER! (120s)',
+            'JACK-O-LANTERN HAMMER! (60s)',
             '#ed8936',
             1.2
           );
@@ -4445,7 +4536,7 @@
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            'SPIDER HAMMER! (120s, WEBS ZOMBIES FOR 30s)',
+            'SPIDER HAMMER! (60s, WEBS ZOMBIES FOR 30s)',
             '#e2e8f0',
             1.2
           );
@@ -4461,7 +4552,7 @@
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            'THOR HAMMER! (120s, 1/2 BOMB BLAST ON EVERY HIT)',
+            'THOR HAMMER! (60s, 1/2 BOMB BLAST ON EVERY HIT)',
             '#63b3ed',
             1.2
           );
@@ -4474,7 +4565,7 @@
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            `+1 EXTRA HAMMER! (120s, ${warrior.hammers.length}/${MAX_HAMMERS_PER_PLAYER})`,
+            `+1 EXTRA HAMMER! (60s, ${warrior.hammers.length}/${MAX_HAMMERS_PER_PLAYER})`,
             '#b794f4',
             1.18
           );
@@ -9090,6 +9181,12 @@
   let lastTime = performance.now();
 
   function gameLoop(now) {
+    animationFrameId = null;
+    if (isDialogShowing()) {
+      isLoopRunning = false;
+      return;
+    }
+
     gameTime = now * 0.001;
     const rawDt = (now - lastTime) / 1000;
     lastTime = now;
@@ -9104,6 +9201,7 @@
         pauseForIdle(
           'Session paused due to inactivity so the server stays idle when nobody is playing. Click to rejoin!'
         );
+        return;
       } else if (isMultiplayer) {
         stepMultiplayerClient(frameDt);
         updateCamera();
@@ -9123,16 +9221,20 @@
       }
     }
 
+    if (isDialogShowing()) {
+      stopAnimationLoop();
+      return;
+    }
+
     render();
-    requestAnimationFrame(gameLoop);
+    animationFrameId = requestAnimationFrame(gameLoop);
   }
 
-  // Start up (waits for user click on #enter-modal before connecting to server)
+  // Start up (waits for user click on #enter-modal before running animation loop or connecting to server)
   loadLocalLeaderboardFromStorage();
   generateWorldScenery();
   resizeCanvas();
   initGame();
-  requestAnimationFrame(gameLoop);
 
   if (typeof window !== 'undefined') {
     win.__HAMMERTIME_TEST__ = {
@@ -9244,6 +9346,9 @@
         visualQualityTier,
         minimapAccumSec,
         soundsInCurrentWindow,
+        isLoopRunning,
+        animationFrameId,
+        lastUserActivityTime,
       }),
       setState: (patch) => {
         if ('hasEnteredGame' in patch) hasEnteredGame = patch.hasEnteredGame;
@@ -9265,9 +9370,14 @@
         if ('minimapAccumSec' in patch) minimapAccumSec = patch.minimapAccumSec;
         if ('soundWindowStartMs' in patch) soundWindowStartMs = patch.soundWindowStartMs;
         if ('soundsInCurrentWindow' in patch) soundsInCurrentWindow = patch.soundsInCurrentWindow;
+        if ('lastUserActivityTime' in patch) lastUserActivityTime = patch.lastUserActivityTime;
       },
       initGame,
       enterGame,
+      pauseForIdle,
+      isDialogShowing,
+      startAnimationLoop,
+      stopAnimationLoop,
       connectMultiplayer,
       lerpAngle,
       getCookie,
