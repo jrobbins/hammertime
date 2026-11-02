@@ -127,6 +127,10 @@
   const BULLDOZER_TRACTION_MULT = 10.0;
   const BULLDOZER_RADIUS = 34;
 
+  const HORSE_RADIUS = 35;
+  const TORTOISE_RADIUS = 36;
+  const ELEPHANT_RADIUS = 45;
+
   const EARTHQUAKE_DURATION = 5.0;
   const ZOMBIE_KNOCKDOWN_RECOVERY = 5.0;
 
@@ -2046,6 +2050,9 @@
         addFloatingText(ev.x, ev.y, ev.text, ev.color || '#fff', ev.scale || 1);
       } else if (ev.type === 'victory') {
         playVictorySound();
+      } else if (ev.type === 'cheat') {
+        addShockwave(ev.x, ev.y, 320, '255, 215, 0');
+        addFloatingText(ev.x, ev.y, 'CHEAT ACTIVATED!', '#ffd700', 1.5);
       } else if (ev.type === 'round_reset') {
         earthquakeTimer = 0;
         localKnockdownTimer = 0;
@@ -2745,6 +2752,71 @@
       delete pickup.radius;
     }
     blackCircles.push(pickup);
+  }
+
+  const ALL_POWERUP_TYPES = [
+    'link',
+    'weight',
+    'health',
+    'bomb',
+    'speed',
+    'flame',
+    'hammer',
+    'horse',
+    'tortoise',
+    'elephant',
+    'earthquake',
+    'fear',
+    'bulldozer',
+    'disco',
+    'jackolantern',
+    'spider',
+    'thor',
+  ] as const;
+
+  function spawnCheatPowerups() {
+    const cx = WORLD_WIDTH / 2;
+    const cy = WORLD_HEIGHT / 2;
+    const radii = [110, 210, 310];
+    const spawned: Array<{ x: number; y: number; pulse: number; type: string }> = [];
+
+    for (let r = 0; r < radii.length; r++) {
+      const radius = radii[r];
+      const angleOffset = r * (Math.PI / ALL_POWERUP_TYPES.length);
+      for (let i = 0; i < ALL_POWERUP_TYPES.length; i++) {
+        const angle = (i / ALL_POWERUP_TYPES.length) * 2 * Math.PI + angleOffset;
+        const x = Math.round(cx + Math.cos(angle) * radius);
+        const y = Math.round(cy + Math.sin(angle) * radius);
+        const pickup = {
+          x,
+          y,
+          pulse: 0,
+          type: ALL_POWERUP_TYPES[i],
+        };
+        blackCircles.push(pickup);
+        spawned.push(pickup);
+      }
+    }
+
+    addShockwave(cx, cy, 320, '255, 215, 0');
+    addFloatingText(cx, cy, 'CHEAT ACTIVATED!', '#ffd700', 1.5);
+    return spawned;
+  }
+
+  function triggerCheat() {
+    const openState = typeof WebSocket !== 'undefined' ? WebSocket.OPEN : 1;
+    if (isMultiplayer && ws && ws.readyState === openState) {
+      ws.send(JSON.stringify({ type: 'cheat' }));
+    } else {
+      spawnCheatPowerups();
+    }
+    addFloatingText(
+      warrior.x,
+      warrior.y - warrior.radius - 20,
+      'CHEAT ACTIVATED!',
+      '#ffd700',
+      1.5
+    );
   }
 
   function defeatEnemy(index) {
@@ -4260,11 +4332,11 @@
       if (warrior.bulldozerTimer <= 0) {
         warrior.radius =
           warrior.mountType === 'elephant'
-            ? 32
+            ? ELEPHANT_RADIUS
             : warrior.mountType === 'tortoise'
-            ? 26
+            ? TORTOISE_RADIUS
             : warrior.mountType === 'horse'
-            ? 25
+            ? HORSE_RADIUS
             : 20;
       } else {
         warrior.radius = BULLDOZER_RADIUS;
@@ -4916,7 +4988,7 @@
           warrior.mountType = 'horse';
           warrior.mountMaxHp = Math.max(1, Math.round(warrior.hp));
           warrior.mountHp = warrior.mountMaxHp;
-          warrior.radius = 25;
+          warrior.radius = HORSE_RADIUS;
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
@@ -4929,7 +5001,7 @@
           warrior.mountType = 'tortoise';
           warrior.mountMaxHp = Math.max(1, Math.round(warrior.hp));
           warrior.mountHp = warrior.mountMaxHp;
-          warrior.radius = 26;
+          warrior.radius = TORTOISE_RADIUS;
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
@@ -4942,7 +5014,7 @@
           warrior.mountType = 'elephant';
           warrior.mountMaxHp = Math.max(250, Math.round(warrior.maxHp * 2.5));
           warrior.mountHp = warrior.mountMaxHp;
-          warrior.radius = 32;
+          warrior.radius = ELEPHANT_RADIUS;
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
@@ -6902,17 +6974,18 @@
     const isHorse = !isBulldozer && w.mountType === 'horse' && (w.mountHp || 0) > 0;
     const isTortoise = !isBulldozer && w.mountType === 'tortoise' && (w.mountHp || 0) > 0;
     const isElephant = !isBulldozer && w.mountType === 'elephant' && (w.mountHp || 0) > 0;
-    const mountLift = isElephant ? 24 : isHorse ? 14 : isTortoise ? 13 : 0;
+    const isMount = isHorse || isTortoise || isElephant;
+    const mountLift = isElephant ? 34 : isHorse ? 20 : isTortoise ? 18 : 0;
     const radius =
       w.radius ||
       (isBulldozer
         ? BULLDOZER_RADIUS
         : isElephant
-        ? 32
+        ? ELEPHANT_RADIUS
         : isTortoise
-        ? 26
+        ? TORTOISE_RADIUS
         : isHorse
-        ? 25
+        ? HORSE_RADIUS
         : 20);
 
     ctx.save();
@@ -6952,7 +7025,7 @@
     ctx.fill();
 
     // Facing direction ring / arrow on the turf around the warrior's feet
-    const ringDist = isBulldozer ? 40 : isElephant ? 34 : isTortoise ? 28 : isHorse ? 25 : 16;
+    const ringDist = isBulldozer ? 40 : isElephant ? 48 : isTortoise ? 39 : isHorse ? 35 : 16;
     ctx.strokeStyle = isLocal ? 'rgba(236, 201, 75, 0.55)' : 'rgba(104, 211, 145, 0.45)';
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -7376,7 +7449,10 @@
       }
     };
 
-    if (isHorse) {
+    if (isMount) {
+      ctx.save();
+      ctx.scale(1.4, 1.4);
+      if (isHorse) {
       const gallop = Math.sin((w.walkCycle || 0) * 1.35) * 9;
       // 4 Galloping hooves/legs
       const legs = [
@@ -7566,6 +7642,8 @@
       ctx.fill();
       ctx.stroke();
     }
+      ctx.restore();
+    }
 
     // Lift the warrior vertically (-Y in 2.5D screen space) when seated on a Horse or Elephant
     ctx.save();
@@ -7598,7 +7676,7 @@
 
     // 3. Striding 3D Armored Boots (or Stirrup Boots when mounted)
     const stride = isHorse || isTortoise || isElephant ? 0 : Math.sin(w.walkCycle || 0) * 7.5;
-    const footSpread = isElephant ? 13 : isTortoise ? 11.5 : isHorse ? 10.5 : 7;
+    const footSpread = isElephant ? 18 : isTortoise ? 16 : isHorse ? 15 : 7;
     const foot1X = rightX * footSpread + dirX * stride;
     const foot1Y = (rightY * footSpread + dirY * stride) * TILT_Y;
     const foot2X = -rightX * footSpread - dirX * stride;
@@ -7719,13 +7797,16 @@
     ctx.restore(); // End warrior saddle lift
 
     // Draw mount head in front of rider when facing southward (towards camera)
-    if ((isHorse || isTortoise || isElephant) && dirY >= 0) {
+    if (isMount && dirY >= 0) {
+      ctx.save();
+      ctx.scale(1.4, 1.4);
       drawMountHeadAndFront();
+      ctx.restore();
     }
 
     // Floating Name Tag & Health Bar (plus Mount HP Bar when mounted)
     const labelBaseY = -56 - mountLift - bob;
-    if (!isLocal || remotePlayers.length > 0 || isHorse || isTortoise || isElephant) {
+    if (!isLocal || remotePlayers.length > 0 || isMount) {
       if (!isLocal || remotePlayers.length > 0) {
         ctx.font = '700 11px "Inter", sans-serif';
         ctx.textAlign = 'center';
@@ -7735,8 +7816,8 @@
         ctx.fillText(isLocal ? `${w.name} (YOU)` : w.name || 'Warrior', 0, labelBaseY);
       }
 
-      if (isHorse || isTortoise || isElephant) {
-        const bw = isElephant ? 44 : 36;
+      if (isMount) {
+        const bw = isElephant ? 45 : 38;
         const bh = 4;
         const barY = labelBaseY + 6;
         const mountMax = Math.max(1, w.mountMaxHp || w.mountHp || 100);
@@ -9698,6 +9779,36 @@
     });
   }
 
+  // --- Cheat Code Detection ("cheat") ---
+  const CHEAT_WORD = 'cheat';
+  let cheatCodeBuffer = '';
+
+  function handleCheatKeyDown(e: KeyboardEvent) {
+    if (isDialogShowing()) {
+      cheatCodeBuffer = '';
+      return;
+    }
+    const target = e.target as HTMLElement | null;
+    if (
+      target &&
+      (target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        (target as any).isContentEditable)
+    ) {
+      cheatCodeBuffer = '';
+      return;
+    }
+    if (e && typeof e.key === 'string' && e.key.length === 1) {
+      cheatCodeBuffer = (cheatCodeBuffer + e.key.toLowerCase()).slice(-CHEAT_WORD.length);
+      if (cheatCodeBuffer === CHEAT_WORD) {
+        cheatCodeBuffer = '';
+        triggerCheat();
+      }
+    }
+  }
+
+  window.addEventListener('keydown', handleCheatKeyDown);
+
   // --- Main Animation Loop ---
   let lastTime = performance.now();
 
@@ -9786,6 +9897,7 @@
         HAMMER_WEIGHT_BONUS,
         EXPLOSION_RADIUS,
         PICKUP_TYPES,
+        ALL_POWERUP_TYPES,
         PICKUP_RADIUS,
         MAX_PICKUP_COUNT,
         MAX_HAMMERS_PER_PLAYER,
@@ -9814,6 +9926,9 @@
         BULLDOZER_SPEED_MULT,
         BULLDOZER_TRACTION_MULT,
         BULLDOZER_RADIUS,
+        HORSE_RADIUS,
+        TORTOISE_RADIUS,
+        ELEPHANT_RADIUS,
         EARTHQUAKE_DURATION,
         ZOMBIE_KNOCKDOWN_RECOVERY,
         FEAR_DURATION,
@@ -9950,6 +10065,9 @@
       drawStoneColumn,
       processServerEvents,
       addPickupToWorld,
+      spawnCheatPowerups,
+      triggerCheat,
+      handleCheatKeyDown,
       defeatEnemy,
       spawnEnemy,
       createExtraHammer,

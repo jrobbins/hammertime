@@ -123,6 +123,9 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.ZOMBIE_WEB_DURATION, 30.0);
     assert.equal(srv.BULLDOZER_DURATION, 20.0);
     assert.equal(srv.BULLDOZER_RADIUS, 34);
+    assert.equal(srv.HORSE_RADIUS, 35);
+    assert.equal(srv.TORTOISE_RADIUS, 36);
+    assert.equal(srv.ELEPHANT_RADIUS, 45);
     assert.equal(srv.EARTHQUAKE_DURATION, 5.0);
     assert.equal(srv.ZOMBIE_KNOCKDOWN_RECOVERY, 5.0);
     assert.equal(srv.FEAR_DURATION, 20.0);
@@ -344,6 +347,36 @@ describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed)', () => {
     assert.equal(srv.blackCircles.some((c) => c.id === 'rare-only-0'), false);
     assert.equal(srv.blackCircles[39].id, 'newest-pickup');
   });
+
+  it('drops 3 of each kind of powerup spread around the center of the map via spawnCheatPowerups', () => {
+    srv.blackCircles.length = 0;
+    const spawned = srv.spawnCheatPowerups();
+    assert.equal(spawned.length, 51);
+    assert.equal(srv.blackCircles.length, 51);
+
+    const counts = {};
+    for (const type of srv.ALL_POWERUP_TYPES) {
+      counts[type] = 0;
+    }
+    assert.equal(srv.ALL_POWERUP_TYPES.length, 17);
+
+    const centerX = srv.WORLD_WIDTH / 2;
+    const centerY = srv.WORLD_HEIGHT / 2;
+
+    for (const pk of spawned) {
+      assert.ok(pk.type in counts, `Unknown pickup type: ${pk.type}`);
+      counts[pk.type]++;
+      const distFromCenter = Math.hypot(pk.x - centerX, pk.y - centerY);
+      assert.ok(
+        distFromCenter >= 100 && distFromCenter <= 350,
+        `Distance ${distFromCenter} not spread around center`
+      );
+    }
+
+    for (const [type, count] of Object.entries(counts)) {
+      assert.equal(count, 3, `Expected 3 of type ${type}, got ${count}`);
+    }
+  });
 });
 
 describe('Rare Powerups: Extra Hammer (60s), Mounts (Horse, Tortoise, Elephant), Earthquake, Fear', () => {
@@ -378,7 +411,7 @@ describe('Rare Powerups: Extra Hammer (60s), Mounts (Horse, Tortoise, Elephant),
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(p.mountType, 'horse');
     assert.equal(p.mountHp, 85);
-    assert.equal(p.radius, 25);
+    assert.equal(p.radius, 35);
 
     // Cannot pick up tortoise while already on a horse
     srv.blackCircles.push({ id: 2, x: p.x, y: p.y, radius: 10, type: 'tortoise' });
@@ -402,7 +435,7 @@ describe('Rare Powerups: Extra Hammer (60s), Mounts (Horse, Tortoise, Elephant),
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(p.mountType, 'tortoise');
     assert.equal(p.mountHp, 85);
-    assert.equal(p.radius, 26);
+    assert.equal(p.radius, 36);
 
     // Measure tortoise speed vs elephant speed
     p.angle = 0;
@@ -418,7 +451,7 @@ describe('Rare Powerups: Extra Hammer (60s), Mounts (Horse, Tortoise, Elephant),
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(p.mountType, 'elephant');
     assert.equal(p.mountHp, 250);
-    assert.equal(p.radius, 32);
+    assert.equal(p.radius, 45);
 
     p.vx = 0;
     p.vy = 0;

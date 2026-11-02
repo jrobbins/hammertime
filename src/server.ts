@@ -53,6 +53,26 @@ const HAMMER_WEIGHT_BONUS = 0.35;
 const EXPLOSION_RADIUS = 420;
 
 const PICKUP_TYPES = ['link', 'weight', 'health', 'bomb', 'speed', 'flame'];
+const ALL_POWERUP_TYPES = [
+  'link',
+  'weight',
+  'health',
+  'bomb',
+  'speed',
+  'flame',
+  'hammer',
+  'horse',
+  'tortoise',
+  'elephant',
+  'earthquake',
+  'fear',
+  'bulldozer',
+  'disco',
+  'jackolantern',
+  'spider',
+  'thor',
+] as const;
+type CheatPickupType = (typeof ALL_POWERUP_TYPES)[number];
 const PICKUP_RADIUS = 10;
 const MAX_PICKUP_COUNT = 40;
 const MAX_HAMMERS_PER_PLAYER = 2;
@@ -84,6 +104,10 @@ const BULLDOZER_DURATION = 20.0;
 const BULLDOZER_SPEED_MULT = 0.5;
 const BULLDOZER_TRACTION_MULT = 10.0;
 const BULLDOZER_RADIUS = 34;
+
+const HORSE_RADIUS = 35;
+const TORTOISE_RADIUS = 36;
+const ELEPHANT_RADIUS = 45;
 
 const EARTHQUAKE_DURATION = 5.0;
 const ZOMBIE_KNOCKDOWN_RECOVERY = 5.0;
@@ -848,6 +872,39 @@ function serializePickups() {
   }));
 }
 
+function spawnCheatPowerups() {
+  const cx = WORLD_WIDTH / 2;
+  const cy = WORLD_HEIGHT / 2;
+  const radii = [110, 210, 310];
+  const spawned: Array<{ id: number; x: number; y: number; type: CheatPickupType }> = [];
+
+  for (let r = 0; r < radii.length; r++) {
+    const radius = radii[r];
+    const angleOffset = r * (Math.PI / ALL_POWERUP_TYPES.length);
+    for (let i = 0; i < ALL_POWERUP_TYPES.length; i++) {
+      const angle = (i / ALL_POWERUP_TYPES.length) * 2 * Math.PI + angleOffset;
+      const x = Math.round(cx + Math.cos(angle) * radius);
+      const y = Math.round(cy + Math.sin(angle) * radius);
+      const pickup = {
+        id: nextPickupId++,
+        x,
+        y,
+        type: ALL_POWERUP_TYPES[i],
+      };
+      blackCircles.push(pickup);
+      spawned.push(pickup);
+    }
+  }
+
+  pendingEvents.push({
+    type: 'cheat',
+    x: Math.round(cx),
+    y: Math.round(cy),
+  });
+
+  return spawned;
+}
+
 function defeatEnemy(index, killerPlayer) {
   const e = enemies[index];
   teamKills += 1;
@@ -1133,11 +1190,11 @@ function stepPlayerPhysics(p, dt) {
     if (p.bulldozerTimer <= 0) {
       p.radius =
         p.mountType === 'elephant'
-          ? 32
+          ? ELEPHANT_RADIUS
           : p.mountType === 'tortoise'
-          ? 26
+          ? TORTOISE_RADIUS
           : p.mountType === 'horse'
-          ? 25
+          ? HORSE_RADIUS
           : 20;
     } else {
       p.radius = BULLDOZER_RADIUS;
@@ -1757,21 +1814,21 @@ function stepPlayerPhysics(p, dt) {
         p.mountType = 'horse';
         p.mountMaxHp = Math.max(1, Math.round(p.hp));
         p.mountHp = p.mountMaxHp;
-        p.radius = 25;
+        p.radius = HORSE_RADIUS;
         label = 'WARHORSE MOUNTED! (2x SPEED, 5x GRIP)';
         color = '#ecc94b';
       } else if (pType === 'tortoise') {
         p.mountType = 'tortoise';
         p.mountMaxHp = Math.max(1, Math.round(p.hp));
         p.mountHp = p.mountMaxHp;
-        p.radius = 26;
+        p.radius = TORTOISE_RADIUS;
         label = 'GIANT TORTOISE MOUNTED! (1/4x SPEED, 20x GRIP)';
         color = '#68d391';
       } else if (pType === 'elephant') {
         p.mountType = 'elephant';
         p.mountMaxHp = Math.max(250, Math.round(p.maxHp * 2.5));
         p.mountHp = p.mountMaxHp;
-        p.radius = 32;
+        p.radius = ELEPHANT_RADIUS;
         label = 'WAR ELEPHANT MOUNTED! (1x SPEED, 10x GRIP)';
         color = '#e2e8f0';
       } else if (pType === 'earthquake') {
@@ -3360,6 +3417,9 @@ server.on('upgrade', (req, socket) => {
         if (msg.active) {
           player.lastActivityTime = Date.now();
         }
+      } else if (msg.type === 'cheat') {
+        player.lastActivityTime = Date.now();
+        spawnCheatPowerups();
       } else if (msg.type === 'reset') {
         player.lastActivityTime = Date.now();
         resetGameWorld();
@@ -3541,6 +3601,7 @@ module.exports = {
   HAMMER_WEIGHT_BONUS,
   EXPLOSION_RADIUS,
   PICKUP_TYPES,
+  ALL_POWERUP_TYPES,
   PICKUP_RADIUS,
   MAX_PICKUP_COUNT,
   MAX_HAMMERS_PER_PLAYER,
@@ -3569,6 +3630,9 @@ module.exports = {
   BULLDOZER_SPEED_MULT,
   BULLDOZER_TRACTION_MULT,
   BULLDOZER_RADIUS,
+  HORSE_RADIUS,
+  TORTOISE_RADIUS,
+  ELEPHANT_RADIUS,
   EARTHQUAKE_DURATION,
   ZOMBIE_KNOCKDOWN_RECOVERY,
   FEAR_DURATION,
@@ -3656,6 +3720,7 @@ module.exports = {
   getTopKillerName,
   triggerCoopVictory,
   addPickupToWorld,
+  spawnCheatPowerups,
   serializePickups,
   buildGameStatePayload,
   defeatEnemy,

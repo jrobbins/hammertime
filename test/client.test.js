@@ -310,6 +310,9 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.BULLDOZER_DURATION, srv.BULLDOZER_DURATION);
     assert.equal(c.BULLDOZER_TRACTION_MULT, srv.BULLDOZER_TRACTION_MULT);
     assert.equal(c.BULLDOZER_RADIUS, srv.BULLDOZER_RADIUS);
+    assert.equal(c.HORSE_RADIUS, srv.HORSE_RADIUS);
+    assert.equal(c.TORTOISE_RADIUS, srv.TORTOISE_RADIUS);
+    assert.equal(c.ELEPHANT_RADIUS, srv.ELEPHANT_RADIUS);
     assert.deepEqual([...c.PICKUP_TYPES], srv.PICKUP_TYPES);
     assert.deepEqual([...c.PICKUP_TYPES], ['link', 'weight', 'health', 'bomb', 'speed', 'flame']);
     assert.equal(c.PICKUP_TYPES.includes('traction'), false);
@@ -366,16 +369,20 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'horse' });
     api.stepPhysics(0.016);
     assert.equal(w.mountType, 'horse');
+    assert.equal(w.radius, 35);
     w.mountType = null;
     w.mountHp = 0;
+    w.radius = 20;
 
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'tortoise' });
     api.stepPhysics(0.016);
     assert.equal(w.mountType, 'tortoise');
+    assert.equal(w.radius, 36);
 
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'elephant' });
     api.stepPhysics(0.016);
     assert.equal(w.mountType, 'elephant');
+    assert.equal(w.radius, 45);
 
     // Earthquake, Fear, Disco, Jack-o'-Lantern
     for (const pType of ['earthquake', 'fear', 'disco', 'jackolantern']) {
@@ -556,19 +563,35 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     // 1. drawWarrior in Normal, Horse, Tortoise, Elephant, and Bulldozer modes
     api.drawWarrior(w, true);
 
+    const gameCanvas = elements.get('game-canvas');
+    const gameCtx = gameCanvas._ctx || gameCanvas.getContext('2d');
+    const scaleCalls = [];
+    const origScale = gameCtx.scale;
+    gameCtx.scale = (sx, sy) => {
+      scaleCalls.push([sx, sy]);
+      if (origScale) origScale(sx, sy);
+    };
+
     w.mountType = 'horse';
     w.mountHp = 100;
     w.mountMaxHp = 100;
     api.updateHUD();
     api.drawWarrior(w, true);
+    assert.ok(scaleCalls.some(([sx, sy]) => Math.abs(sx - 1.4) < 1e-4 && Math.abs(sy - 1.4) < 1e-4), 'Should scale horse mount 1.4x (reduced 30%)');
 
+    scaleCalls.length = 0;
     w.mountType = 'tortoise';
     api.updateHUD();
     api.drawWarrior(w, true);
+    assert.ok(scaleCalls.some(([sx, sy]) => Math.abs(sx - 1.4) < 1e-4 && Math.abs(sy - 1.4) < 1e-4), 'Should scale tortoise mount 1.4x (reduced 30%)');
 
+    scaleCalls.length = 0;
     w.mountType = 'elephant';
     api.updateHUD();
     api.drawWarrior(w, true);
+    assert.ok(scaleCalls.some(([sx, sy]) => Math.abs(sx - 1.4) < 1e-4 && Math.abs(sy - 1.4) < 1e-4), 'Should scale elephant mount 1.4x (reduced 30%)');
+
+    gameCtx.scale = origScale;
 
     w.bulldozerTimer = 20.0;
     api.updateHUD();
@@ -1963,5 +1986,82 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       expectedVariations.includes(api.getLastHurtSound()),
       'Warrior damage should have set lastHurtSound to a zombie attack variation'
     );
+  });
+
+  it('triggers cheat code when user types "cheat" during game play, dropping 3 of each kind of powerup around center of map', () => {
+    const sandbox = loadClientGame();
+    const { api, window, elements } = sandbox;
+
+    // 1. Before entering the game (nickname dialog showing), typing "cheat" does NOT trigger cheat
+    for (const char of 'cheat') {
+      window.dispatchEvent({ type: 'keydown', key: char });
+    }
+    assert.equal(api.blackCircles.length, 0);
+
+    // 2. Enter the game
+    const nicknameInput = elements.get('nickname-input');
+    nicknameInput.value = 'Sir Hammer';
+    api.enterGame();
+    const ws = api.getState().ws;
+    ws.readyState = 1;
+    ws.emit('open', {});
+    assert.equal(api.getState().hasEnteredGame, true);
+    assert.equal(api.blackCircles.length, 0);
+
+    // 3. Typing into an input element does NOT trigger cheat
+    const inputTarget = { tagName: 'INPUT', isContentEditable: false };
+    for (const char of 'cheat') {
+      window.dispatchEvent({ type: 'keydown', key: char, target: inputTarget });
+    }
+    assert.equal(api.blackCircles.length, 0);
+
+    // 4. Typing "cheat" in standalone/offline mode during active game play triggers the cheat
+    api.setState({ isMultiplayer: false });
+    for (const char of 'cheat') {
+      window.dispatchEvent({ type: 'keydown', key: char });
+    }
+    assert.equal(api.blackCircles.length, 51);
+
+    const counts = {};
+    for (const type of api.constants.ALL_POWERUP_TYPES) {
+      counts[type] = 0;
+    }
+    assert.equal(api.constants.ALL_POWERUP_TYPES.length, 17);
+
+    const centerX = 2100;
+    const centerY = 2100;
+
+    for (const pk of api.blackCircles) {
+      assert.ok(pk.type in counts, `Unknown pickup type: ${pk.type}`);
+      counts[pk.type]++;
+      const dist = Math.hypot(pk.x - centerX, pk.y - centerY);
+      assert.ok(dist >= 100 && dist <= 350, `Distance ${dist} not spread around center`);
+    }
+
+    for (const [type, count] of Object.entries(counts)) {
+      assert.equal(count, 3, `Expected 3 of type ${type}, got ${count}`);
+    }
+
+    // 5. Case-insensitivity test ("ChEaT")
+    api.blackCircles.length = 0;
+    for (const char of 'ChEaT') {
+      window.dispatchEvent({ type: 'keydown', key: char });
+    }
+    assert.equal(api.blackCircles.length, 51);
+
+    // 6. In multiplayer mode, typing "cheat" sends { type: 'cheat' } over WebSocket
+    api.setState({ isMultiplayer: true });
+    for (const char of 'cheat') {
+      window.dispatchEvent({ type: 'keydown', key: char });
+    }
+    const sentCheat = ws.sent.some((msg) => {
+      try {
+        const parsed = JSON.parse(msg);
+        return parsed.type === 'cheat';
+      } catch (_e) {
+        return false;
+      }
+    });
+    assert.ok(sentCheat, 'Multiplayer client should have sent { type: "cheat" } over WebSocket');
   });
 });
