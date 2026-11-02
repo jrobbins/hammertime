@@ -1828,6 +1828,8 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
 
     // Decode audio sample first
     assert.ok(api.ZOMBIE_BITE_AUDIO_BASE64.length > 20000, 'Embedded base64 audio must be present');
+    assert.ok(api.PLAYER_GRUNT_AUDIO_BASE64.length > 20000, 'Embedded base64 grunt audio must be present');
+    assert.equal(api.PLAYER_GRUNT_AUDIO_BASE64, api.ZOMBIE_BITE_AUDIO_BASE64);
     api.loadZombieBiteAudio();
     assert.ok(api.getZombieBiteAudioBuffer(), 'Zombie bite audio buffer should be decoded');
 
