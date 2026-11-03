@@ -377,6 +377,40 @@ describe('Common Powerups (Link, Weight, Health, Bomb, Flame, Speed)', () => {
       assert.equal(count, 3, `Expected 3 of type ${type}, got ${count}`);
     }
   });
+
+  it('emits enemy_die event with ghost velocity using 0.8064 of enemy mass (reduced another 30%) and hammer momentum on hammer strike, and 0 velocity on other effects', () => {
+    const p = addTestPlayer('p1', 2000, 2000);
+    const hammer = p.hammer;
+    hammer.mass = 1.0;
+    const e1 = addTestEnemy(2050, 2000, 10);
+    e1.mass = 1.5;
+
+    // 1. Defeated by hammer strike with hammer velocity (400, -300)
+    srv.getState().pendingEvents.length = 0;
+    srv.defeatEnemy(srv.enemies.length - 1, p, hammer, 400, -300);
+
+    const events = srv.getState().pendingEvents;
+    const dieEv1 = events.find((ev) => ev.type === 'enemy_die');
+    assert.ok(dieEv1, 'Expected enemy_die event');
+
+    // Expected ghost velocity:
+    // ghostMass = 1.5 * 0.8064 = 1.2096
+    // ghostVx = (1.0 * 400) / 1.2096 = 330.7
+    // ghostVy = (1.0 * -300) / 1.2096 = -248.0
+    const expectedVx = Math.round(((1.0 * 400) / 1.2096) * 10) / 10;
+    const expectedVy = Math.round(((1.0 * -300) / 1.2096) * 10) / 10;
+    assert.equal(dieEv1.vx, expectedVx);
+    assert.equal(dieEv1.vy, expectedVy);
+
+    // 2. Defeated by other effects (no killer hammer passed)
+    const e2 = addTestEnemy(2100, 2100, 10);
+    srv.getState().pendingEvents.length = 0;
+    srv.defeatEnemy(srv.enemies.length - 1, p);
+    const dieEv2 = srv.getState().pendingEvents.find((ev) => ev.type === 'enemy_die');
+    assert.ok(dieEv2, 'Expected enemy_die event for other effect');
+    assert.equal(dieEv2.vx, 0);
+    assert.equal(dieEv2.vy, 0);
+  });
 });
 
 describe('Rare Powerups: Extra Hammer (60s), Mounts (Horse, Tortoise, Elephant), Earthquake, Fear', () => {

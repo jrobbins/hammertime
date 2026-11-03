@@ -108,6 +108,7 @@ const BULLDOZER_RADIUS = 34;
 const HORSE_RADIUS = 35;
 const TORTOISE_RADIUS = 36;
 const ELEPHANT_RADIUS = 45;
+const GHOST_DURATION = 0.65;
 
 const EARTHQUAKE_DURATION = 5.0;
 const ZOMBIE_KNOCKDOWN_RECOVERY = 5.0;
@@ -905,7 +906,13 @@ function spawnCheatPowerups() {
   return spawned;
 }
 
-function defeatEnemy(index, killerPlayer) {
+function defeatEnemy(
+  index,
+  killerPlayer,
+  killerHammer: any = null,
+  strikeHvx: number = 0,
+  strikeHvy: number = 0
+) {
   const e = enemies[index];
   teamKills += 1;
   if (killerPlayer) {
@@ -1025,11 +1032,22 @@ function defeatEnemy(index, killerPlayer) {
     y: e.y,
     type: pickupType,
   });
+  let ghostVx = 0;
+  let ghostVy = 0;
+  if (killerHammer) {
+    const ghostMass = (e.mass || 1.2) * 0.8064;
+    ghostVx = (killerHammer.mass * strikeHvx) / ghostMass;
+    ghostVy = (killerHammer.mass * strikeHvy) / ghostMass;
+  }
+
   pendingEvents.push({
     type: 'enemy_die',
     x: Math.round(e.x),
     y: Math.round(e.y),
     color: e.skinColor,
+    radius: e.radius,
+    vx: Math.round(ghostVx * 10) / 10,
+    vy: Math.round(ghostVy * 10) / 10,
   });
   enemies.splice(index, 1);
 
@@ -2306,6 +2324,8 @@ function stepWorldPhysics(dt) {
                 });
               }
 
+              const strikeHvx = h.vx;
+              const strikeHvy = h.vy;
               const rvx = h.vx - e.vx;
               const rvy = h.vy - e.vy;
               const velAlongNormal = rvx * nx + rvy * ny;
@@ -2354,7 +2374,7 @@ function stepWorldPhysics(dt) {
               }
 
               if (e.hp <= 0) {
-                defeatEnemy(i, e.lastBlastKiller || p);
+                defeatEnemy(i, e.lastBlastKiller || p, h, strikeHvx, strikeHvy);
                 enemyDefeated = true;
                 break;
               }
@@ -3633,6 +3653,7 @@ module.exports = {
   HORSE_RADIUS,
   TORTOISE_RADIUS,
   ELEPHANT_RADIUS,
+  GHOST_DURATION,
   EARTHQUAKE_DURATION,
   ZOMBIE_KNOCKDOWN_RECOVERY,
   FEAR_DURATION,

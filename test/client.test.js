@@ -2064,4 +2064,82 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     });
     assert.ok(sentCheat, 'Multiplayer client should have sent { type: "cheat" } over WebSocket');
   });
+
+  it('animates dying enemy as a ghost with mass reduced by another 30% (0.8064x) moving with full hammer momentum and leaving a trail, or stationary for other effects', () => {
+    const sandbox = loadClientGame();
+    const { api } = sandbox;
+    api.setState({ isMultiplayer: false, hasEnteredGame: true });
+
+    // 1. Defeated by hammer strike
+    api.spawnEnemy(false);
+    const enemy1 = api.enemies[api.enemies.length - 1];
+    enemy1.x = 2000;
+    enemy1.y = 2000;
+    enemy1.mass = 1.6;
+
+    const testHammer = { mass: 1.25 };
+    const strikeHvx = 320;
+    const strikeHvy = -240;
+
+    api.enemyGhosts.length = 0;
+    api.particles.length = 0;
+    api.defeatEnemy(api.enemies.length - 1, testHammer, strikeHvx, strikeHvy);
+
+    // No puff of smoke
+    assert.equal(api.particles.length, 0, 'Should not spawn smoke puff particles on death');
+    assert.equal(api.enemyGhosts.length, 1, 'Should spawn a ghost for dying enemy');
+
+    const ghost1 = api.enemyGhosts[0];
+    const expectedGhostMass = 1.6 * 0.8064; // 1.29024
+    assert.ok(Math.abs(ghost1.mass - expectedGhostMass) < 1e-4);
+
+    // Momentum of hammer: Px = 1.25 * 320 = 400, Py = 1.25 * -240 = -300
+    // Ghost velocity: vx = 400 / 1.29024 = 310.020, vy = -300 / 1.29024 = -232.515
+    const expectedGhostVx = (1.25 * 320) / expectedGhostMass;
+    const expectedGhostVy = (1.25 * -240) / expectedGhostMass;
+    assert.ok(Math.abs(ghost1.vx - expectedGhostVx) < 1e-3);
+    assert.ok(Math.abs(ghost1.vy - expectedGhostVy) < 1e-3);
+
+    // Verify ghost momentum equals full momentum of hammer
+    assert.ok(Math.abs(ghost1.mass * ghost1.vx - testHammer.mass * strikeHvx) < 1e-3);
+    assert.ok(Math.abs(ghost1.mass * ghost1.vy - testHammer.mass * strikeHvy) < 1e-3);
+
+    // Animate ghost movement
+    const prevX = ghost1.x;
+    const prevY = ghost1.y;
+    api.updateEffects(0.05);
+    assert.ok(ghost1.x > prevX, 'Ghost should have moved in positive X direction');
+    assert.ok(ghost1.y < prevY, 'Ghost should have moved in negative Y direction');
+    assert.ok(Array.isArray(ghost1.trail) && ghost1.trail.length > 0, 'Moving ghost should leave a trail');
+
+    // 2. Defeated by other effects (burn, bulldozer, explosion, etc. -> no hammer passed)
+    api.spawnEnemy(false);
+    const enemy2 = api.enemies[api.enemies.length - 1];
+    enemy2.x = 2100;
+    enemy2.y = 2100;
+    enemy2.mass = 2.0;
+
+    api.defeatEnemy(api.enemies.length - 1); // no killer hammer
+    const ghost2 = api.enemyGhosts.find((g) => g !== ghost1);
+    assert.ok(ghost2, 'Should spawn ghost for enemy dying from other effect');
+    assert.equal(ghost2.vx, 0, 'Ghost from other effect should have 0 X velocity');
+    assert.equal(ghost2.vy, 0, 'Ghost from other effect should have 0 Y velocity');
+    assert.equal(ghost2.duration, ghost1.duration, 'Both ghosts should have the same duration');
+
+    // Verify stationary ghost stays in one place
+    const stationaryX = ghost2.x;
+    const stationaryY = ghost2.y;
+    api.updateEffects(0.05);
+    assert.equal(ghost2.x, stationaryX, 'Stationary ghost should stay in one place');
+    assert.equal(ghost2.y, stationaryY, 'Stationary ghost should stay in one place');
+    assert.ok(Array.isArray(ghost2.trail) && ghost2.trail.length > 0, 'Stationary ghost should leave a trail');
+
+    // 3. drawGhost renders without errors
+    api.drawGhost(ghost1);
+    api.drawGhost(ghost2);
+
+    // 4. Ghost expires after duration
+    api.updateEffects(1.0);
+    assert.equal(api.enemyGhosts.length, 0, 'Ghosts should expire after their duration');
+  });
 });

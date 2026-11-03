@@ -130,6 +130,7 @@
   const HORSE_RADIUS = 35;
   const TORTOISE_RADIUS = 36;
   const ELEPHANT_RADIUS = 45;
+  const GHOST_DURATION = 0.65;
 
   const EARTHQUAKE_DURATION = 5.0;
   const ZOMBIE_KNOCKDOWN_RECOVERY = 5.0;
@@ -1149,6 +1150,7 @@
   const particles = [];
   const floatingTexts = [];
   const shockwaves = [];
+  const enemyGhosts = [];
 
   // Multiplayer & Round State
   let ws = null;
@@ -1934,8 +1936,14 @@
           continue;
         }
         playEnemyDisappearSound();
-        addParticles(ev.x, ev.y, ev.color || '#567a4e', 18, 40, 210, 4.5);
-        addParticles(ev.x, ev.y, '#22331d', 8, 20, 90, 3.5);
+        spawnEnemyGhost(
+          ev.x,
+          ev.y,
+          ev.radius || 18,
+          ev.color || '#567a4e',
+          ev.vx || 0,
+          ev.vy || 0
+        );
       } else if (ev.type === 'pickup') {
         playCollectLinkSound();
         addFloatingText(ev.playerX, ev.playerY, ev.label, ev.color || '#f6e05e', 1.12);
@@ -2058,6 +2066,7 @@
         localKnockdownTimer = 0;
         warrior.bulldozerTimer = 0;
         warrior.hasServerTarget = false;
+        enemyGhosts.length = 0;
         for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
           warrior.hammers[hIdx].hasServerTarget = false;
           if (warrior.hammers[hIdx].trail) warrior.hammers[hIdx].trail.length = 0;
@@ -2819,14 +2828,105 @@
     );
   }
 
-  function defeatEnemy(index) {
+  function spawnEnemyGhost(
+    x: number,
+    y: number,
+    radius: number = 18,
+    skinColor: string = '#567a4e',
+    vx: number = 0,
+    vy: number = 0,
+    angle: number = 0,
+    mass: number = 1.2
+  ) {
+    const ghost = {
+      x,
+      y,
+      vx,
+      vy,
+      radius,
+      skinColor,
+      angle,
+      timer: GHOST_DURATION,
+      duration: GHOST_DURATION,
+      mass: mass * 0.8064,
+      trail: [] as Array<{ x: number; y: number; lift: number; alpha: number; radius: number }>,
+    };
+    enemyGhosts.push(ghost);
+    return ghost;
+  }
+
+  function updateGhosts(dt: number) {
+    for (let i = enemyGhosts.length - 1; i >= 0; i--) {
+      const g = enemyGhosts[i];
+      g.timer -= dt;
+
+      if (!g.trail) g.trail = [];
+
+      // Record current ghost position into its trail
+      const progress = 1 - Math.max(0, g.timer / g.duration);
+      const floatLift = progress * 24;
+      g.trail.push({
+        x: g.x,
+        y: g.y,
+        lift: floatLift,
+        alpha: Math.max(0, (g.timer / g.duration) * 0.55),
+        radius: g.radius,
+      });
+
+      if (g.trail.length > 14) {
+        g.trail.shift();
+      }
+
+      for (let t = g.trail.length - 1; t >= 0; t--) {
+        g.trail[t].alpha -= dt * 1.8;
+        if (g.trail[t].alpha <= 0) {
+          g.trail.splice(t, 1);
+        }
+      }
+
+      if (g.vx !== 0 || g.vy !== 0) {
+        g.x += g.vx * dt;
+        g.y += g.vy * dt;
+        const drag = Math.exp(-2.5 * dt);
+        g.vx *= drag;
+        g.vy *= drag;
+      }
+      if (g.timer <= 0) {
+        enemyGhosts.splice(i, 1);
+      }
+    }
+  }
+
+  function defeatEnemy(
+    index: number,
+    killerHammer: any = null,
+    strikeHvx: number = 0,
+    strikeHvy: number = 0
+  ) {
     const e = enemies[index];
     kills++;
     teamKills = kills;
     recordLocalLeaderboardScore(warrior.name, kills, warrior.color);
     playEnemyDisappearSound();
-    addParticles(e.x, e.y, e.skinColor || '#567a4e', 18, 40, 210, 4.5);
-    addParticles(e.x, e.y, '#1a1a1a', 8, 20, 90, 3.5);
+
+    let ghostVx = 0;
+    let ghostVy = 0;
+    if (killerHammer) {
+      const ghostMass = (e.mass || 1.2) * 0.8064;
+      ghostVx = (killerHammer.mass * strikeHvx) / ghostMass;
+      ghostVy = (killerHammer.mass * strikeHvy) / ghostMass;
+    }
+    spawnEnemyGhost(
+      e.x,
+      e.y,
+      e.radius,
+      e.skinColor || '#567a4e',
+      ghostVx,
+      ghostVy,
+      e.angle || 0,
+      e.mass || 1.2
+    );
+
     const roll = Math.random();
     let pickupType;
     if (roll < RARE_BULLDOZER_DROP_CHANCE) {
@@ -3537,6 +3637,7 @@
     updateCamera();
 
     enemies.length = 0;
+    enemyGhosts.length = 0;
     blackCircles.length = 0;
     particles.length = 0;
     floatingTexts.length = 0;
@@ -4603,6 +4704,8 @@
                 });
               }
 
+              const strikeHvx = h.vx;
+              const strikeHvy = h.vy;
               const rvx = h.vx - e.vx;
               const rvy = h.vy - e.vy;
               const velAlongNormal = rvx * nx + rvy * ny;
@@ -4652,7 +4755,7 @@
               }
 
               if (e.hp <= 0) {
-                defeatEnemy(i);
+                defeatEnemy(i, h, strikeHvx, strikeHvy);
                 enemyDefeated = true;
                 break;
               }
@@ -5535,6 +5638,9 @@
       }
     }
 
+    // Update enemy ghosts
+    updateGhosts(dt);
+
     // Standalone enemy spawning when not connected to server
     if (!isMultiplayer && warrior.alive && roundState === 'playing') {
       elapsedGameTime += dt;
@@ -6174,6 +6280,19 @@
       drawList.push({ y: e.y, type: 'enemy', ref: e });
     }
 
+    for (let i = 0; i < enemyGhosts.length; i++) {
+      const g = enemyGhosts[i];
+      if (
+        g.x + g.radius < viewLeft ||
+        g.x - g.radius > viewRight ||
+        g.y + g.radius < viewTop ||
+        g.y - g.radius > viewBottom
+      ) {
+        continue;
+      }
+      drawList.push({ y: g.y, type: 'ghost', ref: g });
+    }
+
     if (warrior.alive) {
       drawList.push({ y: warrior.y, type: 'warrior', ref: warrior, isLocal: true });
       for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
@@ -6208,6 +6327,8 @@
         drawPickupCircle(item.ref);
       } else if (item.type === 'enemy') {
         drawEnemy(item.ref);
+      } else if (item.type === 'ghost') {
+        drawGhost(item.ref);
       } else if (item.type === 'warrior') {
         drawWarrior(item.ref, item.isLocal);
       } else if (item.type === 'hammer') {
@@ -9644,6 +9765,132 @@
     }
   }
 
+  function drawGhost(g: any) {
+    const alpha = Math.max(0, Math.min(1, g.timer / g.duration));
+    const progress = 1 - alpha;
+    const sx = g.x;
+    // Ascend gently into the air in 2.5D space as it fades
+    const floatLift = progress * 24;
+    const sy = g.y * TILT_Y - floatLift;
+    const visualScale = Math.max(0.85, g.radius / 18);
+    const bodyHeight = Math.round(g.radius * 1.38);
+
+    // 0. Ghostly Spectral Trail
+    if (Array.isArray(g.trail) && g.trail.length > 1) {
+      for (let t = 0; t < g.trail.length - 1; t++) {
+        const pt = g.trail[t];
+        const ptNext = g.trail[t + 1];
+        const trAlpha = Math.max(0, pt.alpha);
+        if (trAlpha <= 0.01) continue;
+
+        ctx.save();
+        const ptx = pt.x;
+        const pty = pt.y * TILT_Y - (pt.lift || 0);
+        const ptxNext = ptNext.x;
+        const ptyNext = ptNext.y * TILT_Y - (ptNext.lift || 0);
+
+        ctx.strokeStyle = `rgba(110, 231, 183, ${trAlpha * 0.45})`;
+        ctx.lineWidth = pt.radius * 0.65 * ((t + 1) / g.trail.length);
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(ptx, pty);
+        ctx.lineTo(ptxNext, ptyNext);
+        ctx.stroke();
+
+        ctx.fillStyle = `rgba(167, 243, 208, ${trAlpha * 0.25})`;
+        ctx.beginPath();
+        ctx.arc(ptx, pty, pt.radius * 0.4 * ((t + 1) / g.trail.length), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    const dirX = Math.cos(g.angle || 0);
+    const dirY = Math.sin(g.angle || 0);
+    const rightX = -dirY;
+    const rightY = dirX;
+
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.globalAlpha = alpha * 0.72;
+
+    // 1. Ghostly ethereal aura ring
+    const auraR = g.radius * (1.25 + Math.sin(progress * 10) * 0.12);
+    ctx.fillStyle = 'rgba(167, 243, 208, 0.18)';
+    ctx.strokeStyle = 'rgba(110, 231, 183, 0.65)';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.ellipse(0, 2, auraR, auraR * TILT_Y, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // 2. Trailing spectral wisps
+    const wispWave = Math.sin(progress * 18);
+    ctx.fillStyle = 'rgba(167, 243, 208, 0.35)';
+    ctx.beginPath();
+    ctx.moveTo(-g.radius * 0.55, 0);
+    ctx.quadraticCurveTo(
+      -g.radius * 0.7 + wispWave * 4,
+      12 * visualScale,
+      -g.radius * 0.2 + wispWave * 6,
+      22 * visualScale
+    );
+    ctx.quadraticCurveTo(0, 10 * visualScale, g.radius * 0.2 - wispWave * 4, 20 * visualScale);
+    ctx.quadraticCurveTo(g.radius * 0.65, 12 * visualScale, g.radius * 0.55, 0);
+    ctx.closePath();
+    ctx.fill();
+
+    // 3. Ghostly torso
+    const torsoW = g.radius * 0.95;
+    const torsoH = bodyHeight * 0.85;
+    const torsoY = -bodyHeight * 0.55;
+
+    ctx.fillStyle = 'rgba(209, 250, 229, 0.85)';
+    ctx.strokeStyle = '#065f46';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.ellipse(0, torsoY, torsoW * 0.75, torsoH * 0.55, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // 4. Ghostly outstretched arms
+    const armLen = g.radius * 0.9;
+    for (const side of [-1, 1]) {
+      const ax = rightX * side * g.radius * 0.65;
+      const ay = torsoY + rightY * side * g.radius * 0.2 * TILT_Y;
+      const hx = ax + dirX * armLen + rightX * side * 4;
+      const hy = ay + dirY * armLen * TILT_Y - 4 * visualScale;
+      ctx.strokeStyle = 'rgba(209, 250, 229, 0.9)';
+      ctx.lineWidth = 3.6 * visualScale;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(hx, hy);
+      ctx.stroke();
+    }
+
+    // 5. Ghostly zombie head
+    const headRadius = g.radius * 0.58;
+    const headY = -bodyHeight - g.radius * 0.28;
+    ctx.fillStyle = 'rgba(236, 253, 245, 0.92)';
+    ctx.strokeStyle = '#064e3b';
+    ctx.lineWidth = 1.8;
+    ctx.beginPath();
+    ctx.arc(0, headY, headRadius, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.stroke();
+
+    // 6. Glowing spectral eyes
+    const eyeDist = 4.2 * visualScale;
+    ctx.fillStyle = '#6ee7b7';
+    ctx.beginPath();
+    ctx.arc(-eyeDist, headY - 1, 2.4 * visualScale, 0, Math.PI * 2);
+    ctx.arc(eyeDist, headY - 1, 2.4 * visualScale, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
   function renderMinimap() {
     const mw = minimapCanvas.width;
     const mh = minimapCanvas.height;
@@ -9929,6 +10176,7 @@
         HORSE_RADIUS,
         TORTOISE_RADIUS,
         ELEPHANT_RADIUS,
+        GHOST_DURATION,
         EARTHQUAKE_DURATION,
         ZOMBIE_KNOCKDOWN_RECOVERY,
         FEAR_DURATION,
@@ -9965,6 +10213,7 @@
       particles,
       floatingTexts,
       shockwaves,
+      enemyGhosts,
       remotePlayers,
       localLeaderboardRecords,
       camera,
@@ -10063,6 +10312,9 @@
       drawBlackCircle: drawPickupCircle,
       drawChain,
       drawStoneColumn,
+      drawGhost,
+      spawnEnemyGhost,
+      updateGhosts,
       processServerEvents,
       addPickupToWorld,
       spawnCheatPowerups,
