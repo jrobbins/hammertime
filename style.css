@@ -222,44 +222,6 @@ body {
   align-self: center;
 }
 
-.minimap-legend {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 4px 8px;
-  font-size: 0.68rem;
-  color: var(--text-secondary);
-}
-
-.minimap-legend span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.dot-warrior {
-  background: hsl(205, 90%, 60%);
-}
-
-.dot-hammer {
-  background: hsl(42, 95%, 60%);
-}
-
-.dot-enemy {
-  background: hsl(4, 84%, 58%);
-}
-
-.dot-link {
-  background: hsl(0, 0%, 12%);
-  border: 1px solid hsl(0, 0%, 75%);
-}
-
 /* Top 10 Leaderboard Section */
 .leaderboard-section {
   margin-top: 4px;
@@ -635,7 +597,7 @@ kbd {
 /* Translucent Touch-Wheel in Lower-Right Corner */
 .touch-wheel {
   position: absolute;
-  bottom: 24px;
+  bottom: 54px;
   right: 24px;
   width: 140px;
   height: 140px;

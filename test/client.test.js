@@ -107,7 +107,7 @@ function createMockElement(id) {
     },
     setPointerCapture: () => {},
     releasePointerCapture: () => {},
-    getBoundingClientRect: () => ({ left: 1100, top: 620, width: 140, height: 140 }),
+    getBoundingClientRect: () => ({ left: 1100, top: 590, width: 140, height: 140 }),
     getContext() {
       if (!this._ctx) this._ctx = createMockCanvasContext();
       return this._ctx;
@@ -1582,12 +1582,12 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(initialState.active, false);
     assert.equal(initialState.intensity, 0);
 
-    // 2. Dragging touch wheel to the right (centerX=1170, centerY=690; target clientX=1230, clientY=690)
+    // 2. Dragging touch wheel to the right (centerX=1170, centerY=660; target clientX=1230, clientY=660)
     touchWheel.dispatchEvent({
       type: 'pointerdown',
       pointerId: 42,
       clientX: 1230,
-      clientY: 690,
+      clientY: 660,
       preventDefault: () => {},
       stopPropagation: () => {},
     });
@@ -1607,12 +1607,12 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       'Virtual mouse screenX should be offset to the right of center'
     );
 
-    // 3. Pointer move updates the touch wheel vector downward (clientX=1170, clientY=750)
+    // 3. Pointer move updates the touch wheel vector downward (clientX=1170, clientY=720)
     touchWheel.dispatchEvent({
       type: 'pointermove',
       pointerId: 42,
       clientX: 1170,
-      clientY: 750,
+      clientY: 720,
       preventDefault: () => {},
       stopPropagation: () => {},
     });
@@ -1696,12 +1696,12 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(warriorScreenX, 300);
     assert.equal(warriorScreenY, 1000);
 
-    // 1. Engage touch wheel directly DOWN (centerY=690, target clientY=750 -> vectorX=0, vectorY=1)
+    // 1. Engage touch wheel directly DOWN (centerY=660, target clientY=720 -> vectorX=0, vectorY=1)
     touchWheel.dispatchEvent({
       type: 'pointerdown',
       pointerId: 99,
       clientX: 1170,
-      clientY: 750,
+      clientY: 720,
       preventDefault: () => {},
       stopPropagation: () => {},
     });
