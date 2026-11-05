@@ -129,6 +129,21 @@ const VICTORY_DISPLAY_DURATION = 5.0;
 const LEADERBOARD_MAX_ENTRIES = 10;
 const MAX_NICKNAME_LENGTH = 20;
 const TIME_GAP_RESET_SECONDS = 30;
+
+const WHIRLWIND_MIN_ANGULAR_SPEED = 6;
+const WHIRLWIND_CHARGE_DURATION = 6.0;
+const WHIRLWIND_LEVEL_DURATION = 4.0;
+const WHIRLWIND_MAX_LEVEL = 5;
+const WHIRLWIND_REACH_MULT = 1.15;
+const WHIRLWIND_LEVEL_DAMAGES = [0, 40, 100, 180, 280, 400] as const;
+const WHIRLWIND_LEVEL_RADII = [0, 140, 180, 220, 260, 300] as const;
+const WHIRLWIND_GUST_RADIUS = 140;
+const WHIRLWIND_GUST_DAMAGE = 40;
+
+const CLOTHESLINE_DURATION = 2.0;
+const CLOTHESLINE_TRIGGER_DIST = 42;
+const CLOTHESLINE_BEAM_DAMAGE = 140;
+
 const ZOMBIE_ATTACK_VARIATIONS = ['normal', 'heavy', 'fast'] as const;
 type ZombieAttackVariationKey = (typeof ZOMBIE_ATTACK_VARIATIONS)[number];
 const HURT_SOUNDS = ZOMBIE_ATTACK_VARIATIONS;
@@ -182,6 +197,21 @@ let avgTickMs = 0;
 let isReducedFidelity = false;
 let lastEmptyTime: number | null = Date.now();
 let lastServerWallClockTime = Date.now();
+
+interface ActiveClothesline {
+  id: string;
+  p1Id: string;
+  p2Id: string;
+  h1Idx: number;
+  h2Idx: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  timer: number;
+}
+const activeClotheslines: ActiveClothesline[] = [];
+const clotheslineCooldowns = new Map<string, number>();
 
 function getLastEmptyTime(): number | null {
   return lastEmptyTime;
@@ -289,6 +319,10 @@ function createPlayerHammer(p, spawnAngle = Math.PI / 2) {
     thorTimer: 0,
     extraTimer: 0,
     isSpider: false,
+    whirlwindLevel: 0,
+    spinTimer: 0,
+    isWhirlwind: false,
+    prevRelAngle: undefined,
     angle: spawnAngle,
     currentTension: 0,
     currentStretch: 0,
@@ -934,6 +968,7 @@ function defeatEnemy(
   strikeHvy: number = 0
 ) {
   const e = enemies[index];
+  if (!e) return;
   teamKills += 1;
   if (killerPlayer) {
     killerPlayer.kills += 1;
@@ -1132,6 +1167,263 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer, options: any
   }
 }
 
+function triggerWhirlwindGust(gx, gy, sourcePlayer, sourceHammer, options: any = {}) {
+  const level = Math.min(
+    WHIRLWIND_MAX_LEVEL,
+    Math.max(1, sourceHammer && sourceHammer.whirlwindLevel ? sourceHammer.whirlwindLevel : 1)
+  );
+  const gustRadius = WHIRLWIND_LEVEL_RADII[level] || 140;
+  const gustMaxDamage = WHIRLWIND_LEVEL_DAMAGES[level] || 40;
+
+  const isFlaming =
+    !!(options && options.isFlaming) ||
+    (sourceHammer && ((sourceHammer.flameCharges > 0) || (sourceHammer.flameTimer > 0))) ||
+    (sourcePlayer && sourcePlayer.hammer && ((sourcePlayer.hammer.flameCharges > 0) || (sourcePlayer.hammer.flameTimer > 0)));
+
+  const levelLabels = ['', 'WHIRLWIND!', 'WHIRLWIND Lv.2!', 'WHIRLWIND Lv.3!', 'WHIRLWIND Lv.4!', 'SUPER WHIRLWIND MAX!'];
+  const levelColors = ['', '#a7f3d0', '#34d399', '#38bdf8', '#c084fc', '#fbbf24'];
+
+  pendingEvents.push({
+    type: 'shockwave',
+    x: Math.round(gx),
+    y: Math.round(gy),
+    radius: gustRadius,
+    kind: 'gust',
+    level,
+    isFlaming,
+  });
+  pendingEvents.push({
+    type: 'floating_text',
+    x: Math.round(gx),
+    y: Math.round(gy - 24),
+    text: isFlaming ? `FLAME ${levelLabels[level] || 'WHIRLWIND!'}` : (levelLabels[level] || 'WHIRLWIND!'),
+    color: isFlaming ? '#ff6b35' : (levelColors[level] || '#a7f3d0'),
+    scale: 1.15 + level * 0.15,
+  });
+
+  for (let j = enemies.length - 1; j >= 0; j--) {
+    const target = enemies[j];
+    const bdx = target.x - gx;
+    const bdy = target.y - gy;
+    const bDist = Math.hypot(bdx, bdy);
+    if (bDist <= gustRadius + target.radius) {
+      const falloff = Math.max(0.4, 1 - bDist / (gustRadius + target.radius));
+      const gustDamage = Math.round(gustMaxDamage * falloff);
+      const gustImpulse = (1200 + level * 200) * falloff;
+      const bnx = bDist > 0.001 ? bdx / bDist : Math.cos(Math.random() * Math.PI * 2);
+      const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
+
+      target.vx += (gustImpulse / target.mass) * bnx;
+      target.vy += (gustImpulse / target.mass) * bny;
+      target.hp -= gustDamage;
+      target.hurtFlash = 0.28;
+      target.lastBlastKiller = sourcePlayer || null;
+
+      if (isFlaming) {
+        if (igniteEnemy(target, sourcePlayer)) {
+          if (target.hp <= 0) {
+            target.hp = Math.max(18, Math.round(target.maxHp * 0.3));
+          }
+        }
+      }
+
+      if (sourcePlayer && gustDamage > sourcePlayer.maxDamageBlow) {
+        sourcePlayer.maxDamageBlow = gustDamage;
+      }
+
+      pendingEvents.push({
+        type: 'floating_text',
+        x: Math.round(target.x),
+        y: Math.round(target.y - target.radius - 8),
+        text: `-${gustDamage}`,
+        color: isFlaming ? '#ff6b35' : (levelColors[level] || '#a7f3d0'),
+        scale: 1.05 + level * 0.1,
+      });
+    }
+  }
+}
+
+function updateHammerWhirlwind(p, h, dt) {
+  const relAngle = Math.atan2(h.y - p.y, h.x - p.x);
+  if (h.prevRelAngle !== undefined && dt > 0) {
+    let dTheta = relAngle - h.prevRelAngle;
+    while (dTheta > Math.PI) dTheta -= 2 * Math.PI;
+    while (dTheta < -Math.PI) dTheta += 2 * Math.PI;
+    const angSpeed = Math.abs(dTheta) / dt;
+    const relSpeed = Math.hypot(h.vx - p.vx, h.vy - p.vy);
+
+    if (angSpeed >= WHIRLWIND_MIN_ANGULAR_SPEED || relSpeed >= 420) {
+      const maxSpinTime =
+        WHIRLWIND_CHARGE_DURATION + (WHIRLWIND_MAX_LEVEL - 1) * WHIRLWIND_LEVEL_DURATION + 0.5;
+      h.spinTimer = Math.min(maxSpinTime, (h.spinTimer || 0) + dt);
+    } else {
+      h.spinTimer = Math.max(0, (h.spinTimer || 0) - dt * 2.2);
+    }
+  }
+  h.prevRelAngle = relAngle;
+
+  if ((h.spinTimer || 0) >= WHIRLWIND_CHARGE_DURATION) {
+    const rawLevel =
+      1 + Math.floor(((h.spinTimer || 0) - WHIRLWIND_CHARGE_DURATION) / WHIRLWIND_LEVEL_DURATION);
+    h.whirlwindLevel = Math.min(WHIRLWIND_MAX_LEVEL, Math.max(1, rawLevel));
+    h.isWhirlwind = true;
+  } else if ((h.spinTimer || 0) < WHIRLWIND_CHARGE_DURATION * 0.4) {
+    h.whirlwindLevel = 0;
+    h.isWhirlwind = false;
+  }
+}
+
+function distPointToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq < 1e-6) return Math.hypot(px - x1, py - y1);
+  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
+  const projX = x1 + t * dx;
+  const projY = y1 + t * dy;
+  return Math.hypot(px - projX, py - projY);
+}
+
+function checkAndStepClotheslines(dt: number) {
+  // 1. Advance active clotheslines & slice trapped enemies
+  for (let i = activeClotheslines.length - 1; i >= 0; i--) {
+    const cl = activeClotheslines[i];
+    cl.timer -= dt;
+
+    const p1 = players.get(cl.p1Id);
+    const p2 = players.get(cl.p2Id);
+    const h1 = p1 && p1.alive && p1.hammers ? p1.hammers[cl.h1Idx] : null;
+    const h2 = p2 && p2.alive && p2.hammers ? p2.hammers[cl.h2Idx] : null;
+
+    if (!h1 || !h2) {
+      activeClotheslines.splice(i, 1);
+      continue;
+    }
+
+    cl.x1 = h1.x;
+    cl.y1 = h1.y;
+    cl.x2 = h2.x;
+    cl.y2 = h2.y;
+
+    for (let eIdx = enemies.length - 1; eIdx >= 0; eIdx--) {
+      const e = enemies[eIdx];
+      const dist = distPointToSegment(e.x, e.y, cl.x1, cl.y1, cl.x2, cl.y2);
+      if (dist <= e.radius + 18) {
+        if (e.hitCooldown <= 0) {
+          e.hp -= CLOTHESLINE_BEAM_DAMAGE;
+          e.hitCooldown = 0.12;
+          e.hurtFlash = 0.28;
+          const killer = p1 || p2 || null;
+          if (killer && CLOTHESLINE_BEAM_DAMAGE > killer.maxDamageBlow) {
+            killer.maxDamageBlow = CLOTHESLINE_BEAM_DAMAGE;
+          }
+          pendingEvents.push({
+            type: 'impact',
+            x: Math.round(e.x),
+            y: Math.round(e.y),
+            damage: CLOTHESLINE_BEAM_DAMAGE,
+            isChain: false,
+          });
+          pendingEvents.push({
+            type: 'floating_text',
+            x: Math.round(e.x),
+            y: Math.round(e.y - e.radius - 12),
+            text: `-${CLOTHESLINE_BEAM_DAMAGE}`,
+            color: '#38bdf8',
+            scale: 1.35,
+          });
+          if (e.hp <= 0) {
+            defeatEnemy(eIdx, killer);
+          }
+        }
+      }
+    }
+
+    if (cl.timer <= 0) {
+      activeClotheslines.splice(i, 1);
+    }
+  }
+
+  // 2. Step cooldown timers
+  for (const [key, cd] of clotheslineCooldowns.entries()) {
+    const nextCd = cd - dt;
+    if (nextCd <= 0) {
+      clotheslineCooldowns.delete(key);
+    } else {
+      clotheslineCooldowns.set(key, nextCd);
+    }
+  }
+
+  // 3. Detect pairs of hammer heads or chains touching or crossing
+  const aliveHammers: Array<{ player: any; hammer: any; hIdx: number }> = [];
+  for (const p of players.values()) {
+    if (!p.alive || !p.hammers) continue;
+    for (let hIdx = 0; hIdx < p.hammers.length; hIdx++) {
+      aliveHammers.push({ player: p, hammer: p.hammers[hIdx], hIdx });
+    }
+  }
+
+  for (let a = 0; a < aliveHammers.length; a++) {
+    for (let b = a + 1; b < aliveHammers.length; b++) {
+      const ha = aliveHammers[a];
+      const hb = aliveHammers[b];
+      const pairKey = `${ha.player.id}:${ha.hIdx}-${hb.player.id}:${hb.hIdx}`;
+
+      if (clotheslineCooldowns.has(pairKey)) continue;
+      if (activeClotheslines.some((c) => c.id === pairKey)) continue;
+
+      const headDist = Math.hypot(ha.hammer.x - hb.hammer.x, ha.hammer.y - hb.hammer.y);
+      let crossed = headDist <= ha.hammer.radius + hb.hammer.radius + CLOTHESLINE_TRIGGER_DIST;
+
+      if (!crossed && ha.hammer.chainNodes && hb.hammer.chainNodes) {
+        for (let ni = 1; ni < ha.hammer.chainNodes.length && !crossed; ni += 2) {
+          const na = ha.hammer.chainNodes[ni];
+          for (let nj = 1; nj < hb.hammer.chainNodes.length && !crossed; nj += 2) {
+            const nb = hb.hammer.chainNodes[nj];
+            if (Math.hypot(na.x - nb.x, na.y - nb.y) <= CLOTHESLINE_TRIGGER_DIST) {
+              crossed = true;
+            }
+          }
+        }
+      }
+
+      if (crossed) {
+        activeClotheslines.push({
+          id: pairKey,
+          p1Id: ha.player.id,
+          p2Id: hb.player.id,
+          h1Idx: ha.hIdx,
+          h2Idx: hb.hIdx,
+          x1: ha.hammer.x,
+          y1: ha.hammer.y,
+          x2: hb.hammer.x,
+          y2: hb.hammer.y,
+          timer: CLOTHESLINE_DURATION,
+        });
+        clotheslineCooldowns.set(pairKey, CLOTHESLINE_DURATION + 1.0);
+
+        pendingEvents.push({
+          type: 'clothesline_start',
+          x1: Math.round(ha.hammer.x),
+          y1: Math.round(ha.hammer.y),
+          x2: Math.round(hb.hammer.x),
+          y2: Math.round(hb.hammer.y),
+        });
+        const midX = (ha.hammer.x + hb.hammer.x) * 0.5;
+        const midY = (ha.hammer.y + hb.hammer.y) * 0.5;
+        pendingEvents.push({
+          type: 'floating_text',
+          x: Math.round(midX),
+          y: Math.round(midY - 20),
+          text: 'CLOTHESLINE!',
+          color: '#38bdf8',
+          scale: 1.4,
+        });
+      }
+    }
+  }
+}
+
 function resetGameWorld() {
   lastEmptyTime = null;
   roundState = 'playing';
@@ -1139,6 +1431,8 @@ function resetGameWorld() {
   victoryInfo = null;
   enemies.length = 0;
   blackCircles.length = 0;
+  activeClotheslines.length = 0;
+  clotheslineCooldowns.clear();
   elapsedGameTime = 0;
   spawnTimer = 0;
   earthquakeTimer = 0;
@@ -1321,13 +1615,16 @@ function stepPlayerPhysics(p, dt) {
   // 2. Step each Hammer & Chain owned by this Warrior
   for (let hIdx = 0; hIdx < p.hammers.length; hIdx++) {
     const h = p.hammers[hIdx];
+    updateHammerWhirlwind(p, h, dt);
     const links = Math.min(MAX_CHAIN_LINKS, h.chainLinks || INITIAL_CHAIN_LINKS);
     h.chainLinks = links;
     if (!h.chainNodes || h.chainNodes.length !== links + 1) {
       initHammerChainNodes(p, h);
     }
 
-    const restLength = getChainRestLength(links, h.linkLength);
+    const baseRestLength = getChainRestLength(links, h.linkLength);
+    const reachMult = (h.whirlwindLevel || 0) > 0 ? 1.10 + (h.whirlwindLevel || 1) * 0.05 : 1.0;
+    const restLength = baseRestLength * reachMult;
     const segRest = restLength / Math.max(1, links);
 
     h.chainNodes[0].x = p.x;
@@ -2058,6 +2355,8 @@ function stepWorldPhysics(dt) {
     }
   }
 
+  checkAndStepClotheslines(dt);
+
   // Update Enemies (Zombies) — each moves toward the closest alive player
   for (let i = enemies.length - 1; i >= 0; i--) {
     const e = enemies[i];
@@ -2308,6 +2607,7 @@ function stepWorldPhysics(dt) {
               e.x += nx * overlap * ((1 / e.mass) / totalInvMass);
               e.y += ny * overlap * ((1 / e.mass) / totalInvMass);
 
+              let hadFlame = (h.flameCharges > 0) || ((h.flameTimer || 0) > 0);
               let justIgnited = false;
               if (h.flameCharges > 0 && e.burnTimer <= 0 && e.fireproofTimer <= 0) {
                 if (igniteEnemy(e, p)) {
@@ -2382,6 +2682,13 @@ function stepWorldPhysics(dt) {
                     damage,
                     isChain: false,
                   });
+
+                  if ((h.whirlwindLevel || 0) > 0 || h.isWhirlwind) {
+                    triggerWhirlwindGust(h.x, h.y, p, h, { isFlaming: hadFlame || justIgnited });
+                  }
+                  h.whirlwindLevel = 0;
+                  h.isWhirlwind = false;
+                  h.spinTimer = 0;
                 }
               }
 
@@ -3522,6 +3829,9 @@ function buildGameStatePayload() {
       thorTimer: +(h.thorTimer || 0).toFixed(2),
       extraTimer: +(h.extraTimer || 0).toFixed(2),
       isSpider: !!h.isSpider,
+      whirlwindLevel: h.whirlwindLevel || 0,
+      isWhirlwind: (h.whirlwindLevel || 0) > 0,
+      spinTimer: +(h.spinTimer || 0).toFixed(2),
       angle: +h.angle.toFixed(3),
       currentStretch: +h.currentStretch.toFixed(1),
       chainNodes: (h.chainNodes || []).map((n) => ({
@@ -3594,6 +3904,14 @@ function buildGameStatePayload() {
     players: serializedPlayers,
     enemies: serializedEnemies,
     pickups: serializePickups(),
+    clotheslines: activeClotheslines.map((cl) => ({
+      id: cl.id,
+      x1: +cl.x1.toFixed(1),
+      y1: +cl.y1.toFixed(1),
+      x2: +cl.x2.toFixed(1),
+      y2: +cl.y2.toFixed(1),
+      timer: +cl.timer.toFixed(2),
+    })),
     events: pendingEvents,
     leaderboard: getTopLeaderboard(),
     roundRestartTimer: +roundRestartTimer.toFixed(2),
@@ -3718,6 +4036,18 @@ module.exports = {
   LEADERBOARD_MAX_ENTRIES,
   MAX_NICKNAME_LENGTH,
   TIME_GAP_RESET_SECONDS,
+  WHIRLWIND_MIN_ANGULAR_SPEED,
+  WHIRLWIND_CHARGE_DURATION,
+  WHIRLWIND_LEVEL_DURATION,
+  WHIRLWIND_MAX_LEVEL,
+  WHIRLWIND_REACH_MULT,
+  WHIRLWIND_LEVEL_DAMAGES,
+  WHIRLWIND_LEVEL_RADII,
+  WHIRLWIND_GUST_RADIUS,
+  WHIRLWIND_GUST_DAMAGE,
+  CLOTHESLINE_DURATION,
+  CLOTHESLINE_TRIGGER_DIST,
+  CLOTHESLINE_BEAM_DAMAGE,
   checkTimeGap,
   getLastEmptyTime,
   setLastEmptyTime,
@@ -3734,6 +4064,7 @@ module.exports = {
   enemies,
   blackCircles,
   players,
+  activeClotheslines,
   leaderboardRecords,
   getLeaderboardFilePath,
   setLeaderboardFilePath,
@@ -3798,6 +4129,10 @@ module.exports = {
   buildGameStatePayload,
   defeatEnemy,
   triggerHammerExplosion,
+  triggerWhirlwindGust,
+  updateHammerWhirlwind,
+  distPointToSegment,
+  checkAndStepClotheslines,
   resetGameWorld,
   updatePlayerBroadphaseBounds,
   stepPlayerPhysics,

@@ -315,6 +315,18 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.ELEPHANT_RADIUS, srv.ELEPHANT_RADIUS);
     assert.equal(c.TIME_GAP_RESET_SECONDS, srv.TIME_GAP_RESET_SECONDS);
     assert.equal(c.TIME_GAP_RESET_SECONDS, 30);
+    assert.equal(c.WHIRLWIND_MIN_ANGULAR_SPEED, srv.WHIRLWIND_MIN_ANGULAR_SPEED);
+    assert.equal(c.WHIRLWIND_CHARGE_DURATION, srv.WHIRLWIND_CHARGE_DURATION);
+    assert.equal(c.WHIRLWIND_REACH_MULT, srv.WHIRLWIND_REACH_MULT);
+    assert.equal(c.WHIRLWIND_GUST_RADIUS, srv.WHIRLWIND_GUST_RADIUS);
+    assert.equal(c.WHIRLWIND_GUST_DAMAGE, srv.WHIRLWIND_GUST_DAMAGE);
+    assert.equal(c.WHIRLWIND_LEVEL_DURATION, srv.WHIRLWIND_LEVEL_DURATION);
+    assert.equal(c.WHIRLWIND_MAX_LEVEL, srv.WHIRLWIND_MAX_LEVEL);
+    assert.deepEqual([...c.WHIRLWIND_LEVEL_DAMAGES], [...srv.WHIRLWIND_LEVEL_DAMAGES]);
+    assert.deepEqual([...c.WHIRLWIND_LEVEL_RADII], [...srv.WHIRLWIND_LEVEL_RADII]);
+    assert.equal(c.CLOTHESLINE_DURATION, srv.CLOTHESLINE_DURATION);
+    assert.equal(c.CLOTHESLINE_TRIGGER_DIST, srv.CLOTHESLINE_TRIGGER_DIST);
+    assert.equal(c.CLOTHESLINE_BEAM_DAMAGE, srv.CLOTHESLINE_BEAM_DAMAGE);
     assert.deepEqual([...c.PICKUP_TYPES], srv.PICKUP_TYPES);
     assert.deepEqual([...c.PICKUP_TYPES], ['link', 'weight', 'health', 'bomb', 'speed', 'flame']);
     assert.equal(c.PICKUP_TYPES.includes('traction'), false);
@@ -2188,5 +2200,143 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     const didResetRecent = api.checkTimeGap(now + 5000, Date.now() + 5000);
     assert.equal(didResetRecent, false);
     assert.equal(api.getState().kills, 20);
+  });
+
+  it('implements Whirlwind Spin-Up Overdrive and The Clothesline tandem wire on client', () => {
+    const w = api.warrior;
+    const h = api.hammer;
+    w.alive = true;
+    h.whirlwindLevel = 0;
+    h.isWhirlwind = false;
+    h.spinTimer = 0;
+
+    const baseRest = (api.constants.BASE_CHAIN_OFFSET || 20) + h.chainLinks * (api.constants.LENGTH_PER_LINK || 13);
+    const dt = 1 / 60;
+    let angle = 0;
+
+    function spinFor(seconds) {
+      const steps = Math.ceil(seconds / dt);
+      for (let s = 0; s < steps; s++) {
+        angle += 7.0 * dt;
+        h.x = w.x + Math.cos(angle) * baseRest;
+        h.y = w.y + Math.sin(angle) * baseRest;
+        h.vx = -Math.sin(angle) * baseRest * 7.0;
+        h.vy = Math.cos(angle) * baseRest * 7.0;
+        api.updateHammerWhirlwind(w, h, dt);
+      }
+    }
+
+    // Spin for >= 6.1 seconds at 7 rad/s -> Level 1
+    spinFor(6.1);
+    assert.equal(h.whirlwindLevel, 1, 'Hammer should be at whirlwindLevel 1');
+    assert.equal(h.isWhirlwind, true, 'Hammer should enter Whirlwind overdrive on client');
+    assert.ok(h.spinTimer >= 6.0);
+
+    // Verify drawing hammer across all 5 whirlwind levels with trail does not throw
+    for (let lvl = 1; lvl <= 5; lvl++) {
+      h.whirlwindLevel = lvl;
+      h.trail = [
+        { x: h.x - 10, y: h.y, whirlwindLevel: lvl, isFlaming: false, alpha: 0.6 },
+        { x: h.x - 5, y: h.y, whirlwindLevel: lvl, isFlaming: false, alpha: 0.8 },
+      ];
+      api.drawHammer(h, h.trail);
+    }
+
+    // Spin up to Level 2 (+4s)
+    h.whirlwindLevel = 1;
+    spinFor(4.0);
+    assert.equal(h.whirlwindLevel, 2, 'Hammer should reach level 2 after +4s');
+
+    // Spin up to Level 5 (+12s) and verify trail capacity grows
+    spinFor(12.0);
+    assert.equal(h.whirlwindLevel, 5, 'Hammer should reach level 5');
+    // At level 5, stepLocalWarriorAndHammers allows trail to grow up to 32 (much longer than level 1 max 6)
+    api.stepPhysics(dt);
+    assert.ok(h.trail.length <= 32, 'Level 5 trail should be capped at 32');
+
+    // Test Whirlwind gust shockwave at Level 3
+    h.whirlwindLevel = 3;
+    if (api.enemies.length === 0) {
+      api.spawnEnemy(false);
+    }
+    const e = api.enemies[0];
+    e.x = h.x;
+    e.y = h.y;
+    e.hp = 250;
+    api.triggerWhirlwindGust(h.x, h.y, w, h);
+    assert.equal(e.hp, 250 - api.constants.WHIRLWIND_LEVEL_DAMAGES[3], 'Enemy at center of gust should take full level 3 gust damage (180)');
+
+    // Test that hammer impact with flame and whirlwind sets all affected enemies on fire and resets whirlwindLevel to 0
+    h.x = w.x + 30;
+    h.y = w.y;
+    h.vx = 400;
+    h.vy = 0;
+    h.flameCharges = 5;
+    h.flameTimer = 5;
+    h.whirlwindLevel = 2;
+    h.isWhirlwind = true;
+    h.spinTimer = 7.0;
+
+    e.x = h.x + 20;
+    e.y = h.y;
+    e.vx = 0;
+    e.vy = 0;
+    e.hp = 200;
+    e.hitCooldown = 0;
+    e.burnTimer = 0;
+    e.fireproofTimer = 0;
+
+    // Add a bystander enemy within Level 2 radius (180px)
+    api.spawnEnemy(false);
+    const eBystander = api.enemies[api.enemies.length - 1];
+    eBystander.x = h.x + 70;
+    eBystander.y = h.y;
+    eBystander.vx = 0;
+    eBystander.vy = 0;
+    eBystander.hp = 100;
+    eBystander.burnTimer = 0;
+    eBystander.fireproofTimer = 0;
+
+    api.stepPhysics(dt);
+    assert.equal(h.whirlwindLevel, 0, 'whirlwindLevel should reset to 0 on hammer impact');
+    assert.equal(h.isWhirlwind, false, 'isWhirlwind should reset to false on hammer impact');
+    assert.equal(h.spinTimer, 0, 'spinTimer should reset to 0 on hammer impact');
+    assert.ok(e.burnTimer > 0, 'Direct hit enemy should be burning');
+    assert.ok(eBystander.burnTimer > 0, 'Bystander affected by flame whirlwind should be set on fire');
+
+    // Test The Clothesline: add extra hammer to warrior and position heads near each other
+    const extraH = api.createExtraHammer(0);
+    w.hammers = [h, extraH];
+    h.x = w.x + 50;
+    h.y = w.y;
+    extraH.x = w.x + 70;
+    extraH.y = w.y;
+
+    api.activeClotheslines.length = 0;
+    api.checkAndStepClotheslines(dt);
+
+    assert.equal(api.activeClotheslines.length, 1, 'Should trigger an active clothesline between 2 hammers');
+    const cl = api.activeClotheslines[0];
+    assert.ok(cl.timer > 1.9);
+
+    // Place an enemy across the line between the two hammers
+    cl.x1 = 100;
+    cl.y1 = 100;
+    cl.x2 = 300;
+    cl.y2 = 100;
+    if (api.enemies.length === 0) {
+      api.spawnEnemy(false);
+    }
+    const targetEnemy = api.enemies[0];
+    targetEnemy.x = 200;
+    targetEnemy.y = 100;
+    targetEnemy.hp = 200;
+    targetEnemy.hitCooldown = 0;
+
+    api.checkAndStepClotheslines(dt);
+    assert.equal(targetEnemy.hp, 200 - api.constants.CLOTHESLINE_BEAM_DAMAGE, 'Trapped enemy should be sliced for 140 damage');
+
+    // Verify rendering with active clothesline beam does not throw
+    api.render();
   });
 });

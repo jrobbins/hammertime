@@ -152,6 +152,21 @@
   const LEADERBOARD_MAX_ENTRIES = 10;
   const MAX_NICKNAME_LENGTH = 20;
   const TIME_GAP_RESET_SECONDS = 30;
+
+  const WHIRLWIND_MIN_ANGULAR_SPEED = 6;
+  const WHIRLWIND_CHARGE_DURATION = 6.0;
+  const WHIRLWIND_LEVEL_DURATION = 4.0;
+  const WHIRLWIND_MAX_LEVEL = 5;
+  const WHIRLWIND_REACH_MULT = 1.15;
+  const WHIRLWIND_LEVEL_DAMAGES = [0, 40, 100, 180, 280, 400] as const;
+  const WHIRLWIND_LEVEL_RADII = [0, 140, 180, 220, 260, 300] as const;
+  const WHIRLWIND_GUST_RADIUS = 140;
+  const WHIRLWIND_GUST_DAMAGE = 40;
+
+  const CLOTHESLINE_DURATION = 2.0;
+  const CLOTHESLINE_TRIGGER_DIST = 42;
+  const CLOTHESLINE_BEAM_DAMAGE = 140;
+
   const ZOMBIE_ATTACK_VARIATIONS = ['normal', 'heavy', 'fast'] as const;
   type ZombieAttackVariationKey = (typeof ZOMBIE_ATTACK_VARIATIONS)[number];
   const HURT_SOUNDS = ZOMBIE_ATTACK_VARIATIONS;
@@ -1138,6 +1153,10 @@
     spiderTimer: 0,            // > 0 while transformed into a Spider Hammer for 120s
     thorTimer: 0,              // > 0 while transformed into a Thor Hammer for 120s
     isSpider: false,           // true when transformed into a Spider Hammer
+    whirlwindLevel: 0,
+    spinTimer: 0,
+    isWhirlwind: false,
+    prevRelAngle: undefined,
     angle: Math.PI / 2,
     currentTension: 0,
     currentStretch: 0,
@@ -1152,6 +1171,8 @@
   const floatingTexts = [];
   const shockwaves = [];
   const enemyGhosts = [];
+  const activeClotheslines = [];
+  const clotheslineCooldowns = new Map();
 
   // Multiplayer & Round State
   let ws = null;
@@ -1887,6 +1908,10 @@
       thorTimer: 0,
       extraTimer: EXTRA_HAMMER_DURATION,
       isSpider: false,
+      whirlwindLevel: 0,
+      spinTimer: 0,
+      isWhirlwind: false,
+      prevRelAngle: undefined,
       angle: spawnAngle,
       currentTension: 0,
       currentStretch: 0,
@@ -2082,6 +2107,19 @@
         addParticles(ev.x, ev.y, '#f687b3', 8, 30, 120, 3.0);
         addParticles(ev.x, ev.y, '#63b3ed', 6, 25, 105, 2.8);
         addFloatingText(ev.x, ev.y - 26, '♪ DANCING! ♪', '#f687b3', 1.05);
+      } else if (ev.type === 'shockwave') {
+        if (ev.kind === 'gust') {
+          const rgb = ev.isFlaming ? '255, 107, 53' : (ev.rgb || '167, 243, 208');
+          addShockwave(ev.x, ev.y, ev.radius || WHIRLWIND_GUST_RADIUS, rgb);
+          addParticles(ev.x, ev.y, ev.isFlaming ? '#ff6b35' : '#a7f3d0', 14, 80, 240, 2.8);
+          if (ev.isFlaming) {
+            addParticles(ev.x, ev.y, '#f6e05e', 10, 60, 180, 2.4);
+          }
+        } else {
+          addShockwave(ev.x, ev.y, ev.radius || 60);
+        }
+      } else if (ev.type === 'clothesline_start') {
+        addParticles((ev.x1 + ev.x2) * 0.5, (ev.y1 + ev.y2) * 0.5, '#38bdf8', 16, 80, 260, 2.5);
       } else if (ev.type === 'floating_text') {
         if (!isWorldPointVisible(ev.x, ev.y, cullMargin)) continue;
         addFloatingText(ev.x, ev.y, ev.text, ev.color || '#fff', ev.scale || 1);
@@ -2296,6 +2334,12 @@
         if (Array.isArray(msg.leaderboard)) {
           syncServerLeaderboard(msg.leaderboard);
         }
+        if (Array.isArray(msg.clotheslines)) {
+          activeClotheslines.length = 0;
+          for (let clIdx = 0; clIdx < msg.clotheslines.length; clIdx++) {
+            activeClotheslines.push({ ...msg.clotheslines[clIdx] });
+          }
+        }
         if (roundState === 'victory') {
           updateHUD();
           stopAnimationLoop();
@@ -2435,6 +2479,9 @@
                     thorTimer: sh.thorTimer || 0,
                     extraTimer: sh.extraTimer || 0,
                     isSpider: !!sh.isSpider,
+                    whirlwindLevel: sh.whirlwindLevel || (sh.isWhirlwind ? 1 : 0),
+                    isWhirlwind: (sh.whirlwindLevel || 0) > 0 || !!sh.isWhirlwind,
+                    spinTimer: sh.spinTimer || 0,
                     angle: sh.angle || 0,
                     currentStretch: sh.currentStretch || 0,
                     trail: [],
@@ -2475,6 +2522,9 @@
                   lh.thorTimer = sh.thorTimer || 0;
                   lh.extraTimer = sh.extraTimer || 0;
                   lh.isSpider = !!sh.isSpider;
+                  lh.whirlwindLevel = sh.whirlwindLevel || (sh.isWhirlwind ? 1 : 0);
+                  lh.isWhirlwind = (lh.whirlwindLevel || 0) > 0 || !!sh.isWhirlwind;
+                  lh.spinTimer = sh.spinTimer || 0;
                   lh.currentStretch = sh.currentStretch || 0;
                 }
 
@@ -2580,6 +2630,9 @@
                     rh.thorTimer = sh.thorTimer || 0;
                     rh.extraTimer = sh.extraTimer || 0;
                     rh.isSpider = !!sh.isSpider;
+                    rh.whirlwindLevel = sh.whirlwindLevel || (sh.isWhirlwind ? 1 : 0);
+                    rh.isWhirlwind = (rh.whirlwindLevel || 0) > 0 || !!sh.isWhirlwind;
+                    rh.spinTimer = sh.spinTimer || 0;
                     rh.currentStretch = sh.currentStretch || 0;
                     rh.vx = sh.vx || 0;
                     rh.vy = sh.vy || 0;
@@ -2938,6 +2991,7 @@
     strikeHvy: number = 0
   ) {
     const e = enemies[index];
+    if (!e) return;
     kills++;
     teamKills = kills;
     recordLocalLeaderboardScore(warrior.name, kills, warrior.color);
@@ -3576,6 +3630,199 @@
     addShockwave(x, y, maxRadius * 0.62, '254, 240, 138');
   }
 
+  function triggerWhirlwindGust(gx, gy, sourcePlayer = warrior, sourceHammer = hammer, options: any = {}) {
+    const level = Math.min(
+      WHIRLWIND_MAX_LEVEL,
+      Math.max(1, sourceHammer && sourceHammer.whirlwindLevel ? sourceHammer.whirlwindLevel : 1)
+    );
+    const gustRadius = WHIRLWIND_LEVEL_RADII[level] || 140;
+    const gustMaxDamage = WHIRLWIND_LEVEL_DAMAGES[level] || 40;
+
+    const isFlaming =
+      !!(options && options.isFlaming) ||
+      (sourceHammer && ((sourceHammer.flameCharges > 0) || (sourceHammer.flameTimer > 0))) ||
+      (hammer && ((hammer.flameCharges > 0) || (hammer.flameTimer > 0)));
+
+    const levelLabels = ['', 'WHIRLWIND!', 'WHIRLWIND Lv.2!', 'WHIRLWIND Lv.3!', 'WHIRLWIND Lv.4!', 'SUPER WHIRLWIND MAX!'];
+    const levelColors = ['', '#a7f3d0', '#34d399', '#38bdf8', '#c084fc', '#fbbf24'];
+
+    if (isFlaming) {
+      addShockwave(gx, gy, gustRadius, '255, 107, 53');
+      addFloatingText(gx, gy - 24, `FLAME ${levelLabels[level] || 'WHIRLWIND!'}`, '#ff6b35', 1.15 + level * 0.15);
+      addParticles(gx, gy, '#ff6b35', 16 + level * 4, 90, 260 + level * 40, 3.2 + level * 0.3);
+      addParticles(gx, gy, '#f6e05e', 10 + level * 3, 60, 190 + level * 30, 2.6 + level * 0.2);
+    } else {
+      addShockwave(gx, gy, gustRadius, levelColors[level] || '167, 243, 208');
+      addFloatingText(gx, gy - 24, levelLabels[level] || 'WHIRLWIND!', levelColors[level] || '#a7f3d0', 1.15 + level * 0.15);
+      addParticles(gx, gy, levelColors[level] || '#a7f3d0', 12 + level * 4, 80, 240 + level * 40, 2.8 + level * 0.3);
+    }
+
+    for (let j = enemies.length - 1; j >= 0; j--) {
+      const target = enemies[j];
+      const bdx = target.x - gx;
+      const bdy = target.y - gy;
+      const bDist = Math.hypot(bdx, bdy);
+      if (bDist <= gustRadius + target.radius) {
+        const falloff = Math.max(0.4, 1 - bDist / (gustRadius + target.radius));
+        const gustDamage = Math.round(gustMaxDamage * falloff);
+        const gustImpulse = (1200 + level * 200) * falloff;
+        const bnx = bDist > 0.001 ? bdx / bDist : Math.cos(Math.random() * Math.PI * 2);
+        const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
+
+        target.vx += (gustImpulse / target.mass) * bnx;
+        target.vy += (gustImpulse / target.mass) * bny;
+        target.hp -= gustDamage;
+        target.hurtFlash = 0.28;
+
+        if (isFlaming) {
+          if (igniteEnemy(target)) {
+            if (target.hp <= 0) {
+              target.hp = Math.max(18, Math.round(target.maxHp * 0.3));
+            }
+          }
+        }
+
+        if (gustDamage > maxDamageBlow) {
+          maxDamageBlow = gustDamage;
+        }
+
+        addFloatingText(target.x, target.y - target.radius - 8, `-${gustDamage}`, isFlaming ? '#ff6b35' : (levelColors[level] || '#a7f3d0'), 1.05 + level * 0.1);
+      }
+    }
+  }
+
+  function updateHammerWhirlwind(p, h, dt) {
+    const relAngle = Math.atan2(h.y - p.y, h.x - p.x);
+    if (h.prevRelAngle !== undefined && dt > 0) {
+      let dTheta = relAngle - h.prevRelAngle;
+      while (dTheta > Math.PI) dTheta -= 2 * Math.PI;
+      while (dTheta < -Math.PI) dTheta += 2 * Math.PI;
+      const angSpeed = Math.abs(dTheta) / dt;
+      const relSpeed = Math.hypot(h.vx - p.vx, h.vy - p.vy);
+
+      if (angSpeed >= WHIRLWIND_MIN_ANGULAR_SPEED || relSpeed >= 420) {
+        const maxSpinTime =
+          WHIRLWIND_CHARGE_DURATION + (WHIRLWIND_MAX_LEVEL - 1) * WHIRLWIND_LEVEL_DURATION + 0.5;
+        h.spinTimer = Math.min(maxSpinTime, (h.spinTimer || 0) + dt);
+      } else {
+        h.spinTimer = Math.max(0, (h.spinTimer || 0) - dt * 2.2);
+      }
+    }
+    h.prevRelAngle = relAngle;
+
+    if ((h.spinTimer || 0) >= WHIRLWIND_CHARGE_DURATION) {
+      const rawLevel =
+        1 + Math.floor(((h.spinTimer || 0) - WHIRLWIND_CHARGE_DURATION) / WHIRLWIND_LEVEL_DURATION);
+      h.whirlwindLevel = Math.min(WHIRLWIND_MAX_LEVEL, Math.max(1, rawLevel));
+      h.isWhirlwind = true;
+    } else if ((h.spinTimer || 0) < WHIRLWIND_CHARGE_DURATION * 0.4) {
+      h.whirlwindLevel = 0;
+      h.isWhirlwind = false;
+    }
+  }
+
+  function distPointToSegment(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq < 1e-6) return Math.hypot(px - x1, py - y1);
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
+    const projX = x1 + t * dx;
+    const projY = y1 + t * dy;
+    return Math.hypot(px - projX, py - projY);
+  }
+
+  function checkAndStepClotheslines(dt) {
+    // 1. Advance active clotheslines & slice enemies
+    for (let i = activeClotheslines.length - 1; i >= 0; i--) {
+      const cl = activeClotheslines[i];
+      cl.timer -= dt;
+
+      for (let eIdx = enemies.length - 1; eIdx >= 0; eIdx--) {
+        const e = enemies[eIdx];
+        const dist = distPointToSegment(e.x, e.y, cl.x1, cl.y1, cl.x2, cl.y2);
+        if (dist <= e.radius + 18) {
+          if (e.hitCooldown <= 0) {
+            e.hp -= CLOTHESLINE_BEAM_DAMAGE;
+            e.hitCooldown = 0.12;
+            e.hurtFlash = 0.28;
+            if (CLOTHESLINE_BEAM_DAMAGE > maxDamageBlow) {
+              maxDamageBlow = CLOTHESLINE_BEAM_DAMAGE;
+            }
+            addParticles(e.x, e.y, '#38bdf8', 12, 100, 280, 2.5);
+            addFloatingText(e.x, e.y - e.radius - 12, `-${CLOTHESLINE_BEAM_DAMAGE}`, '#38bdf8', 1.35);
+            if (e.hp <= 0) {
+              defeatEnemy(eIdx, null, 0, 0);
+            }
+          }
+        }
+      }
+
+      if (cl.timer <= 0) {
+        activeClotheslines.splice(i, 1);
+      }
+    }
+
+    // 2. Step cooldown timers
+    for (const [key, cd] of clotheslineCooldowns.entries()) {
+      const nextCd = cd - dt;
+      if (nextCd <= 0) {
+        clotheslineCooldowns.delete(key);
+      } else {
+        clotheslineCooldowns.set(key, nextCd);
+      }
+    }
+
+    // 3. In single-player/local, check warrior's hammers touching or crossing
+    if (!isMultiplayer) {
+      if (warrior.hammers.length >= 2) {
+        const ha = warrior.hammers[0];
+        const hb = warrior.hammers[1];
+        const pairKey = 'local_0_1';
+        if (!clotheslineCooldowns.has(pairKey)) {
+          const headDist = Math.hypot(ha.x - hb.x, ha.y - hb.y);
+          let crossed = headDist <= ha.radius + hb.radius + CLOTHESLINE_TRIGGER_DIST;
+
+          if (!crossed && ha.chainNodes && hb.chainNodes) {
+            for (let ni = 1; ni < ha.chainNodes.length && !crossed; ni += 2) {
+              const na = ha.chainNodes[ni];
+              for (let nj = 1; nj < hb.chainNodes.length && !crossed; nj += 2) {
+                const nb = hb.chainNodes[nj];
+                if (Math.hypot(na.x - nb.x, na.y - nb.y) <= CLOTHESLINE_TRIGGER_DIST) {
+                  crossed = true;
+                }
+              }
+            }
+          }
+
+          if (crossed) {
+            activeClotheslines.push({
+              id: pairKey,
+              x1: ha.x,
+              y1: ha.y,
+              x2: hb.x,
+              y2: hb.y,
+              timer: CLOTHESLINE_DURATION,
+            });
+            clotheslineCooldowns.set(pairKey, CLOTHESLINE_DURATION + 1.0);
+            addFloatingText((ha.x + hb.x) * 0.5, (ha.y + hb.y) * 0.5 - 20, 'CLOTHESLINE!', '#38bdf8', 1.4);
+            addParticles((ha.x + hb.x) * 0.5, (ha.y + hb.y) * 0.5, '#38bdf8', 16, 80, 260, 2.5);
+          }
+        }
+      }
+
+      for (let i = 0; i < activeClotheslines.length; i++) {
+        const cl = activeClotheslines[i];
+        if (cl.id === 'local_0_1' && warrior.hammers.length >= 2) {
+          cl.x1 = warrior.hammers[0].x;
+          cl.y1 = warrior.hammers[0].y;
+          cl.x2 = warrior.hammers[1].x;
+          cl.y2 = warrior.hammers[1].y;
+        }
+      }
+    }
+  }
+
   // --- Reset / Initialize Game ---
   function initGame() {
     if (victoryAutoRestartTimeout !== null) {
@@ -3655,6 +3902,10 @@
     hammer.spiderTimer = 0;
     hammer.thorTimer = 0;
     hammer.isSpider = false;
+    hammer.whirlwindLevel = 0;
+    hammer.spinTimer = 0;
+    hammer.isWhirlwind = false;
+    hammer.prevRelAngle = undefined;
     hammer.angle = Math.PI / 2;
     hammer.currentTension = 0;
     hammer.currentStretch = 0;
@@ -3676,6 +3927,8 @@
     particles.length = 0;
     floatingTexts.length = 0;
     shockwaves.length = 0;
+    activeClotheslines.length = 0;
+    clotheslineCooldowns.clear();
 
     kills = 0;
     maxDamageBlow = 0;
@@ -3837,13 +4090,16 @@
     // 3. Step Chain & Elastic Tension for each Hammer owned by Warrior
     for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
       const h = warrior.hammers[hIdx];
+      updateHammerWhirlwind(warrior, h, dt);
       const links = Math.min(MAX_CHAIN_LINKS, h.chainLinks || INITIAL_CHAIN_LINKS);
       h.chainLinks = links;
       if (!h.chainNodes || h.chainNodes.length !== links + 1) {
         initHammerChainNodes(h);
       }
       const nodes = h.chainNodes;
-      const restLength = getChainRestLength(links, h.linkLength);
+      const baseRestLength = getChainRestLength(links, h.linkLength);
+      const reachMult = (h.whirlwindLevel || 0) > 0 ? 1.10 + (h.whirlwindLevel || 1) * 0.05 : 1.0;
+      const restLength = baseRestLength * reachMult;
       const segRest = restLength / Math.max(1, links);
 
       nodes[0].x = warrior.x;
@@ -4478,6 +4734,7 @@
       }
     }
     const isBulldozer = stepLocalWarriorAndHammers(dt, false);
+    checkAndStepClotheslines(dt);
 
     // 5. Update Enemies & Collisions (Hammers, Chains, and Warrior)
     for (let i = enemies.length - 1; i >= 0; i--) {
@@ -4703,6 +4960,7 @@
               e.x += nx * overlap * ((1 / e.mass) / totalInvMass);
               e.y += ny * overlap * ((1 / e.mass) / totalInvMass);
 
+              let hadFlame = (h.flameCharges > 0) || ((h.flameTimer || 0) > 0);
               let justIgnited = false;
               if (h.flameCharges > 0 && e.burnTimer <= 0 && e.fireproofTimer <= 0) {
                 if (igniteEnemy(e)) {
@@ -4777,6 +5035,13 @@
                   const dmgColor = damage >= 50 ? '#fbd38d' : '#ffffff';
                   const dmgScale = damage >= 50 ? 1.25 : 1.0;
                   addFloatingText(e.x, e.y - e.radius - 6, `-${damage}`, dmgColor, dmgScale);
+
+                  if ((h.whirlwindLevel || 0) > 0 || h.isWhirlwind) {
+                    triggerWhirlwindGust(h.x, h.y, warrior, h, { isFlaming: hadFlame || justIgnited });
+                  }
+                  h.whirlwindLevel = 0;
+                  h.isWhirlwind = false;
+                  h.spinTimer = 0;
                 }
               }
 
@@ -5490,7 +5755,7 @@
     }
 
     // Hammer motion trails & live fire ember particles across all hammers
-    const maxTrailLen =
+    const baseQualityTrailLen =
       visualQualityTier === QUALITY_TIER_HIGH
         ? 9
         : visualQualityTier === QUALITY_TIER_MEDIUM
@@ -5499,29 +5764,41 @@
     for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
       const h = warrior.hammers[hIdx];
       if (!h.trail) h.trail = [];
-      if (maxTrailLen === 0) {
+      const whirlwindLvl = h.whirlwindLevel || 0;
+      // Whirlwind trail starts short at Level 1 and gets longer at higher levels:
+      const whirlwindMaxTrail = [0, 6, 12, 18, 25, 32][whirlwindLvl] || 0;
+      const effectiveMaxTrail =
+        whirlwindLvl > 0 ? whirlwindMaxTrail : baseQualityTrailLen;
+
+      if (effectiveMaxTrail === 0) {
         h.trail.length = 0;
       } else {
         const hammerSpeed = Math.hypot(h.vx, h.vy);
+        const isFlaming = (h.flameTimer > 0) || (h.flameCharges > 0);
         if (
           warrior.alive &&
-          (hammerSpeed > 180 || h.flameTimer > 0 || (h.discoTimer || 0) > 0 || (h.thorTimer || 0) > 0)
+          (hammerSpeed > 180 || isFlaming || (h.discoTimer || 0) > 0 || (h.thorTimer || 0) > 0 || whirlwindLvl > 0)
         ) {
           h.trail.push({
             x: h.x,
             y: h.y,
             angle: h.angle,
+            whirlwindLevel: whirlwindLvl,
+            isFlaming,
             alpha:
-              h.flameTimer > 0 || (h.discoTimer || 0) > 0 || (h.thorTimer || 0) > 0
+              whirlwindLvl > 0
+                ? Math.min(0.72, 0.42 + whirlwindLvl * 0.06)
+                : isFlaming || (h.discoTimer || 0) > 0 || (h.thorTimer || 0) > 0
                 ? Math.max(0.38, Math.min(0.65, hammerSpeed / 700))
                 : Math.min(0.55, (hammerSpeed - 180) / 900),
           });
         }
-        while (h.trail.length > maxTrailLen) {
+        while (h.trail.length > effectiveMaxTrail) {
           h.trail.shift();
         }
         for (let i = h.trail.length - 1; i >= 0; i--) {
-          h.trail[i].alpha -= dt * 2.4;
+          const decay = whirlwindLvl > 0 ? 1.6 - whirlwindLvl * 0.12 : 2.4;
+          h.trail[i].alpha -= dt * Math.max(0.8, decay);
           if (h.trail[i].alpha <= 0) {
             h.trail.splice(i, 1);
           }
@@ -6129,6 +6406,31 @@
             ctx.stroke();
           }
         }
+      } else if (s.kind === 'gust') {
+        const lvl = s.level || 1;
+        const color =
+          lvl === 5
+            ? '251, 191, 36'
+            : lvl === 4
+            ? '192, 132, 252'
+            : lvl === 3
+            ? '56, 189, 248'
+            : lvl === 2
+            ? '52, 211, 153'
+            : '167, 243, 208';
+        ctx.strokeStyle = `rgba(${color}, ${alpha * 0.88})`;
+        ctx.lineWidth = (3 + lvl * 1.2) * alpha;
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+        ctx.stroke();
+
+        if (lvl >= 2) {
+          ctx.strokeStyle = `rgba(255, 255, 255, ${alpha * 0.65})`;
+          ctx.lineWidth = 2 * alpha;
+          ctx.beginPath();
+          ctx.arc(s.x, s.y, s.radius * 0.65, 0, Math.PI * 2);
+          ctx.stroke();
+        }
       } else {
         ctx.strokeStyle = `rgba(${s.rgb || '255, 232, 145'}, ${alpha * 0.82})`;
         ctx.lineWidth = 4 * alpha;
@@ -6367,6 +6669,47 @@
         drawWarrior(item.ref, item.isLocal);
       } else if (item.type === 'hammer') {
         drawHammer(item.ref, item.trail);
+      }
+    }
+
+    // 9b. Active Clothesline (Tandem Wire) Electric Beams
+    if (activeClotheslines.length > 0) {
+      const nowSec = performance.now() * 0.001;
+      for (let clIdx = 0; clIdx < activeClotheslines.length; clIdx++) {
+        const cl = activeClotheslines[clIdx];
+        const x1 = cl.x1;
+        const y1 = cl.y1 * TILT_Y - 16;
+        const x2 = cl.x2;
+        const y2 = cl.y2 * TILT_Y - 16;
+        const dist = Math.hypot(x2 - x1, y2 - y1);
+        if (dist < 1) continue;
+
+        ctx.save();
+        ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+        ctx.lineWidth = 8.5;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        const segments = Math.max(3, Math.min(8, Math.floor(dist / 32)));
+        for (let s = 1; s < segments; s++) {
+          const t = s / segments;
+          const px = x1 + (x2 - x1) * t;
+          const py = y1 + (y2 - y1) * t;
+          const jitterPhase = nowSec * 28 + s * 1.7;
+          const perpX = -(y2 - y1) / dist;
+          const perpY = (x2 - x1) / dist;
+          const jitterMag = Math.sin(jitterPhase) * 6.5;
+          ctx.lineTo(px + perpX * jitterMag, py + perpY * jitterMag);
+        }
+        ctx.lineTo(x2, y2);
+        ctx.stroke();
+        ctx.restore();
       }
     }
 
@@ -8137,11 +8480,60 @@
     const isThor = !isDisco && !isJackOLantern && !isSpider && (h.thorTimer || 0) > 0;
     const nowSec = performance.now() * 0.001;
     const discoPalette = ['#f687b3', '#63b3ed', '#f6e05e', '#68d391', '#b794f4', '#ffffff'];
+    const whirlwindPalettes = [
+      ['#cbd5e0', '#a0aec0'],
+      ['#a7f3d0', '#6ee7b7'], // Level 1: Mint
+      ['#34d399', '#10b981'], // Level 2: Emerald
+      ['#38bdf8', '#0ea5e9'], // Level 3: Cyan
+      ['#c084fc', '#a855f7'], // Level 4: Purple
+      ['#fbbf24', '#f59e0b'], // Level 5: Gold
+    ];
 
-    // 1. 2.5D Motion Blur Afterimages of the Spikey Mace (skipped in Low quality tier)
-    if (visualQualityTier > QUALITY_TIER_LOW && Array.isArray(trail)) {
+    // 1. 2.5D Motion Blur Afterimages of the Spikey Mace (skipped in Low quality tier, except for active whirlwind trails)
+    const hasWhirlwindTrail = (h.whirlwindLevel || 0) > 0 || (Array.isArray(trail) && trail.some((t) => (t.whirlwindLevel || 0) > 0));
+    if ((visualQualityTier > QUALITY_TIER_LOW || hasWhirlwindTrail) && Array.isArray(trail) && trail.length > 0) {
+      // Connective ribbon for whirlwind trail
+      const activeWl = h.whirlwindLevel || (trail[trail.length - 1] && trail[trail.length - 1].whirlwindLevel) || 0;
+      if (activeWl > 0 && trail.length >= 2) {
+        ctx.save();
+        const pal = isFlaming
+          ? ['#ff6b35', '#f6ad55']
+          : (whirlwindPalettes[activeWl] || ['#a7f3d0', '#34d399']);
+        ctx.beginPath();
+        for (let i = 0; i < trail.length; i++) {
+          const tr = trail[i];
+          const tx = tr.x;
+          const ty = tr.y * TILT_Y - hammerZ;
+          if (i === 0) ctx.moveTo(tx, ty);
+          else ctx.lineTo(tx, ty);
+        }
+        ctx.strokeStyle = pal[0];
+        ctx.lineWidth = Math.min(18, coreRadius * 0.75 + activeWl * 1.5);
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.globalAlpha = Math.min(0.48, 0.16 + activeWl * 0.06);
+        ctx.stroke();
+
+        ctx.beginPath();
+        for (let i = 0; i < trail.length; i++) {
+          const tr = trail[i];
+          const tx = tr.x;
+          const ty = tr.y * TILT_Y - hammerZ;
+          if (i === 0) ctx.moveTo(tx, ty);
+          else ctx.lineTo(tx, ty);
+        }
+        ctx.strokeStyle = pal[1];
+        ctx.lineWidth = Math.max(2, coreRadius * 0.35 + activeWl * 0.8);
+        ctx.globalAlpha = Math.min(0.68, 0.28 + activeWl * 0.08);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       for (let i = 0; i < trail.length; i++) {
         const tr = trail[i];
+        const trWl = tr.whirlwindLevel || h.whirlwindLevel || 0;
+        const trFlaming = tr.isFlaming || isFlaming;
+        const isWhirlwind = trWl > 0;
         ctx.save();
         ctx.globalAlpha = Math.max(
           0,
@@ -8154,6 +8546,8 @@
               ? 0.46
               : isThor
               ? 0.52
+              : isWhirlwind
+              ? (0.42 + trWl * 0.06)
               : isFlaming
               ? 0.52
               : 0.34)
@@ -8173,6 +8567,14 @@
           ? i % 2 === 0
             ? '#63b3ed'
             : '#fef08a'
+          : isWhirlwind
+          ? trFlaming
+            ? i % 2 === 0
+              ? '#ff6b35'
+              : (whirlwindPalettes[trWl] ? whirlwindPalettes[trWl][0] : '#f6ad55')
+            : i % 2 === 0
+            ? (whirlwindPalettes[trWl] ? whirlwindPalettes[trWl][0] : '#a7f3d0')
+            : (whirlwindPalettes[trWl] ? whirlwindPalettes[trWl][1] : '#34d399')
           : isFlaming
           ? i % 2 === 0
             ? '#ff6b35'
@@ -8182,7 +8584,7 @@
         ctx.arc(
           0,
           0,
-          coreRadius * (isDisco || isJackOLantern || isThor || isFlaming ? 1.08 : 0.95),
+          coreRadius * (isWhirlwind ? (0.85 + trWl * 0.05) : (isDisco || isJackOLantern || isThor || isFlaming ? 1.08 : 0.95)),
           0,
           Math.PI * 2
         );
@@ -8914,6 +9316,80 @@
       );
       ctx.fill();
       ctx.stroke();
+      ctx.restore();
+    }
+
+    // Whirlwind Momentum Spin-Up Aura (gale vortex rings & glowing wind swirls varied by level 1-5)
+    const wLvl = Math.min(
+      WHIRLWIND_MAX_LEVEL,
+      Math.max(0, h.whirlwindLevel != null ? h.whirlwindLevel : h.isWhirlwind ? 1 : 0)
+    );
+    if (wLvl > 0) {
+      ctx.save();
+      ctx.translate(sx, syGround - hammerZ);
+      const spinSpeed = 13 + wLvl * 3.5;
+      const spinAngle = nowSec * spinSpeed;
+      const vortexR = (coreRadius + 8 * massScale) * (1.15 + wLvl * 0.16);
+
+      const ringPalettes = [
+        'rgba(167, 243, 208, 0.72)', // Lv1: mint / turquoise
+        'rgba(52, 211, 153, 0.82)',  // Lv2: emerald
+        'rgba(56, 189, 248, 0.88)',  // Lv3: cyan / azure
+        'rgba(192, 132, 252, 0.94)', // Lv4: purple hurricane
+        'rgba(251, 191, 36, 1.0)',   // Lv5: blazing divine gold
+      ];
+      const strokeCol = ringPalettes[wLvl - 1] || ringPalettes[0];
+      const arcCount = 2 + wLvl; // 3 arcs at Lv1, up to 7 arcs at Lv5
+
+      // Outer glowing storm aura for high levels
+      if (wLvl >= 3) {
+        ctx.fillStyle =
+          wLvl === 5
+            ? 'rgba(254, 240, 138, 0.28)'
+            : wLvl === 4
+            ? 'rgba(192, 132, 252, 0.22)'
+            : 'rgba(56, 189, 248, 0.18)';
+        ctx.beginPath();
+        ctx.ellipse(0, 0, vortexR * 1.18, vortexR * 1.18 * TILT_Y, 0, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      ctx.strokeStyle = strokeCol;
+      ctx.lineWidth = (2.2 + wLvl * 0.65) * massScale;
+      for (let v = 0; v < arcCount; v++) {
+        const startAng = spinAngle + (v * Math.PI * 2) / arcCount;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, vortexR, vortexR * TILT_Y, startAng, 0, Math.PI * 0.75);
+        ctx.stroke();
+      }
+
+      // Counter-rotating inner eye for levels 3, 4, 5
+      if (wLvl >= 3) {
+        ctx.strokeStyle = wLvl === 5 ? '#ffffff' : '#fef08a';
+        ctx.lineWidth = 1.8 * massScale;
+        const innerR = vortexR * 0.6;
+        for (let v = 0; v < 3; v++) {
+          const innerAng = -spinAngle * 1.4 + (v * Math.PI * 2) / 3;
+          ctx.beginPath();
+          ctx.ellipse(0, 0, innerR, innerR * TILT_Y, innerAng, 0, Math.PI * 0.6);
+          ctx.stroke();
+        }
+      }
+
+      // Crackling lightning storm sparks for level 5
+      if (wLvl === 5) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2.0 * massScale;
+        for (let b = 0; b < 4; b++) {
+          const sparkAng = spinAngle * 2 + (b * Math.PI) / 2;
+          const sDist = vortexR * (0.8 + Math.sin(nowSec * 25 + b) * 0.2);
+          ctx.beginPath();
+          ctx.moveTo(Math.cos(sparkAng) * (sDist * 0.7), Math.sin(sparkAng) * (sDist * 0.7) * TILT_Y);
+          ctx.lineTo(Math.cos(sparkAng) * sDist, Math.sin(sparkAng) * sDist * TILT_Y);
+          ctx.stroke();
+        }
+      }
+
       ctx.restore();
     }
 
@@ -10251,6 +10727,18 @@
         LEADERBOARD_MAX_ENTRIES,
         MAX_NICKNAME_LENGTH,
         TIME_GAP_RESET_SECONDS,
+        WHIRLWIND_MIN_ANGULAR_SPEED,
+        WHIRLWIND_CHARGE_DURATION,
+        WHIRLWIND_LEVEL_DURATION,
+        WHIRLWIND_MAX_LEVEL,
+        WHIRLWIND_REACH_MULT,
+        WHIRLWIND_LEVEL_DAMAGES,
+        WHIRLWIND_LEVEL_RADII,
+        WHIRLWIND_GUST_RADIUS,
+        WHIRLWIND_GUST_DAMAGE,
+        CLOTHESLINE_DURATION,
+        CLOTHESLINE_TRIGGER_DIST,
+        CLOTHESLINE_BEAM_DAMAGE,
         ZOMBIE_ATTACK_VARIATIONS,
         HURT_SOUNDS,
         HURT_NOISES,
@@ -10273,6 +10761,7 @@
       floatingTexts,
       shockwaves,
       enemyGhosts,
+      activeClotheslines,
       remotePlayers,
       localLeaderboardRecords,
       camera,
@@ -10355,6 +10844,10 @@
       addShockwave,
       addBombBlastAnimation,
       addThorLightningAnimation,
+      triggerWhirlwindGust,
+      checkAndStepClotheslines,
+      updateHammerWhirlwind,
+      distPointToSegment,
       updateWarriorBroadphaseBounds,
       stepLocalWarriorAndHammers,
       stepMultiplayerClient,

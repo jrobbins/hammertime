@@ -96,6 +96,18 @@ describe('Server Constants & Configuration', () => {
     }
     assert.equal(sampledSounds.size, 3);
     assert.equal(srv.TIME_GAP_RESET_SECONDS, 30);
+    assert.equal(srv.WHIRLWIND_MIN_ANGULAR_SPEED, 6);
+    assert.equal(srv.WHIRLWIND_CHARGE_DURATION, 6.0);
+    assert.equal(srv.WHIRLWIND_REACH_MULT, 1.15);
+    assert.equal(srv.WHIRLWIND_GUST_RADIUS, 140);
+    assert.equal(srv.WHIRLWIND_GUST_DAMAGE, 40);
+    assert.equal(srv.WHIRLWIND_LEVEL_DURATION, 4.0);
+    assert.equal(srv.WHIRLWIND_MAX_LEVEL, 5);
+    assert.deepEqual(srv.WHIRLWIND_LEVEL_DAMAGES, [0, 40, 100, 180, 280, 400]);
+    assert.deepEqual(srv.WHIRLWIND_LEVEL_RADII, [0, 140, 180, 220, 260, 300]);
+    assert.equal(srv.CLOTHESLINE_DURATION, 2.0);
+    assert.equal(srv.CLOTHESLINE_TRIGGER_DIST, 42);
+    assert.equal(srv.CLOTHESLINE_BEAM_DAMAGE, 140);
   });
 
   it('defines rare powerup drop probabilities', () => {
@@ -1138,5 +1150,251 @@ describe('Adaptive Server Simulation Fidelity Under Load', () => {
     assert.equal(state.activePhysicsSubsteps, 4);
     assert.equal(state.activeChainRelaxIters, srv.CHAIN_RELAX_ITERS);
     assert.equal(state.activeChainRelaxIters, 10);
+  });
+});
+
+describe('Whirlwind / Momentum Spin-Up and The Clothesline (Tandem Wire)', () => {
+  beforeEach(() => {
+    resetTestWorld();
+  });
+
+  it('charges Whirlwind into Overdrive when spinning continuously for >= 6.0s and increments whirlwindLevel every 4s up to 5', () => {
+    const p = addTestPlayer('p1', 2000, 2000);
+    const h = p.hammer;
+    assert.equal(h.whirlwindLevel, 0);
+    assert.equal(h.isWhirlwind, false);
+    assert.equal(h.spinTimer, 0);
+
+    const baseRest = srv.getChainRestLength(h.chainLinks, h.linkLength);
+    const angSpeed = 7.0;
+    const dt = 1 / 60;
+    let currentAngle = 0;
+
+    function spinFor(seconds) {
+      const steps = Math.ceil(seconds / dt);
+      for (let s = 0; s < steps; s++) {
+        currentAngle += angSpeed * dt;
+        h.x = p.x + Math.cos(currentAngle) * baseRest;
+        h.y = p.y + Math.sin(currentAngle) * baseRest;
+        h.vx = -Math.sin(currentAngle) * baseRest * angSpeed;
+        h.vy = Math.cos(currentAngle) * baseRest * angSpeed;
+        srv.updateHammerWhirlwind(p, h, dt);
+      }
+    }
+
+    // Spin for 6.1s -> Level 1
+    spinFor(6.1);
+    assert.ok(h.spinTimer >= srv.WHIRLWIND_CHARGE_DURATION, 'Spin timer should reach 6.0s duration');
+    assert.equal(h.whirlwindLevel, 1, 'Hammer should be at whirlwindLevel 1');
+    assert.equal(h.isWhirlwind, true, 'Hammer should enter Overdrive (isWhirlwind = true)');
+
+    // In stepPlayerPhysics, restLength should be expanded by 1.15x (1.10 + 0.05 * 1)
+    srv.stepPlayerPhysics(p, dt);
+    assert.equal(h.isWhirlwind, true);
+
+    // Spin for another 4s -> Level 2
+    spinFor(4.0);
+    assert.equal(h.whirlwindLevel, 2, 'Hammer should reach whirlwindLevel 2 after +4s');
+
+    // Spin for another 4s -> Level 3
+    spinFor(4.0);
+    assert.equal(h.whirlwindLevel, 3, 'Hammer should reach whirlwindLevel 3 after +4s');
+
+    // Spin for another 4s -> Level 4
+    spinFor(4.0);
+    assert.equal(h.whirlwindLevel, 4, 'Hammer should reach whirlwindLevel 4 after +4s');
+
+    // Spin for another 4s -> Level 5 (max)
+    spinFor(4.0);
+    assert.equal(h.whirlwindLevel, 5, 'Hammer should reach max whirlwindLevel 5');
+
+    // Spin for another 5s -> capped at 5
+    spinFor(5.0);
+    assert.equal(h.whirlwindLevel, 5, 'whirlwindLevel should remain capped at 5');
+
+    // When spin ceases, spinTimer decays. After decaying below threshold, whirlwind turns off
+    h.spinTimer = 1.0;
+    for (let s = 0; s < 60; s++) {
+      h.vx = 0;
+      h.vy = 0;
+      srv.updateHammerWhirlwind(p, h, dt);
+    }
+    assert.equal(h.isWhirlwind, false, 'Whirlwind overdrive should deactivate when spin ceases');
+    assert.equal(h.whirlwindLevel, 0, 'whirlwindLevel should drop to 0 when spin ceases');
+    assert.ok(h.spinTimer < 0.5);
+  });
+
+  it('triggers Whirlwind gust shockwave scaling with level, and resets whirlwindLevel to 0 on hammer impact', () => {
+    const p = addTestPlayer('p1', 2000, 2000);
+    const h = p.hammer;
+    h.whirlwindLevel = 3;
+    h.isWhirlwind = true;
+    h.spinTimer = 22.0;
+
+    // Direct target zombie and nearby bystander zombie within 220px gust radius (level 3 radius)
+    const eNearby = addTestEnemy(2050, 2000, 200);
+
+    srv.setState({ pendingEvents: [] });
+    // Trigger whirlwind gust at hammer location for level 3
+    srv.triggerWhirlwindGust(h.x, h.y, p, h);
+
+    const events = srv.getState().pendingEvents;
+    const shockwaveEv = events.find((ev) => ev.type === 'shockwave' && ev.kind === 'gust');
+    assert.ok(shockwaveEv, 'Should emit shockwave event with kind gust');
+    assert.equal(shockwaveEv.radius, srv.WHIRLWIND_LEVEL_RADII[3], 'Shockwave radius should match level 3 radius (220px)');
+    assert.equal(shockwaveEv.level, 3, 'Shockwave event should carry level 3');
+
+    const whirlwindText = events.find((ev) => ev.type === 'floating_text' && ev.text === 'WHIRLWIND Lv.3!');
+    assert.ok(whirlwindText, 'Should emit WHIRLWIND Lv.3! floating text');
+
+    // Nearby bystander enemy within gust radius should have taken gust damage and impulse
+    assert.ok(eNearby.hp < 200, 'Nearby enemy should take gust damage at level 3');
+    assert.ok(eNearby.vx > 0, 'Nearby enemy should be pushed away by gust impulse');
+
+    // Test that when the hammer hits an enemy in stepWorldPhysics, whirlwindLevel drops back to 0
+    h.x = p.x + 40;
+    h.y = p.y;
+    h.vx = 500;
+    h.vy = 0;
+    srv.updatePlayerBroadphaseBounds(p);
+    const targetEnemy = addTestEnemy(h.x + 5, h.y, 250);
+    h.whirlwindLevel = 4;
+    h.isWhirlwind = true;
+    h.spinTimer = 32.0;
+
+    srv.setState({ pendingEvents: [] });
+    srv.stepWorldPhysics(1 / 60);
+
+    assert.equal(h.whirlwindLevel, 0, 'whirlwindLevel should drop back to 0 on hammer impact');
+    assert.equal(h.isWhirlwind, false, 'isWhirlwind should become false on hammer impact');
+    assert.equal(h.spinTimer, 0, 'spinTimer should reset to 0 on hammer impact');
+
+    // Test that whirlwind gust killing adjacent low-HP enemies does not cause TypeError in defeatEnemy
+    const eDirect = addTestEnemy(h.x + 5, h.y, 10);
+    const eSplash = addTestEnemy(h.x + 30, h.y, 10);
+    h.x = p.x + 40;
+    h.y = p.y;
+    h.vx = 500;
+    h.vy = 0;
+    h.whirlwindLevel = 2;
+    h.isWhirlwind = true;
+    srv.updatePlayerBroadphaseBounds(p);
+
+    assert.doesNotThrow(() => {
+      srv.stepWorldPhysics(1 / 60);
+    }, 'stepWorldPhysics should not throw when whirlwind kills enemies');
+
+    // defeatEnemy defensively handles out-of-bounds indices
+    assert.doesNotThrow(() => {
+      srv.defeatEnemy(9999, p);
+    }, 'defeatEnemy should gracefully ignore out-of-bounds index');
+  });
+
+  it('sets all enemies affected by whirlwind on fire when hammer hits with flame and whirlwind', () => {
+    const p = addTestPlayer('p1', 2000, 2000);
+    const h = p.hammer;
+    h.x = p.x + 40;
+    h.y = p.y;
+    h.vx = 400;
+    h.vy = 0;
+    h.flameCharges = 5;
+    h.flameTimer = 5;
+    h.whirlwindLevel = 2;
+    h.isWhirlwind = true;
+    h.spinTimer = 7.0;
+
+    // Enemy directly hit by hammer
+    const eDirect = addTestEnemy(h.x + 10, h.y, 100);
+    // Bystander enemies within Whirlwind Level 2 radius (180px)
+    const eBystander1 = addTestEnemy(h.x + 80, h.y, 100);
+    const eBystander2 = addTestEnemy(h.x - 70, h.y, 100);
+    // Outside whirlwind radius (e.g. 350px away)
+    const eFar = addTestEnemy(h.x + 350, h.y, 100);
+
+    srv.updatePlayerBroadphaseBounds(p);
+    srv.stepWorldPhysics(1 / 60);
+
+    // Direct hit enemy should be ignited
+    assert.ok(eDirect.burnTimer > 0, 'Direct hit enemy should be ignited with burnTimer > 0');
+    // Bystanders inside whirlwind should also be ignited!
+    assert.ok(eBystander1.burnTimer > 0, 'Bystander 1 affected by whirlwind gust should be set on fire');
+    assert.ok(eBystander2.burnTimer > 0, 'Bystander 2 affected by whirlwind gust should be set on fire');
+    // Enemy outside gust should NOT be ignited
+    assert.equal(eFar.burnTimer, 0, 'Enemy outside whirlwind radius should not be set on fire');
+  });
+
+  it('activates The Clothesline (Tandem Wire) when two players hammers/chains touch or cross within 42px', () => {
+    const p1 = addTestPlayer('p1', 2000, 2000);
+    const p2 = addTestPlayer('p2', 2050, 2000);
+
+    const h1 = p1.hammer;
+    const h2 = p2.hammer;
+
+    // Position hammer heads within 42px of each other
+    h1.x = 2025;
+    h1.y = 2000;
+    h2.x = 2035;
+    h2.y = 2000;
+
+    srv.setState({ pendingEvents: [] });
+    srv.checkAndStepClotheslines(1 / 60);
+
+    assert.equal(srv.activeClotheslines.length, 1, 'Should create 1 active clothesline');
+    const cl = srv.activeClotheslines[0];
+    assert.ok(cl.timer > 1.95, 'Clothesline timer should initialize to 2.0s');
+
+    const events = srv.getState().pendingEvents;
+    const startEv = events.find((ev) => ev.type === 'clothesline_start');
+    assert.ok(startEv, 'Should emit clothesline_start event');
+    const clText = events.find((ev) => ev.type === 'floating_text' && ev.text === 'CLOTHESLINE!');
+    assert.ok(clText, 'Should emit CLOTHESLINE! floating text');
+  });
+
+  it('slices enemies caught between tandem wire beam and serializes clotheslines in state', () => {
+    const p1 = addTestPlayer('p1', 2000, 2000);
+    const p2 = addTestPlayer('p2', 2200, 2000);
+
+    const h1 = p1.hammer;
+    const h2 = p2.hammer;
+    h1.x = 2000;
+    h1.y = 1950;
+    h2.x = 2200;
+    h2.y = 1950;
+
+    // Directly place an enemy midway along the beam line between h1 and h2
+    const eMid = addTestEnemy(2100, 1950, 150);
+
+    // Manually register active clothesline
+    srv.activeClotheslines.length = 0;
+    srv.activeClotheslines.push({
+      id: `${p1.id}:0-${p2.id}:0`,
+      p1Id: p1.id,
+      p2Id: p2.id,
+      h1Idx: 0,
+      h2Idx: 0,
+      x1: h1.x,
+      y1: h1.y,
+      x2: h2.x,
+      y2: h2.y,
+      timer: 2.0,
+    });
+
+    srv.setState({ pendingEvents: [] });
+    srv.checkAndStepClotheslines(1 / 60);
+
+    assert.equal(eMid.hp, 150 - srv.CLOTHESLINE_BEAM_DAMAGE, 'Trapped enemy should take 140 damage');
+
+    // Slicing damage should defeat an enemy with <= 140 HP
+    const eWeak = addTestEnemy(2120, 1950, 80);
+    srv.checkAndStepClotheslines(1 / 60);
+    assert.ok(!srv.enemies.includes(eWeak), 'Weak trapped zombie should be defeated by beam');
+
+    // Verify serialization in buildGameStatePayload
+    const payload = srv.buildGameStatePayload();
+    assert.ok(Array.isArray(payload.clotheslines));
+    assert.equal(payload.clotheslines.length, 1);
+    assert.equal(payload.clotheslines[0].x1, 2000);
+    assert.equal(payload.clotheslines[0].x2, 2200);
+    assert.equal(payload.players[0].hammers[0].isWhirlwind, false);
   });
 });
