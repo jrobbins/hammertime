@@ -128,6 +128,7 @@ const VICTORY_KILL_TARGET = 1000;
 const VICTORY_DISPLAY_DURATION = 5.0;
 const LEADERBOARD_MAX_ENTRIES = 10;
 const MAX_NICKNAME_LENGTH = 20;
+const TIME_GAP_RESET_SECONDS = 30;
 const ZOMBIE_ATTACK_VARIATIONS = ['normal', 'heavy', 'fast'] as const;
 type ZombieAttackVariationKey = (typeof ZOMBIE_ATTACK_VARIATIONS)[number];
 const HURT_SOUNDS = ZOMBIE_ATTACK_VARIATIONS;
@@ -179,6 +180,25 @@ let activePhysicsSubsteps = PHYSICS_SUBSTEPS;
 let activeChainRelaxIters = CHAIN_RELAX_ITERS;
 let avgTickMs = 0;
 let isReducedFidelity = false;
+let lastEmptyTime: number | null = Date.now();
+let lastServerWallClockTime = Date.now();
+
+function getLastEmptyTime(): number | null {
+  return lastEmptyTime;
+}
+
+function setLastEmptyTime(t: number | null) {
+  lastEmptyTime = t;
+}
+
+function checkTimeGap(nowMs = Date.now()): boolean {
+  if (lastEmptyTime !== null && (nowMs - lastEmptyTime) / 1000 > TIME_GAP_RESET_SECONDS) {
+    resetGameWorld();
+    lastEmptyTime = null;
+    return true;
+  }
+  return false;
+}
 
 function updateServerSimulationFidelity(tickDurationMs) {
   if (
@@ -1113,6 +1133,7 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer, options: any
 }
 
 function resetGameWorld() {
+  lastEmptyTime = null;
   roundState = 'playing';
   teamKills = 0;
   victoryInfo = null;
@@ -2655,7 +2676,16 @@ function stepWorldPhysics(dt) {
 }
 
 function tickServer(dt) {
-  if (players.size === 0) return;
+  if (dt > TIME_GAP_RESET_SECONDS) {
+    resetGameWorld();
+  }
+
+  if (players.size === 0) {
+    if (lastEmptyTime === null) {
+      lastEmptyTime = Date.now();
+    }
+    return;
+  }
 
   // Prune idle players who left their browser window open without any input
   const nowMs = Date.now();
@@ -2682,7 +2712,12 @@ function tickServer(dt) {
       players.delete(pid);
     }
   }
-  if (players.size === 0) return;
+  if (players.size === 0) {
+    if (lastEmptyTime === null) {
+      lastEmptyTime = Date.now();
+    }
+    return;
+  }
 
   // If the Victory Page is currently displayed, count down and start the next round
   if (roundState === 'victory') {
@@ -3375,9 +3410,11 @@ server.on('upgrade', (req, socket) => {
   socket.write(headers.join('\r\n'));
   socket.setNoDelay(true);
 
+  checkTimeGap();
   const playerId = nodeCrypto.randomBytes(6).toString('hex');
   const player = createPlayer(playerId, socket);
   players.set(playerId, player);
+  lastEmptyTime = null;
 
   // Send welcome packet with player ID and current leaderboard, followed immediately by initial state
   const welcomeFrame = encodeWsFrame(
@@ -3448,6 +3485,9 @@ server.on('upgrade', (req, socket) => {
     () => {
       updateLeaderboardForPlayer(player);
       players.delete(playerId);
+      if (players.size === 0) {
+        lastEmptyTime = Date.now();
+      }
     }
   );
 });
@@ -3567,9 +3607,17 @@ let broadcastAccum = 0;
 if (require.main === module) {
   setInterval(() => {
     const now = performance.now();
-    const dt = Math.min(0.05, (now - lastTick) / 1000);
+    const rawDt = (now - lastTick) / 1000;
+    const nowWall = Date.now();
+    const wallDt = (nowWall - lastServerWallClockTime) / 1000;
     lastTick = now;
+    lastServerWallClockTime = nowWall;
 
+    if (rawDt > TIME_GAP_RESET_SECONDS || wallDt > TIME_GAP_RESET_SECONDS) {
+      resetGameWorld();
+    }
+
+    const dt = Math.min(0.05, rawDt);
     tickServer(dt);
 
     broadcastAccum += dt;
@@ -3669,6 +3717,10 @@ module.exports = {
   VICTORY_DISPLAY_DURATION,
   LEADERBOARD_MAX_ENTRIES,
   MAX_NICKNAME_LENGTH,
+  TIME_GAP_RESET_SECONDS,
+  checkTimeGap,
+  getLastEmptyTime,
+  setLastEmptyTime,
   ZOMBIE_ATTACK_VARIATIONS,
   getRandomZombieAttackVariation,
   HURT_SOUNDS,

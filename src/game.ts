@@ -151,6 +151,7 @@
   const VICTORY_DISPLAY_DURATION = 5.0;
   const LEADERBOARD_MAX_ENTRIES = 10;
   const MAX_NICKNAME_LENGTH = 20;
+  const TIME_GAP_RESET_SECONDS = 30;
   const ZOMBIE_ATTACK_VARIATIONS = ['normal', 'heavy', 'fast'] as const;
   type ZombieAttackVariationKey = (typeof ZOMBIE_ATTACK_VARIATIONS)[number];
   const HURT_SOUNDS = ZOMBIE_ATTACK_VARIATIONS;
@@ -1205,10 +1206,38 @@
     }
   }
 
+  let lastTime = performance.now();
+  let lastWallClockTime = Date.now();
+
+  function checkTimeGap(now = performance.now(), nowWallClock = Date.now()): boolean {
+    const rawDt = (now - lastTime) / 1000;
+    const wallClockDt = (nowWallClock - lastWallClockTime) / 1000;
+    if (rawDt > TIME_GAP_RESET_SECONDS || wallClockDt > TIME_GAP_RESET_SECONDS) {
+      lastTime = now;
+      lastWallClockTime = nowWallClock;
+      initGame();
+      return true;
+    }
+    return false;
+  }
+
   function startAnimationLoop() {
     if (isLoopRunning || isDialogShowing()) return;
+    const nowWall = Date.now();
+    const nowPerf = performance.now();
+    if (
+      lastWallClockTime > 0 &&
+      ((nowWall - lastWallClockTime) / 1000 > TIME_GAP_RESET_SECONDS ||
+       (nowPerf - lastTime) / 1000 > TIME_GAP_RESET_SECONDS)
+    ) {
+      lastTime = nowPerf;
+      lastWallClockTime = nowWall;
+      initGame();
+      return;
+    }
     isLoopRunning = true;
-    lastTime = performance.now();
+    lastTime = nowPerf;
+    lastWallClockTime = nowWall;
     animationFrameId = requestAnimationFrame(gameLoop);
   }
 
@@ -2158,6 +2187,11 @@
       nicknameInputEl.classList.remove('input-error');
     }
     recordLocalLeaderboardScore(warrior.name, kills, warrior.color);
+
+    const nowWall = Date.now();
+    if (lastWallClockTime > 0 && (nowWall - lastWallClockTime) / 1000 > TIME_GAP_RESET_SECONDS) {
+      initGame();
+    }
 
     isConnecting = true;
     lastUserActivityTime = performance.now();
@@ -10056,9 +10090,24 @@
 
   window.addEventListener('keydown', handleCheatKeyDown);
 
-  // --- Main Animation Loop ---
-  let lastTime = performance.now();
+  function handleVisibilityOrFocus() {
+    if (!hasEnteredGame) return;
+    checkTimeGap();
+  }
 
+  if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        handleVisibilityOrFocus();
+      }
+    });
+  }
+  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('pageshow', handleVisibilityOrFocus);
+    window.addEventListener('focus', handleVisibilityOrFocus);
+  }
+
+  // --- Main Animation Loop ---
   function gameLoop(now) {
     animationFrameId = null;
     if (isDialogShowing()) {
@@ -10066,9 +10115,18 @@
       return;
     }
 
-    gameTime = now * 0.001;
+    const nowWallClock = Date.now();
     const rawDt = (now - lastTime) / 1000;
+    const wallClockDt = (nowWallClock - lastWallClockTime) / 1000;
     lastTime = now;
+    lastWallClockTime = nowWallClock;
+
+    if (rawDt > TIME_GAP_RESET_SECONDS || wallClockDt > TIME_GAP_RESET_SECONDS) {
+      initGame();
+      return;
+    }
+
+    gameTime = now * 0.001;
     updateVisualQuality(rawDt);
     const frameDt = Math.min(Math.max(0, rawDt), 0.05); // Cap delta time on tab switch
     minimapAccumSec += frameDt;
@@ -10192,6 +10250,7 @@
         VICTORY_DISPLAY_DURATION,
         LEADERBOARD_MAX_ENTRIES,
         MAX_NICKNAME_LENGTH,
+        TIME_GAP_RESET_SECONDS,
         ZOMBIE_ATTACK_VARIATIONS,
         HURT_SOUNDS,
         HURT_NOISES,
@@ -10357,6 +10416,15 @@
       getChainRestLength,
       initHammerChainNodes,
       addHammerChainLinkNode,
+      checkTimeGap,
+      setLastTime: (t: number) => {
+        lastTime = t;
+      },
+      getLastTime: () => lastTime,
+      setLastWallClockTime: (t: number) => {
+        lastWallClockTime = t;
+      },
+      getLastWallClockTime: () => lastWallClockTime,
       gameLoop,
     };
   }

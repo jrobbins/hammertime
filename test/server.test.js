@@ -95,6 +95,7 @@ describe('Server Constants & Configuration', () => {
       sampledSounds.add(s);
     }
     assert.equal(sampledSounds.size, 3);
+    assert.equal(srv.TIME_GAP_RESET_SECONDS, 30);
   });
 
   it('defines rare powerup drop probabilities', () => {
@@ -767,6 +768,33 @@ describe('Enemy Production Scaling (>2 Players) & Cooperative Victory Mode', () 
     p.lastActivityTime = Date.now() - 125000; // > 120s idle
     srv.tickServer(0.016);
     assert.equal(srv.players.size, 0);
+  });
+
+  it('resets game world when time gap exceeds 30 seconds', () => {
+    resetTestWorld();
+    assert.equal(srv.TIME_GAP_RESET_SECONDS, 30);
+
+    // 1. tickServer resets world if dt exceeds 30 seconds
+    const e1 = addTestEnemy(2150, 2100, 100);
+    srv.tickServer(35); // dt > 30s
+    assert.equal(srv.getState().roundState, 'playing');
+    assert.equal(srv.enemies.includes(e1), false, 'Old enemy should be wiped on time gap reset');
+    assert.equal(srv.enemies.length, srv.INITIAL_ENEMY_COUNT);
+
+    // 2. checkTimeGap resets world if lastEmptyTime was > 30 seconds ago
+    const oldEnemy = srv.enemies[0];
+    srv.setLastEmptyTime(Date.now() - 35000); // 35 seconds ago
+    const didReset = srv.checkTimeGap(Date.now());
+    assert.equal(didReset, true);
+    assert.equal(srv.enemies.includes(oldEnemy), false, 'Old enemy should be replaced with fresh enemies');
+    assert.equal(srv.getLastEmptyTime(), null);
+
+    // 3. checkTimeGap does NOT reset if under 30 seconds
+    const currentEnemy = srv.enemies[0];
+    srv.setLastEmptyTime(Date.now() - 10000); // 10 seconds ago
+    const didResetRecent = srv.checkTimeGap(Date.now());
+    assert.equal(didResetRecent, false);
+    assert.equal(srv.enemies.includes(currentEnemy), true);
   });
 
   it('emits player_hurt event with random hurt sound when warrior takes contact damage', () => {

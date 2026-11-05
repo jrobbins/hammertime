@@ -313,6 +313,8 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.HORSE_RADIUS, srv.HORSE_RADIUS);
     assert.equal(c.TORTOISE_RADIUS, srv.TORTOISE_RADIUS);
     assert.equal(c.ELEPHANT_RADIUS, srv.ELEPHANT_RADIUS);
+    assert.equal(c.TIME_GAP_RESET_SECONDS, srv.TIME_GAP_RESET_SECONDS);
+    assert.equal(c.TIME_GAP_RESET_SECONDS, 30);
     assert.deepEqual([...c.PICKUP_TYPES], srv.PICKUP_TYPES);
     assert.deepEqual([...c.PICKUP_TYPES], ['link', 'weight', 'health', 'bomb', 'speed', 'flame']);
     assert.equal(c.PICKUP_TYPES.includes('traction'), false);
@@ -2141,5 +2143,50 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     // 4. Ghost expires after duration
     api.updateEffects(1.0);
     assert.equal(api.enemyGhosts.length, 0, 'Ghosts should expire after their duration');
+  });
+
+  it('treats a time gap of more than 30 seconds as a reason to start the game over', () => {
+    const sandbox = loadClientGame();
+    const { api, elements } = sandbox;
+    elements.get('enter-modal').classList.add('hidden');
+    elements.get('game-over-modal').classList.add('hidden');
+    elements.get('victory-modal').classList.add('hidden');
+    api.setState({ isMultiplayer: false, hasEnteredGame: true });
+    assert.equal(api.isDialogShowing(), false);
+
+    // Put game in a distinct state
+    api.enemies[0].hp = 12;
+    api.setState({ kills: 42 });
+
+    // 1. Normal frame interval (e.g. 16ms / rawDt < 30s) does NOT reset the game
+    const now = performance.now();
+    api.setLastTime(now);
+    api.setLastWallClockTime(Date.now());
+    api.gameLoop(now + 16);
+    assert.equal(api.getState().kills, 42);
+    assert.equal(api.enemies[0].hp, 12);
+
+    // 2. Time gap of more than 30 seconds in gameLoop triggers initGame() to start over
+    api.setLastTime(now);
+    api.setLastWallClockTime(Date.now() - 35000);
+    api.gameLoop(now + 35000); // 35 seconds later
+    assert.equal(api.getState().kills, 0, 'Kills should reset to 0');
+    assert.notEqual(api.enemies[0].hp, 12, 'Enemies should be re-initialized');
+
+    // 3. checkTimeGap explicitly restarts game if > 30s passed
+    api.setState({ kills: 15 });
+    api.setLastTime(now);
+    api.setLastWallClockTime(Date.now() - 40000);
+    const didReset = api.checkTimeGap(now + 40000, Date.now());
+    assert.equal(didReset, true);
+    assert.equal(api.getState().kills, 0);
+
+    // 4. checkTimeGap does not restart if within 30s
+    api.setState({ kills: 20 });
+    api.setLastTime(now);
+    api.setLastWallClockTime(Date.now());
+    const didResetRecent = api.checkTimeGap(now + 5000, Date.now() + 5000);
+    assert.equal(didResetRecent, false);
+    assert.equal(api.getState().kills, 20);
   });
 });
