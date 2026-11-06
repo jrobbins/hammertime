@@ -125,11 +125,17 @@
   const BULLDOZER_DURATION = 20.0;
   const BULLDOZER_SPEED_MULT = 0.5;
   const BULLDOZER_TRACTION_MULT = 10.0;
-  const BULLDOZER_RADIUS = 34;
+  const BULLDOZER_SCALE = 1.4;
+  const BULLDOZER_RADIUS = Math.round(34 * BULLDOZER_SCALE); // 48 (40% larger)
 
   const HORSE_RADIUS = 35;
   const TORTOISE_RADIUS = 36;
   const ELEPHANT_RADIUS = 45;
+  const MOTORCYCLE_MOUNT_RADIUS = 30;
+  const MOTORCYCLE_TURN_RATE = 1.2;
+  const MOTORCYCLE_WRECK_DURATION = 5.0;
+  const MOTORCYCLE_WRECK_SCALE = 1.2;
+  const MOTORCYCLE_WRECK_RADIUS = Math.round(21 * MOTORCYCLE_WRECK_SCALE);
   const GHOST_DURATION = 0.65;
 
   const EARTHQUAKE_DURATION = 5.0;
@@ -879,6 +885,293 @@
     }
   }
 
+  /**
+   * Plays a distinct moderate signature sound when a warrior acquires or claims a mount:
+   * - horse: warhorse whinny / brassy fanfare
+   * - tortoise: low resonant stone-shell thrum
+   * - elephant: deep majestic brass trumpet flourish
+   * - motorcycle: revving starter ignition / throttle blip
+   */
+  function playMountClaimSound(mountType: string) {
+    const ctxAudio = ensureAudioContext();
+    if (!ctxAudio) return;
+
+    const now = ctxAudio.currentTime;
+
+    if (mountType === 'horse') {
+      const osc1 = ctxAudio.createOscillator();
+      const osc2 = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      const dur = 0.28;
+
+      osc1.type = 'sawtooth';
+      osc2.type = 'triangle';
+      osc1.frequency.setValueAtTime(320, now);
+      osc1.frequency.linearRampToValueAtTime(580, now + 0.12);
+      osc1.frequency.exponentialRampToValueAtTime(420, now + dur);
+
+      osc2.frequency.setValueAtTime(480, now);
+      osc2.frequency.linearRampToValueAtTime(870, now + 0.12);
+      osc2.frequency.exponentialRampToValueAtTime(630, now + dur);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(0.14, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctxAudio.destination);
+
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + dur + 0.01);
+      osc2.stop(now + dur + 0.01);
+      return { mountType, duration: dur, peakGain: 0.14 };
+    } else if (mountType === 'tortoise') {
+      const osc = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      const dur = 0.35;
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(95, now);
+      osc.frequency.exponentialRampToValueAtTime(48, now + dur);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(0.15, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc.connect(gain);
+      gain.connect(ctxAudio.destination);
+
+      osc.start(now);
+      osc.stop(now + dur + 0.01);
+      return { mountType, duration: dur, peakGain: 0.15 };
+    } else if (mountType === 'elephant') {
+      const osc1 = ctxAudio.createOscillator();
+      const osc2 = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      const dur = 0.42;
+
+      osc1.type = 'sawtooth';
+      osc2.type = 'sine';
+      osc1.frequency.setValueAtTime(170, now);
+      osc1.frequency.linearRampToValueAtTime(320, now + 0.18);
+      osc1.frequency.exponentialRampToValueAtTime(220, now + dur);
+
+      osc2.frequency.setValueAtTime(255, now);
+      osc2.frequency.linearRampToValueAtTime(480, now + 0.18);
+      osc2.frequency.exponentialRampToValueAtTime(330, now + dur);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(0.15, now + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctxAudio.destination);
+
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + dur + 0.01);
+      osc2.stop(now + dur + 0.01);
+      return { mountType, duration: dur, peakGain: 0.15 };
+    } else if (mountType === 'motorcycle') {
+      const osc = ctxAudio.createOscillator();
+      const subOsc = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      const dur = 0.32;
+
+      osc.type = 'sawtooth';
+      osc.frequency.setValueAtTime(75, now);
+      osc.frequency.linearRampToValueAtTime(160, now + 0.12);
+      osc.frequency.exponentialRampToValueAtTime(90, now + dur);
+
+      subOsc.type = 'square';
+      subOsc.frequency.setValueAtTime(38, now);
+      subOsc.frequency.linearRampToValueAtTime(80, now + 0.12);
+      subOsc.frequency.exponentialRampToValueAtTime(45, now + dur);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(0.16, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc.connect(gain);
+      subOsc.connect(gain);
+      gain.connect(ctxAudio.destination);
+
+      osc.start(now);
+      subOsc.start(now);
+      osc.stop(now + dur + 0.01);
+      subOsc.stop(now + dur + 0.01);
+      return { mountType, duration: dur, peakGain: 0.16 };
+    }
+  }
+
+  /**
+   * Plays a rhythmic moderate locomotion sound when the warrior rides a mount while moving:
+   * - horse: galloping hoofbeats ("clop-clop")
+   * - tortoise: heavy, slow deliberate step thuds
+   * - elephant: deep resonant ground stomps
+   * - motorcycle: throaty engine exhaust rumble pulse
+   */
+  function playMountLocomotionSound(mountType: string, speedRatio = 1.0) {
+    const ctxAudio = ensureAudioContext();
+    if (!ctxAudio) return;
+
+    const now = ctxAudio.currentTime;
+    const clampedSpeed = Math.min(2.5, Math.max(0.4, speedRatio));
+
+    if (mountType === 'horse') {
+      const osc = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      const dur = 0.055;
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(175 * clampedSpeed, now);
+      osc.frequency.exponentialRampToValueAtTime(55, now + dur);
+
+      const peakGain = 0.11;
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(peakGain, now + 0.004);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc.connect(gain);
+      gain.connect(ctxAudio.destination);
+
+      osc.start(now);
+      osc.stop(now + dur + 0.005);
+      return { mountType, duration: dur, peakGain };
+    } else if (mountType === 'tortoise') {
+      const osc = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      const dur = 0.085;
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(80, now);
+      osc.frequency.exponentialRampToValueAtTime(32, now + dur);
+
+      const peakGain = 0.12;
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(peakGain, now + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc.connect(gain);
+      gain.connect(ctxAudio.destination);
+
+      osc.start(now);
+      osc.stop(now + dur + 0.005);
+      return { mountType, duration: dur, peakGain };
+    } else if (mountType === 'elephant') {
+      const osc = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      const dur = 0.095;
+
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(95, now);
+      osc.frequency.exponentialRampToValueAtTime(36, now + dur);
+
+      const peakGain = 0.13;
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(peakGain, now + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc.connect(gain);
+      gain.connect(ctxAudio.destination);
+
+      osc.start(now);
+      osc.stop(now + dur + 0.005);
+      return { mountType, duration: dur, peakGain };
+    } else if (mountType === 'motorcycle') {
+      const osc = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      const dur = 0.075;
+
+      osc.type = 'sawtooth';
+      const baseFreq = 70 + Math.min(60, clampedSpeed * 35);
+      osc.frequency.setValueAtTime(baseFreq, now);
+      osc.frequency.linearRampToValueAtTime(baseFreq * 0.85, now + dur);
+
+      const peakGain = 0.10;
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(peakGain, now + 0.006);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc.connect(gain);
+      gain.connect(ctxAudio.destination);
+
+      osc.start(now);
+      osc.stop(now + dur + 0.005);
+      return { mountType, duration: dur, peakGain };
+    }
+  }
+
+  /**
+   * Plays a moderate 2-stroke engine sound for nearby enemy motorcycles with distance attenuation.
+   */
+  function playEnemyMotorcycleEngineSound(distanceVolume = 0.12, speedRatio = 1.0) {
+    const ctxAudio = ensureAudioContext();
+    if (!ctxAudio) return;
+
+    const now = ctxAudio.currentTime;
+    const dur = 0.08;
+    const osc = ctxAudio.createOscillator();
+    const gain = ctxAudio.createGain();
+
+    osc.type = 'sawtooth';
+    const pitch = 95 + Math.min(50, speedRatio * 25);
+    osc.frequency.setValueAtTime(pitch, now);
+    osc.frequency.linearRampToValueAtTime(pitch * 0.9, now + dur);
+
+    const peakGain = Math.min(0.14, Math.max(0.005, distanceVolume));
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(peakGain, now + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+    osc.connect(gain);
+    gain.connect(ctxAudio.destination);
+
+    osc.start(now);
+    osc.stop(now + dur + 0.005);
+    return { duration: dur, peakGain };
+  }
+
+  /**
+   * Plays a screeching skid and metal scrape sound when a motorcycle crashes or is dismounted.
+   */
+  function playMotorcycleCrashSound() {
+    const ctxAudio = ensureAudioContext();
+    if (!ctxAudio) return;
+
+    const now = ctxAudio.currentTime;
+    const dur = 0.26;
+    const osc = ctxAudio.createOscillator();
+    const noiseOsc = ctxAudio.createOscillator();
+    const gain = ctxAudio.createGain();
+
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(460, now);
+    osc.frequency.exponentialRampToValueAtTime(110, now + dur);
+
+    noiseOsc.type = 'square';
+    noiseOsc.frequency.setValueAtTime(320, now);
+    noiseOsc.frequency.exponentialRampToValueAtTime(75, now + dur);
+
+    const peakGain = 0.15;
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(peakGain, now + 0.015);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+    osc.connect(gain);
+    noiseOsc.connect(gain);
+    gain.connect(ctxAudio.destination);
+
+    osc.start(now);
+    noiseOsc.start(now);
+    osc.stop(now + dur + 0.01);
+    noiseOsc.stop(now + dur + 0.01);
+    return { duration: dur, peakGain };
+  }
+
   // --- Input State ---
   let hasEnteredGame = false;
   let lastUserActivityTime = performance.now();
@@ -1222,6 +1515,7 @@
   const floatingTexts = [];
   const shockwaves = [];
   const enemyGhosts = [];
+  const laidDownMotorcycles: LaidDownMotorcycle[] = [];
   const activeClotheslines = [];
   const clotheslineCooldowns = new Map();
 
@@ -1235,6 +1529,8 @@
   let serverRoundRestartTimer = 0;
   let localObserverTimer = 0;
   let localVictoryTimer = 0;
+  let mountSoundTimer = 0;
+  let enemyMotorcycleSoundTimer = 0;
   let roundState = 'playing'; // 'playing' | 'victory' | 'defeat'
   let teamKills = 0;
   let victoryInfo = null;
@@ -2083,6 +2379,15 @@
         playCollectLinkSound();
         addFloatingText(ev.playerX, ev.playerY, ev.label, ev.color || '#f6e05e', 1.12);
         addParticles(ev.x, ev.y, ev.color || '#f6e05e', 10, 30, 120, 3);
+        if (ev.label && ev.label.includes('WARHORSE') && (!ev.playerId || ev.playerId === localPlayerId)) {
+          playMountClaimSound('horse');
+        } else if (ev.label && ev.label.includes('GIANT TORTOISE') && (!ev.playerId || ev.playerId === localPlayerId)) {
+          playMountClaimSound('tortoise');
+        } else if (ev.label && ev.label.includes('WAR ELEPHANT') && (!ev.playerId || ev.playerId === localPlayerId)) {
+          playMountClaimSound('elephant');
+        } else if (ev.label && ev.label.includes('MOTORCYCLE') && (!ev.playerId || ev.playerId === localPlayerId)) {
+          playMountClaimSound('motorcycle');
+        }
         if (ev.label && ev.label.includes('EARTHQUAKE')) {
           earthquakeTimer = EARTHQUAKE_DURATION;
           localKnockdownTimer = EARTHQUAKE_DURATION + ZOMBIE_KNOCKDOWN_RECOVERY;
@@ -2201,6 +2506,38 @@
         }
       } else if (ev.type === 'clothesline_start') {
         addParticles((ev.x1 + ev.x2) * 0.5, (ev.y1 + ev.y2) * 0.5, '#38bdf8', 16, 80, 260, 2.5);
+      } else if (ev.type === 'motorcycle_wreck') {
+        laidDownMotorcycles.push({
+          id: ev.id,
+          x: ev.x,
+          y: ev.y,
+          angle: ev.angle || 0,
+          radius: ev.radius || 21,
+          timer: ev.duration || MOTORCYCLE_WRECK_DURATION,
+          duration: ev.duration || MOTORCYCLE_WRECK_DURATION,
+        });
+        addParticles(ev.x, ev.y, '#e53e3e', 8, 30, 110, 2.5);
+        addParticles(ev.x, ev.y, '#cbd5e0', 10, 40, 140, 2.0);
+        addParticles(ev.x, ev.y, '#1a202c', 6, 20, 80, 2.0);
+        playMotorcycleCrashSound();
+      } else if (ev.type === 'claim_motorcycle') {
+        const wreckIdx = laidDownMotorcycles.findIndex((w) => w.id === ev.id);
+        if (wreckIdx !== -1) {
+          laidDownMotorcycles.splice(wreckIdx, 1);
+        } else if (laidDownMotorcycles.length > 0) {
+          let closestIdx = 0;
+          let closestD = Infinity;
+          for (let k = 0; k < laidDownMotorcycles.length; k++) {
+            const d = Math.hypot(laidDownMotorcycles[k].x - ev.x, laidDownMotorcycles[k].y - ev.y);
+            if (d < closestD) {
+              closestD = d;
+              closestIdx = k;
+            }
+          }
+          laidDownMotorcycles.splice(closestIdx, 1);
+        }
+        addParticles(ev.x, ev.y, '#ecc94b', 24, 45, 180, 3.8);
+        playMountClaimSound('motorcycle');
       } else if (ev.type === 'floating_text') {
         if (!isWorldPointVisible(ev.x, ev.y, cullMargin)) continue;
         addFloatingText(ev.x, ev.y, ev.text, ev.color || '#fff', ev.scale || 1);
@@ -3045,8 +3382,48 @@
     return ghost;
   }
 
+  let nextLocalMotorcycleWreckId = 1;
+
+  function spawnMotorcycleWreck(x: number, y: number, angle: number, radius = MOTORCYCLE_WRECK_RADIUS) {
+    const wreck = {
+      id: nextLocalMotorcycleWreckId++,
+      x: Math.round(x),
+      y: Math.round(y),
+      angle: +(angle || 0).toFixed(2),
+      radius,
+      timer: MOTORCYCLE_WRECK_DURATION,
+      duration: MOTORCYCLE_WRECK_DURATION,
+    };
+    laidDownMotorcycles.push(wreck);
+    addParticles(x, y, '#e53e3e', 8, 30, 110, 2.5);
+    addParticles(x, y, '#cbd5e0', 10, 40, 140, 2.0);
+    addParticles(x, y, '#1a202c', 6, 20, 80, 2.0);
+    playMotorcycleCrashSound();
+    return wreck;
+  }
+
+  function checkMotorcycleDismount(e: any): boolean {
+    if (!e || e.variant !== 'motorcycle') return false;
+    if (e.hp <= 0) return false;
+    if (e.hp >= e.maxHp * 0.5) return false;
+
+    const wreckRadius = Math.round((e.radius || 21) * MOTORCYCLE_WRECK_SCALE);
+    e.variant = 'walker';
+    e.moveForce = 210;
+    e.radius = 19;
+    e.mass = 1.45;
+    e.turnRate = null;
+    e.coatColor = '#35302b';
+
+    spawnMotorcycleWreck(e.x, e.y, e.angle, wreckRadius);
+
+    addFloatingText(e.x, e.y - e.radius - 12, 'CRASH!', '#fc8181', 1.2);
+    return true;
+  }
+
   function checkEnemyLimbLoss(e: any, hitVx: number = 0, hitVy: number = 0) {
     if (!e) return;
+    checkMotorcycleDismount(e);
     if (!e.lostLimbs) e.lostLimbs = [];
     if (e.hp <= 0) return;
 
@@ -3122,6 +3499,16 @@
     }
   }
 
+  function updateLaidDownMotorcycles(dt: number) {
+    for (let i = laidDownMotorcycles.length - 1; i >= 0; i--) {
+      const m = laidDownMotorcycles[i];
+      m.timer -= dt;
+      if (m.timer <= 0) {
+        laidDownMotorcycles.splice(i, 1);
+      }
+    }
+  }
+
   function defeatEnemy(
     index: number,
     killerHammer: any = null,
@@ -3130,6 +3517,9 @@
   ) {
     const e = enemies[index];
     if (!e) return;
+    if (e.variant === 'motorcycle') {
+      spawnMotorcycleWreck(e.x, e.y, e.angle || 0, Math.round((e.radius || 21) * MOTORCYCLE_WRECK_SCALE));
+    }
     kills++;
     teamKills = kills;
     recordLocalLeaderboardScore(warrior.name, kills, warrior.color);
@@ -4021,6 +4411,8 @@
     roundState = 'playing';
     localObserverTimer = 0;
     localVictoryTimer = 0;
+    mountSoundTimer = 0;
+    enemyMotorcycleSoundTimer = 0;
     teamKills = 0;
     victoryInfo = null;
     minimapAccumSec = MINIMAP_UPDATE_INTERVAL;
@@ -4192,6 +4584,8 @@
       ? 0.25
       : warrior.mountType === 'elephant'
       ? 1.0
+      : warrior.mountType === 'motorcycle'
+      ? 2.5
       : 1.0;
     const mountTractionMult = isBulldozer
       ? BULLDOZER_TRACTION_MULT
@@ -4201,6 +4595,8 @@
       ? 10.0
       : warrior.mountType === 'horse'
       ? 5.0
+      : warrior.mountType === 'motorcycle'
+      ? 4.0
       : 1.0;
     const totalSpeedMult = warrior.speedMultiplier * mountSpeedMult;
     const totalTractionMult = warrior.tractionMultiplier * mountTractionMult;
@@ -4212,13 +4608,16 @@
     const mdy = targetWorldY - warrior.y;
     const distToMouse = Math.hypot(mdx, mdy);
 
+    const isMotorcycle = warrior.mountType === 'motorcycle';
+    const effectiveTurnRate = isMotorcycle ? MOTORCYCLE_TURN_RATE : warrior.turnSpeed * 6.0;
+
     if (distToMouse > 4) {
       const targetAngle = Math.atan2(mdy, mdx);
       const angleDiff = Math.atan2(
         Math.sin(targetAngle - warrior.angle),
         Math.cos(targetAngle - warrior.angle)
       );
-      const maxTurn = warrior.turnSpeed * 6.0 * dt;
+      const maxTurn = effectiveTurnRate * dt;
       if (Math.abs(angleDiff) <= maxTurn) {
         warrior.angle = targetAngle;
       } else {
@@ -4232,16 +4631,22 @@
         Math.sin(targetAngle - warrior.angle),
         Math.cos(targetAngle - warrior.angle)
       );
-      const alignment = Math.max(0, Math.cos(currentAngleDiff));
+      // On a motorcycle, enforce a wide turning radius: maintain forward drive through arcs
+      // rather than killing throttle or applying reverse braking when angled away from cursor
+      const alignment = isMotorcycle
+        ? Math.max(0.6, Math.cos(currentAngleDiff))
+        : Math.max(0, Math.cos(currentAngleDiff));
 
-      // Actively brake any reverse momentum moving away from target mouse
-      const uTx = mdx / distToMouse;
-      const uTy = mdy / distToMouse;
-      const velAlongTarget = warrior.vx * uTx + warrior.vy * uTy;
-      if (velAlongTarget < 0) {
-        const brakeAccel = Math.min(-velAlongTarget / dt, warrior.walkThrust * 2.5);
-        warrior.vx += brakeAccel * uTx * dt;
-        warrior.vy += brakeAccel * uTy * dt;
+      if (!isMotorcycle) {
+        // Actively brake any reverse momentum moving away from target mouse
+        const uTx = mdx / distToMouse;
+        const uTy = mdy / distToMouse;
+        const velAlongTarget = warrior.vx * uTx + warrior.vy * uTy;
+        if (velAlongTarget < 0) {
+          const brakeAccel = Math.min(-velAlongTarget / dt, warrior.walkThrust * 2.5);
+          warrior.vx += brakeAccel * uTx * dt;
+          warrior.vy += brakeAccel * uTy * dt;
+        }
       }
 
       warrior.strideCharge = Math.min(1, warrior.strideCharge + dt * 1.4);
@@ -4913,6 +5318,8 @@
             ? TORTOISE_RADIUS
             : warrior.mountType === 'horse'
             ? HORSE_RADIUS
+            : warrior.mountType === 'motorcycle'
+            ? MOTORCYCLE_MOUNT_RADIUS
             : 20;
       } else {
         warrior.radius = BULLDOZER_RADIUS;
@@ -5288,33 +5695,84 @@
           e.y + e.radius >= h.chainMinY &&
           e.y - e.radius <= h.chainMaxY
         ) {
-          let closestNodeIdx = -1;
-          let minNodeDistSq = minChainEnemyDist * minChainEnemyDist;
-          for (let cIdx = 1; cIdx < links; cIdx++) {
-            const node = nodes[cIdx];
-            const ndx = e.x - node.x;
-            const ndy = e.y - node.y;
-            const dSq = ndx * ndx + ndy * ndy;
-            if (dSq < minNodeDistSq) {
-              minNodeDistSq = dSq;
-              closestNodeIdx = cIdx;
+          let closestSegIdx = -1;
+          let closestT = 0;
+          let closestDistSq = minChainEnemyDist * minChainEnemyDist;
+          let closestPointX = 0;
+          let closestPointY = 0;
+
+          for (let sIdx = 0; sIdx < links; sIdx++) {
+            const nA = nodes[sIdx];
+            const nB = nodes[sIdx + 1];
+            if (!nA || !nB) continue;
+            const segDx = nB.x - nA.x;
+            const segDy = nB.y - nA.y;
+            const segLenSq = segDx * segDx + segDy * segDy;
+            let t = 0;
+            if (segLenSq > 1e-8) {
+              t = ((e.x - nA.x) * segDx + (e.y - nA.y) * segDy) / segLenSq;
+              if (t < 0) t = 0;
+              else if (t > 1) t = 1;
+            }
+            const px = nA.x + t * segDx;
+            const py = nA.y + t * segDy;
+            const edx = e.x - px;
+            const edy = e.y - py;
+            const dSq = edx * edx + edy * edy;
+            if (dSq < closestDistSq) {
+              closestDistSq = dSq;
+              closestSegIdx = sIdx;
+              closestT = t;
+              closestPointX = px;
+              closestPointY = py;
             }
           }
 
-          if (closestNodeIdx !== -1 && minNodeDistSq > 1e-8) {
-            const minNodeDist = Math.sqrt(minNodeDistSq);
-            const node = nodes[closestNodeIdx];
-            const cnx = (e.x - node.x) / minNodeDist;
-            const cny = (e.y - node.y) / minNodeDist;
-            const cOverlap = minChainEnemyDist - minNodeDist;
+          if (closestSegIdx !== -1) {
+            const minChainDist = Math.sqrt(closestDistSq);
+            let cnx = 1;
+            let cny = 0;
+            if (minChainDist > 1e-4) {
+              cnx = (e.x - closestPointX) / minChainDist;
+              cny = (e.y - closestPointY) / minChainDist;
+            } else {
+              const nA = nodes[closestSegIdx];
+              const nB = nodes[closestSegIdx + 1];
+              const sdx = nB.x - nA.x;
+              const sdy = nB.y - nA.y;
+              const slen = Math.hypot(sdx, sdy);
+              if (slen > 1e-4) {
+                cnx = -sdy / slen;
+                cny = sdx / slen;
+              }
+            }
+            const cOverlap = minChainEnemyDist - minChainDist;
+            const nA = nodes[closestSegIdx];
+            const nB = nodes[closestSegIdx + 1];
+            const t = closestT;
 
-            node.x -= cnx * cOverlap * 0.82;
-            node.y -= cny * cOverlap * 0.82;
+            if (closestSegIdx === 0) {
+              nB.x -= cnx * cOverlap * 0.82;
+              nB.y -= cny * cOverlap * 0.82;
+            } else if (closestSegIdx + 1 === links) {
+              nA.x -= cnx * cOverlap * 0.82 * (1 - t);
+              nA.y -= cny * cOverlap * 0.82 * (1 - t);
+              nB.x -= cnx * cOverlap * 0.82 * t;
+              nB.y -= cny * cOverlap * 0.82 * t;
+            } else {
+              nA.x -= cnx * cOverlap * 0.82 * (1 - t);
+              nA.y -= cny * cOverlap * 0.82 * (1 - t);
+              nB.x -= cnx * cOverlap * 0.82 * t;
+              nB.y -= cny * cOverlap * 0.82 * t;
+            }
+
             e.x += cnx * cOverlap * 0.18;
             e.y += cny * cOverlap * 0.18;
 
-            const crvx = node.vx - e.vx;
-            const crvy = node.vy - e.vy;
+            const chainVx = nA.vx + (nB.vx - nA.vx) * t;
+            const chainVy = nA.vy + (nB.vy - nA.vy) * t;
+            const crvx = chainVx - e.vx;
+            const crvy = chainVy - e.vy;
             const cVelAlongNormal = crvx * cnx + crvy * cny;
 
             if (cVelAlongNormal > 0) {
@@ -5326,18 +5784,21 @@
               e.vx += (chainImpulse / e.mass) * cnx;
               e.vy += (chainImpulse / e.mass) * cny;
 
-              node.vx -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cnx;
-              node.vy -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cny;
-              if (closestNodeIdx > 1) {
-                nodes[closestNodeIdx - 1].vx -= cVelAlongNormal * 0.45 * cnx;
-                nodes[closestNodeIdx - 1].vy -= cVelAlongNormal * 0.45 * cny;
+              const deltaV = cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION);
+              nA.vx -= deltaV * (1 - t) * cnx;
+              nA.vy -= deltaV * (1 - t) * cny;
+              nB.vx -= deltaV * t * cnx;
+              nB.vy -= deltaV * t * cny;
+              if (closestSegIdx > 0) {
+                nodes[closestSegIdx - 1].vx -= deltaV * 0.45 * (1 - t) * cnx;
+                nodes[closestSegIdx - 1].vy -= deltaV * 0.45 * (1 - t) * cny;
               }
-              if (closestNodeIdx + 1 < links) {
-                nodes[closestNodeIdx + 1].vx -= cVelAlongNormal * 0.45 * cnx;
-                nodes[closestNodeIdx + 1].vy -= cVelAlongNormal * 0.45 * cny;
+              if (closestSegIdx + 2 <= links) {
+                nodes[closestSegIdx + 2].vx -= deltaV * 0.45 * t * cnx;
+                nodes[closestSegIdx + 2].vy -= deltaV * 0.45 * t * cny;
               }
 
-              const leverRatio = closestNodeIdx / links;
+              const leverRatio = Math.max(0, Math.min(1, (closestSegIdx + t) / links));
               h.vx -= ((chainImpulse * leverRatio) / h.mass) * cnx;
               h.vy -= ((chainImpulse * leverRatio) / h.mass) * cny;
               const warriorChainRecoil = Math.min(
@@ -5366,7 +5827,7 @@
                   triggerHitStop(HIT_STOP_DURATION, cnx, cny, chainDamage);
                 }
 
-                addParticles(node.x, node.y, '#cbd5e0', 5, 40, 160, 2.5);
+                addParticles(closestPointX, closestPointY, '#cbd5e0', 5, 40, 160, 2.5);
                 addFloatingText(
                   e.x,
                   e.y - e.radius - 6,
@@ -5444,6 +5905,8 @@
                   ? 'ELEPHANT LOST!'
                   : warrior.mountType === 'tortoise'
                   ? 'TORTOISE LOST!'
+                  : warrior.mountType === 'motorcycle'
+                  ? 'MOTORCYCLE LOST!'
                   : 'HORSE LOST!';
               warrior.mountType = null;
               warrior.mountHp = 0;
@@ -5625,6 +6088,7 @@
             1.18
           );
           addParticles(c.x, c.y, '#f6ad55', 16, 40, 150, 3.6);
+          playMountClaimSound('horse');
         } else if (pType === 'tortoise') {
           warrior.mountType = 'tortoise';
           warrior.mountMaxHp = Math.max(1, Math.round(warrior.hp));
@@ -5638,6 +6102,7 @@
             1.2
           );
           addParticles(c.x, c.y, '#68d391', 18, 40, 155, 3.6);
+          playMountClaimSound('tortoise');
         } else if (pType === 'elephant') {
           warrior.mountType = 'elephant';
           warrior.mountMaxHp = Math.max(250, Math.round(warrior.maxHp * 2.5));
@@ -5651,6 +6116,7 @@
             1.22
           );
           addParticles(c.x, c.y, '#90cdf4', 18, 45, 165, 3.8);
+          playMountClaimSound('elephant');
         } else if (pType === 'earthquake') {
           earthquakeTimer = EARTHQUAKE_DURATION;
           localKnockdownTimer = EARTHQUAKE_DURATION + ZOMBIE_KNOCKDOWN_RECOVERY;
@@ -5893,6 +6359,33 @@
     } else {
       for (let i = 0; i < blackCircles.length; i++) {
         blackCircles[i].pulse += dt * 4;
+      }
+    }
+
+    // Claim laid-down motorcycle if warrior has no mount
+    if (!warrior.mountType && (warrior.bulldozerTimer || 0) <= 0) {
+      for (let mIdx = laidDownMotorcycles.length - 1; mIdx >= 0; mIdx--) {
+        const m = laidDownMotorcycles[mIdx];
+        const mdx = warrior.x - m.x;
+        const mdy = warrior.y - m.y;
+        const claimDist = warrior.radius + m.radius;
+        if (mdx * mdx + mdy * mdy <= claimDist * claimDist) {
+          warrior.mountType = 'motorcycle';
+          warrior.mountMaxHp = Math.max(1, Math.round(warrior.hp));
+          warrior.mountHp = warrior.mountMaxHp;
+          warrior.radius = MOTORCYCLE_MOUNT_RADIUS;
+          addFloatingText(
+            warrior.x,
+            warrior.y - warrior.radius - 22,
+            'MOTORCYCLE MOUNTED!',
+            '#f6ad55',
+            1.25
+          );
+          addParticles(m.x, m.y, '#ecc94b', 24, 45, 180, 3.8);
+          playMountClaimSound('motorcycle');
+          laidDownMotorcycles.splice(mIdx, 1);
+          break;
+        }
       }
     }
 
@@ -6185,6 +6678,64 @@
 
     // Update enemy ghosts
     updateGhosts(dt);
+    updateLaidDownMotorcycles(dt);
+
+    // Warrior Mount locomotion sound
+    const isMounted =
+      warrior.alive &&
+      warrior.mountType &&
+      (warrior.mountHp || 0) > 0 &&
+      (warrior.bulldozerTimer || 0) <= 0;
+    if (isMounted) {
+      const warriorSpeed = Math.hypot(warrior.vx, warrior.vy);
+      if (warriorSpeed > 20) {
+        mountSoundTimer += dt;
+        let stepInterval = 0.24;
+        if (warrior.mountType === 'horse') {
+          stepInterval = Math.max(0.16, 0.24 / Math.max(0.5, warriorSpeed / 120));
+        } else if (warrior.mountType === 'tortoise') {
+          stepInterval = 0.44;
+        } else if (warrior.mountType === 'elephant') {
+          stepInterval = 0.36;
+        } else if (warrior.mountType === 'motorcycle') {
+          stepInterval = 0.12;
+        }
+
+        if (mountSoundTimer >= stepInterval) {
+          mountSoundTimer = 0;
+          playMountLocomotionSound(warrior.mountType, warriorSpeed / 100);
+        }
+      } else {
+        mountSoundTimer = 0;
+      }
+    } else {
+      mountSoundTimer = 0;
+    }
+
+    // Enemy motorcycle engine audio loop
+    enemyMotorcycleSoundTimer += dt;
+    if (enemyMotorcycleSoundTimer >= 0.14) {
+      let closestMotoDist = Infinity;
+      let motoSpeed = 0;
+      for (let i = 0; i < enemies.length; i++) {
+        const e = enemies[i];
+        if (e.variant === 'motorcycle' && (e.hp || 0) > 0) {
+          const d = Math.hypot(e.x - warrior.x, e.y - warrior.y);
+          if (d < closestMotoDist) {
+            closestMotoDist = d;
+            motoSpeed = Math.hypot(e.vx || 0, e.vy || 0);
+          }
+        }
+      }
+      if (closestMotoDist < 1200) {
+        enemyMotorcycleSoundTimer = 0;
+        const distRatio = Math.max(0, 1 - closestMotoDist / 1200);
+        const distVol = distRatio * 0.13;
+        playEnemyMotorcycleEngineSound(distVol, motoSpeed / 300);
+      } else {
+        enemyMotorcycleSoundTimer = 0.14;
+      }
+    }
 
     // Standalone enemy spawning when not connected to server
     if (!isMultiplayer && warrior.alive && roundState === 'playing') {
@@ -6262,6 +6813,8 @@
             ? 'WAR ELEPHANT HP'
             : warrior.mountType === 'tortoise'
             ? 'GIANT TORTOISE HP'
+            : warrior.mountType === 'motorcycle'
+            ? 'MOTORCYCLE HP'
             : 'WARHORSE HP'
         );
         setTextIfChanged(mountHpTextEl, `${Math.ceil(warrior.mountHp)} / ${mountMax}`);
@@ -6273,6 +6826,8 @@
             ? 'linear-gradient(90deg, #4299e1, #90cdf4)'
             : warrior.mountType === 'tortoise'
             ? 'linear-gradient(90deg, #2f855a, #68d391)'
+            : warrior.mountType === 'motorcycle'
+            ? 'linear-gradient(90deg, #e53e3e, #f6ad55)'
             : 'linear-gradient(90deg, #dd6b20, #f6ad55)'
         );
       } else {
@@ -6873,6 +7428,19 @@
       drawList.push({ y: g.y, type: 'ghost', ref: g });
     }
 
+    for (let i = 0; i < laidDownMotorcycles.length; i++) {
+      const m = laidDownMotorcycles[i];
+      if (
+        m.x + m.radius < viewLeft ||
+        m.x - m.radius > viewRight ||
+        m.y + m.radius < viewTop ||
+        m.y - m.radius > viewBottom
+      ) {
+        continue;
+      }
+      drawList.push({ y: m.y, type: 'motorcycle_wreck', ref: m });
+    }
+
     if (warrior.alive) {
       drawList.push({ y: warrior.y, type: 'warrior', ref: warrior, isLocal: true });
       for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
@@ -6909,6 +7477,8 @@
         drawEnemy(item.ref);
       } else if (item.type === 'ghost') {
         drawGhost(item.ref);
+      } else if (item.type === 'motorcycle_wreck') {
+        drawLaidDownMotorcycle(item.ref);
       } else if (item.type === 'warrior') {
         drawWarrior(item.ref, item.isLocal);
       } else if (item.type === 'hammer') {
@@ -7716,8 +8286,9 @@
     const isHorse = !isBulldozer && w.mountType === 'horse' && (w.mountHp || 0) > 0;
     const isTortoise = !isBulldozer && w.mountType === 'tortoise' && (w.mountHp || 0) > 0;
     const isElephant = !isBulldozer && w.mountType === 'elephant' && (w.mountHp || 0) > 0;
-    const isMount = isHorse || isTortoise || isElephant;
-    const mountLift = isElephant ? 34 : isHorse ? 20 : isTortoise ? 18 : 0;
+    const isMotorcycle = !isBulldozer && w.mountType === 'motorcycle' && (w.mountHp || 0) > 0;
+    const isMount = isHorse || isTortoise || isElephant || isMotorcycle;
+    const mountLift = isElephant ? 34 : isHorse ? 20 : isTortoise ? 18 : isMotorcycle ? 13 : 0;
     const radius =
       w.radius ||
       (isBulldozer
@@ -7728,6 +8299,8 @@
         ? TORTOISE_RADIUS
         : isHorse
         ? HORSE_RADIUS
+        : isMotorcycle
+        ? MOTORCYCLE_MOUNT_RADIUS
         : 20);
 
     ctx.save();
@@ -7748,6 +8321,8 @@
           ? 1.32
           : isHorse
           ? 1.25
+          : isMotorcycle
+          ? 1.30
           : 1.12),
       radius *
         TILT_Y *
@@ -7759,15 +8334,27 @@
           ? 1.12
           : isHorse
           ? 1.05
+          : isMotorcycle
+          ? 0.95
           : 0.95),
-      0,
+      isMotorcycle ? Math.atan2(dirY * TILT_Y, dirX) : 0,
       0,
       Math.PI * 2
     );
     ctx.fill();
 
     // Facing direction ring / arrow on the turf around the warrior's feet
-    const ringDist = isBulldozer ? 40 : isElephant ? 48 : isTortoise ? 39 : isHorse ? 35 : 16;
+    const ringDist = isBulldozer
+      ? Math.round(40 * BULLDOZER_SCALE)
+      : isElephant
+      ? 48
+      : isTortoise
+      ? 39
+      : isHorse
+      ? 35
+      : isMotorcycle
+      ? 32
+      : 16;
     ctx.strokeStyle = isLocal ? 'rgba(236, 201, 75, 0.55)' : 'rgba(104, 211, 145, 0.45)';
     ctx.lineWidth = 2;
     ctx.beginPath();
@@ -7783,12 +8370,15 @@
     ctx.fill();
     ctx.stroke();
 
-    // 1a. If transformed into a Bulldozer, render the 2.5D Heavy Caterpillar Bulldozer
+    // 1a. If transformed into a Bulldozer, render the 2.5D Heavy Caterpillar Bulldozer (scaled 40% larger)
     if (isBulldozer) {
       gameTime = performance.now() * 0.001;
       const nowSecDozer = gameTime;
       const rumble = Math.sin(gameTime * 38) * 1.1;
       const bodyAngle = Math.atan2(dirY * TILT_Y, dirX);
+
+      ctx.save();
+      ctx.scale(BULLDOZER_SCALE, BULLDOZER_SCALE);
 
       const drawDozerTrack = (sideSign) => {
         const tx = rightX * sideSign * 19;
@@ -7975,8 +8565,10 @@
         drawDozerBlade();
       }
 
+      ctx.restore(); // Restore BULLDOZER_SCALE
+
       // Floating Name Tag & Bulldozer Countdown Bar
-      const labelBaseY = -52 + rumble;
+      const labelBaseY = Math.round(-52 * BULLDOZER_SCALE) + rumble;
       ctx.font = '700 11px "Inter", sans-serif';
       ctx.textAlign = 'center';
       ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
@@ -7984,7 +8576,7 @@
       ctx.fillStyle = '#f6e05e';
       ctx.fillText(isLocal ? `${w.name} (BULLDOZER)` : `${w.name || 'Warrior'} (DOZER)`, 0, labelBaseY);
 
-      const bw = 44;
+      const bw = Math.round(44 * BULLDOZER_SCALE);
       const bh = 4;
       const barY = labelBaseY + 6;
       ctx.fillStyle = 'rgba(0, 0, 0, 0.78)';
@@ -7992,7 +8584,7 @@
       ctx.fillStyle = '#ecc94b';
       ctx.fillRect(-bw / 2, barY, bw * Math.max(0, Math.min(1, w.bulldozerTimer / BULLDOZER_DURATION)), bh);
 
-      ctx.restore();
+      ctx.restore(); // Restore warrior translation
       return;
     }
 
@@ -8188,6 +8780,126 @@
           trunkEndY
         );
         ctx.stroke();
+      } else if (isMotorcycle) {
+        // High-Speed Chopper Front Assembly:
+        // Telescopic Chrome Front Forks, Upright Front Tire, Mudguard, Chrome Handlebars, and Glowing Headlight Beam
+        const frontDist = 16;
+        const frontAxleX = dirX * frontDist;
+        const frontAxleY = dirY * frontDist * TILT_Y;
+        const stemX = dirX * 8;
+        const stemY = dirY * 8 * TILT_Y - 9 - bob * 0.3;
+        const wheelR = 7.8;
+        const beamAngle = Math.atan2(dirY * TILT_Y, dirX);
+
+        // 1. Forward Light Beam projecting on the ground ahead
+        const beamDist = 55;
+        const beamSpread = 0.48;
+        const lightGrad = ctx.createRadialGradient(
+          frontAxleX,
+          frontAxleY - 6,
+          3,
+          frontAxleX + dirX * beamDist * 0.6,
+          frontAxleY + dirY * beamDist * 0.6 * TILT_Y - 3,
+          beamDist
+        );
+        lightGrad.addColorStop(0, 'rgba(254, 240, 138, 0.42)');
+        lightGrad.addColorStop(0.5, 'rgba(250, 204, 21, 0.18)');
+        lightGrad.addColorStop(1, 'rgba(250, 204, 21, 0)');
+        ctx.fillStyle = lightGrad;
+        ctx.beginPath();
+        ctx.moveTo(frontAxleX, frontAxleY - 6);
+        ctx.arc(
+          frontAxleX,
+          frontAxleY - 6,
+          beamDist,
+          beamAngle - beamSpread,
+          beamAngle + beamSpread
+        );
+        ctx.closePath();
+        ctx.fill();
+
+        // 2. Twin Telescopic Chrome Fork Stanchions from front axle to triple-tree stem
+        ctx.strokeStyle = '#cbd5e0';
+        ctx.lineWidth = 2.2;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        ctx.moveTo(frontAxleX - rightX * 3, frontAxleY - rightY * 3 * TILT_Y - 5);
+        ctx.lineTo(stemX - rightX * 2.5, stemY);
+        ctx.moveTo(frontAxleX + rightX * 3, frontAxleY + rightY * 3 * TILT_Y - 5);
+        ctx.lineTo(stemX + rightX * 2.5, stemY);
+        ctx.stroke();
+
+        // Chrome Front Mudguard / Fender over front wheel
+        ctx.strokeStyle = '#718096';
+        ctx.lineWidth = 2.8;
+        ctx.beginPath();
+        ctx.ellipse(
+          frontAxleX,
+          frontAxleY - 6,
+          wheelR * 0.95,
+          wheelR * 0.55 * TILT_Y,
+          beamAngle,
+          -0.7,
+          0.7
+        );
+        ctx.stroke();
+
+        // 3. Upright 2.5D Front Wheel & Tire
+        ctx.fillStyle = '#171923';
+        ctx.beginPath();
+        ctx.ellipse(
+          frontAxleX,
+          frontAxleY - 5,
+          wheelR,
+          wheelR * 0.46 * TILT_Y,
+          beamAngle,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+        ctx.strokeStyle = '#4a5568';
+        ctx.lineWidth = 1.8;
+        ctx.stroke();
+
+        // Chrome Wheel Hub
+        ctx.fillStyle = '#cbd5e0';
+        ctx.beginPath();
+        ctx.arc(frontAxleX, frontAxleY - 5, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 4. Wide Chrome Handlebars across the steering stem
+        const barW = 10.5;
+        const leftGripX = stemX - rightX * barW;
+        const leftGripY = stemY - rightY * barW * TILT_Y - 1.5;
+        const rightGripX = stemX + rightX * barW;
+        const rightGripY = stemY + rightY * barW * TILT_Y - 1.5;
+
+        ctx.strokeStyle = '#e2e8f0';
+        ctx.lineWidth = 2.6;
+        ctx.beginPath();
+        ctx.moveTo(leftGripX, leftGripY);
+        ctx.lineTo(stemX, stemY);
+        ctx.lineTo(rightGripX, rightGripY);
+        ctx.stroke();
+
+        // Black Rubber Handgrips
+        ctx.fillStyle = '#1a202c';
+        ctx.beginPath();
+        ctx.ellipse(leftGripX, leftGripY, 2.0, 2.8 * TILT_Y, beamAngle, 0, Math.PI * 2);
+        ctx.ellipse(rightGripX, rightGripY, 2.0, 2.8 * TILT_Y, beamAngle, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 5. Bright Chrome Headlight with luminous bulb
+        const hlX = frontAxleX * 0.85 + dirX * 2.5;
+        const hlY = frontAxleY * 0.85 + dirY * 2.5 * TILT_Y - 9 - bob * 0.2;
+        ctx.fillStyle = '#a0aec0';
+        ctx.beginPath();
+        ctx.arc(hlX, hlY, 3.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#fef08a';
+        ctx.beginPath();
+        ctx.arc(hlX + dirX * 1.2, hlY + dirY * 1.2 * TILT_Y, 2.4, 0, Math.PI * 2);
+        ctx.fill();
       }
     };
 
@@ -8383,6 +9095,149 @@
       ctx.ellipse(0, -24 - bob * 0.6, 18, 13, bodyAngle, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
+    } else if (isMotorcycle) {
+      const bikeAngle = Math.atan2(dirY * TILT_Y, dirX);
+      const rearDist = 14;
+      const rearAxleX = -dirX * rearDist;
+      const rearAxleY = -dirY * rearDist * TILT_Y;
+      const wheelR = 7.8;
+
+      // 1. Dual Chrome Exhaust Pipes extending past rear tire
+      const ex1X = rearAxleX - rightX * 5;
+      const ex1Y = rearAxleY - rightY * 5 * TILT_Y - 3;
+      const ex2X = rearAxleX + rightX * 5;
+      const ex2Y = rearAxleY + rightY * 5 * TILT_Y - 3;
+
+      ctx.strokeStyle = '#cbd5e0';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.moveTo(-dirX * 3 - rightX * 4, -dirY * 3 * TILT_Y - rightY * 4 * TILT_Y - 4);
+      ctx.lineTo(ex1X, ex1Y);
+      ctx.moveTo(-dirX * 3 + rightX * 4, -dirY * 3 * TILT_Y + rightY * 4 * TILT_Y - 4);
+      ctx.lineTo(ex2X, ex2Y);
+      ctx.stroke();
+
+      // Exhaust smoke puffs when moving
+      if (speed > 15) {
+        const puffCycle = (performance.now() * 0.012) % (Math.PI * 2);
+        const puffR = 1.8 + Math.sin(puffCycle) * 0.8;
+        ctx.fillStyle = 'rgba(203, 213, 225, 0.45)';
+        ctx.beginPath();
+        ctx.arc(ex1X - dirX * 3, ex1Y - dirY * 3 * TILT_Y - 1.5, puffR, 0, Math.PI * 2);
+        ctx.arc(ex2X - dirX * 3, ex2Y - dirY * 3 * TILT_Y - 1.5, puffR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 2. Upright Rear Wheel & Tire
+      ctx.fillStyle = '#171923';
+      ctx.beginPath();
+      ctx.ellipse(
+        rearAxleX,
+        rearAxleY - 5,
+        wheelR,
+        wheelR * 0.46 * TILT_Y,
+        bikeAngle,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+      ctx.strokeStyle = '#4a5568';
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+
+      // Rear Hub
+      ctx.fillStyle = '#cbd5e0';
+      ctx.beginPath();
+      ctx.arc(rearAxleX, rearAxleY - 5, 2.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Rear Mudguard
+      ctx.strokeStyle = '#718096';
+      ctx.lineWidth = 2.8;
+      ctx.beginPath();
+      ctx.ellipse(
+        rearAxleX,
+        rearAxleY - 6,
+        wheelR * 0.95,
+        wheelR * 0.55 * TILT_Y,
+        bikeAngle,
+        Math.PI - 0.7,
+        Math.PI + 0.7
+      );
+      ctx.stroke();
+
+      if (dirY < 0) {
+        drawMountHeadAndFront();
+      }
+
+      // 3. Engine Block with Horizontal Cooling Fins
+      ctx.fillStyle = '#2d3748';
+      ctx.strokeStyle = '#1a202c';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.roundRect(-dirX * 2 - 5, -dirY * 2 * TILT_Y - 10, 10, 8, 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Cooling fins & crankcase
+      ctx.strokeStyle = '#718096';
+      ctx.lineWidth = 1.0;
+      for (let finY = -9; finY <= -4; finY += 2) {
+        ctx.beginPath();
+        ctx.moveTo(-dirX * 2 - 4, -dirY * 2 * TILT_Y + finY);
+        ctx.lineTo(-dirX * 2 + 4, -dirY * 2 * TILT_Y + finY);
+        ctx.stroke();
+      }
+      ctx.fillStyle = '#cbd5e0';
+      ctx.beginPath();
+      ctx.arc(-dirX * 2, -dirY * 2 * TILT_Y - 7, 2.6, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 4. Tubular Frame
+      ctx.strokeStyle = '#1a202c';
+      ctx.lineWidth = 2.8;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(rearAxleX, rearAxleY - 5);
+      ctx.lineTo(-dirX * 3, -dirY * 3 * TILT_Y - 8);
+      ctx.lineTo(dirX * 8, dirY * 8 * TILT_Y - 9);
+      ctx.stroke();
+
+      // 5. Left & Right Footpegs
+      ctx.strokeStyle = '#a0aec0';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(-dirX * 1.5 - rightX * 7, -dirY * 1.5 * TILT_Y - rightY * 7 * TILT_Y - 3.5);
+      ctx.lineTo(-dirX * 1.5 + rightX * 7, -dirY * 1.5 * TILT_Y + rightY * 7 * TILT_Y - 3.5);
+      ctx.stroke();
+
+      // 6. Sleek Teardrop Metallic Fuel Tank
+      const tankX = dirX * 4;
+      const tankY = dirY * 4 * TILT_Y - 10 - bob * 0.2;
+      ctx.fillStyle = w.hurtFlash > 0 ? '#fc8181' : '#c53030';
+      ctx.strokeStyle = '#742a2a';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.ellipse(tankX, tankY, 6.5, 4.0 * TILT_Y, bikeAngle, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Tank gold badge highlight
+      ctx.fillStyle = '#ecc94b';
+      ctx.beginPath();
+      ctx.ellipse(tankX + dirX * 1.2, tankY - 0.8, 3.0, 1.8 * TILT_Y, bikeAngle, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 7. Padded Leather Saddle
+      const seatX = -dirX * 3;
+      const seatY = -dirY * 3 * TILT_Y - 9 - bob * 0.2;
+      ctx.fillStyle = '#171923';
+      ctx.strokeStyle = '#2d3748';
+      ctx.lineWidth = 1.2;
+      ctx.beginPath();
+      ctx.ellipse(seatX, seatY, 5.8, 3.8 * TILT_Y, bikeAngle, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     }
       ctx.restore();
     }
@@ -8417,12 +9272,12 @@
     }
 
     // 3. Striding 3D Armored Boots (or Stirrup Boots when mounted)
-    const stride = isHorse || isTortoise || isElephant ? 0 : Math.sin(w.walkCycle || 0) * 7.5;
-    const footSpread = isElephant ? 18 : isTortoise ? 16 : isHorse ? 15 : 7;
-    const foot1X = rightX * footSpread + dirX * stride;
-    const foot1Y = (rightY * footSpread + dirY * stride) * TILT_Y;
-    const foot2X = -rightX * footSpread - dirX * stride;
-    const foot2Y = (-rightY * footSpread - dirY * stride) * TILT_Y;
+    const stride = isHorse || isTortoise || isElephant || isMotorcycle ? 0 : Math.sin(w.walkCycle || 0) * 7.5;
+    const footSpread = isElephant ? 18 : isTortoise ? 16 : isHorse ? 15 : isMotorcycle ? 10 : 7;
+    const foot1X = rightX * footSpread - dirX * (isMotorcycle ? 2 : 0) + dirX * stride;
+    const foot1Y = (rightY * footSpread - dirY * (isMotorcycle ? 2 : 0) + dirY * stride) * TILT_Y;
+    const foot2X = -rightX * footSpread - dirX * (isMotorcycle ? 2 : 0) - dirX * stride;
+    const foot2Y = (-rightY * footSpread - dirY * (isMotorcycle ? 2 : 0) - dirY * stride) * TILT_Y;
 
     ctx.fillStyle = '#3d271d';
     ctx.strokeStyle = '#1a120d';
@@ -8487,6 +9342,37 @@
     } else {
       drawPauldron(rightShX, rightShY);
       drawPauldron(leftShX, leftShY);
+    }
+
+    if (isMotorcycle) {
+      // Armored Arms reaching forward to grip the motorcycle handlebars
+      const reachX = dirX * 12;
+      const reachY = dirY * 12 * TILT_Y - 14 - bob;
+      const barHalfW = 10;
+      const leftGripX = reachX - rightX * barHalfW;
+      const leftGripY = reachY - rightY * barHalfW * TILT_Y;
+      const rightGripX = reachX + rightX * barHalfW;
+      const rightGripY = reachY + rightY * barHalfW * TILT_Y;
+
+      ctx.strokeStyle = w.hurtFlash > 0 ? '#fc8181' : '#4a5568';
+      ctx.lineWidth = 4.5;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(leftShX, leftShY + 4);
+      ctx.lineTo(leftGripX, leftGripY);
+      ctx.moveTo(rightShX, rightShY + 4);
+      ctx.lineTo(rightGripX, rightGripY);
+      ctx.stroke();
+
+      // Steel gauntlets gripping the handlebars
+      ctx.fillStyle = w.hurtFlash > 0 ? '#feb2b2' : '#718096';
+      ctx.strokeStyle = '#1a202c';
+      ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      ctx.arc(leftGripX, leftGripY, 3.2, 0, Math.PI * 2);
+      ctx.arc(rightGripX, rightGripY, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
     }
 
     if (dirY < -0.15) {
@@ -8559,20 +9445,20 @@
       }
 
       if (isMount) {
-        const bw = isElephant ? 45 : 38;
+        const bw = isElephant ? 45 : isMotorcycle ? 36 : 38;
         const bh = 4;
         const barY = labelBaseY + 6;
         const mountMax = Math.max(1, w.mountMaxHp || w.mountHp || 100);
         ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
         ctx.fillRect(-bw / 2 - 1, barY - 1, bw + 2, bh + 2);
-        ctx.fillStyle = isElephant ? '#63b3ed' : isTortoise ? '#68d391' : '#f6ad55';
+        ctx.fillStyle = isElephant ? '#63b3ed' : isTortoise ? '#68d391' : isMotorcycle ? '#f6ad55' : '#f6ad55';
         ctx.fillRect(-bw / 2, barY, bw * Math.max(0, Math.min(1, w.mountHp / mountMax)), bh);
       }
 
       if (!isLocal && w.hp < (w.maxHp || 100)) {
         const bw = 34;
         const bh = 4;
-        const hpBarY = labelBaseY + (isHorse || isTortoise || isElephant ? 12 : 6);
+        const hpBarY = labelBaseY + (isHorse || isTortoise || isElephant || isMotorcycle ? 12 : 6);
         ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
         ctx.fillRect(-bw / 2 - 1, hpBarY - 1, bw + 2, bh + 2);
         ctx.fillStyle = '#48bb78';
@@ -9805,6 +10691,7 @@
     const bodyHeight = Math.round(e.radius * 1.38);
     const isDown =
       (e.knockdownTimer || 0) > 0 || earthquakeTimer > 0 || localKnockdownTimer > 0;
+    const isMotorcycleZombie = e.variant === 'motorcycle';
     const isBurning = (e.burnTimer || 0) > 0;
     const isFireproof = !isBurning && (e.fireproofTimer || 0) > 0;
     const isFeared = (e.fearTimer || 0) > 0;
@@ -9877,9 +10764,9 @@
     ctx.ellipse(
       2,
       3,
-      e.radius * (isDown ? 1.92 : 1.18),
-      e.radius * TILT_Y * (isDown ? 0.92 : 0.98),
-      0,
+      e.radius * (isDown ? 1.92 : isMotorcycleZombie ? 1.35 : 1.18),
+      e.radius * TILT_Y * (isDown ? 0.92 : isMotorcycleZombie ? 0.95 : 0.98),
+      isMotorcycleZombie && !isDown ? Math.atan2(dirY * TILT_Y, dirX) : 0,
       0,
       Math.PI * 2
     );
@@ -10215,46 +11102,333 @@
       ctx.stroke();
     }
 
-    // 2. Shuffling Zombie Feet (or Single Hopping Foot, or Leg Stumps)
-    const step = isDown || isWebbed ? 0 : Math.sin(e.walkPhase) * 4.5 * visualScale;
-    ctx.fillStyle = '#1a202c';
-    ctx.beginPath();
-    if (hasLeftLeg) {
-      ctx.ellipse(
-        -rightX * e.radius * 0.48 - dirX * step,
-        (-rightY * e.radius * 0.48 - dirY * step) * TILT_Y,
-        5.0 * visualScale,
-        3.4 * visualScale,
-        0,
-        0,
-        Math.PI * 2
-      );
-    }
-    if (hasRightLeg) {
-      ctx.ellipse(
-        rightX * e.radius * 0.48 + dirX * step,
-        (rightY * e.radius * 0.48 + dirY * step) * TILT_Y,
-        5.0 * visualScale,
-        3.4 * visualScale,
-        0,
-        0,
-        Math.PI * 2
-      );
-    }
-    ctx.fill();
+    // 2. Upright Motorcycle Chassis and Front (when riding a motorcycle)
+    const bikeScale = visualScale;
+    const wheelR = 8.0 * bikeScale;
+    const frontDist = 17 * bikeScale;
+    const rearDist = 15 * bikeScale;
+    const frontAxleX = dirX * frontDist;
+    const frontAxleY = dirY * frontDist * TILT_Y;
+    const rearAxleX = -dirX * rearDist;
+    const rearAxleY = -dirY * rearDist * TILT_Y;
+    const bikeAngle = Math.atan2(dirY * TILT_Y, dirX);
 
-    // Pant leg stumps if legs are severed
-    if (!hasLeftLeg || !hasRightLeg) {
+    const drawZombieMotorcycleFront = () => {
+      // 1. Forward Halogen Light Beam
+      const beamDist = 60 * bikeScale;
+      const beamSpread = 0.5;
+      const lightGrad = ctx.createRadialGradient(
+        frontAxleX,
+        frontAxleY - 7 * bikeScale,
+        3,
+        frontAxleX + dirX * beamDist * 0.6,
+        frontAxleY + dirY * beamDist * 0.6 * TILT_Y - 3,
+        beamDist
+      );
+      lightGrad.addColorStop(0, 'rgba(254, 240, 138, 0.42)');
+      lightGrad.addColorStop(0.5, 'rgba(250, 204, 21, 0.18)');
+      lightGrad.addColorStop(1, 'rgba(250, 204, 21, 0)');
+      ctx.fillStyle = lightGrad;
+      ctx.beginPath();
+      ctx.moveTo(frontAxleX, frontAxleY - 7 * bikeScale);
+      ctx.arc(
+        frontAxleX,
+        frontAxleY - 7 * bikeScale,
+        beamDist,
+        bikeAngle - beamSpread,
+        bikeAngle + beamSpread
+      );
+      ctx.closePath();
+      ctx.fill();
+
+      // 2. Telescopic Chrome Front Forks
+      const stemX = dirX * 8.5 * bikeScale;
+      const stemY = dirY * 8.5 * bikeScale * TILT_Y - 10 * bikeScale - bob * 0.2;
+      ctx.strokeStyle = '#cbd5e0';
+      ctx.lineWidth = 2.4 * bikeScale;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(frontAxleX - rightX * 3 * bikeScale, frontAxleY - rightY * 3 * bikeScale * TILT_Y - 5 * bikeScale);
+      ctx.lineTo(stemX - rightX * 2.5 * bikeScale, stemY);
+      ctx.moveTo(frontAxleX + rightX * 3 * bikeScale, frontAxleY + rightY * 3 * bikeScale * TILT_Y - 5 * bikeScale);
+      ctx.lineTo(stemX + rightX * 2.5 * bikeScale, stemY);
+      ctx.stroke();
+
+      // Front Mudguard / Fender
+      ctx.strokeStyle = '#718096';
+      ctx.lineWidth = 3.0 * bikeScale;
+      ctx.beginPath();
+      ctx.ellipse(
+        frontAxleX,
+        frontAxleY - 6 * bikeScale,
+        wheelR * 0.95,
+        wheelR * 0.55 * TILT_Y,
+        bikeAngle,
+        -0.7,
+        0.7
+      );
+      ctx.stroke();
+
+      // 3. Upright 2.5D Front Wheel & Tire
+      ctx.fillStyle = '#171923';
+      ctx.beginPath();
+      ctx.ellipse(
+        frontAxleX,
+        frontAxleY - 5 * bikeScale,
+        wheelR,
+        wheelR * 0.46 * TILT_Y,
+        bikeAngle,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+      ctx.strokeStyle = '#4a5568';
+      ctx.lineWidth = 1.8 * bikeScale;
+      ctx.stroke();
+
+      // Hub
+      ctx.fillStyle = '#cbd5e0';
+      ctx.beginPath();
+      ctx.arc(frontAxleX, frontAxleY - 5 * bikeScale, 2.2 * bikeScale, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 4. Handlebars across steering stem
+      const barW = 10.5 * bikeScale;
+      const leftGripX = stemX - rightX * barW;
+      const leftGripY = stemY - rightY * barW * TILT_Y - 1.5;
+      const rightGripX = stemX + rightX * barW;
+      const rightGripY = stemY + rightY * barW * TILT_Y - 1.5;
+
+      ctx.strokeStyle = '#e2e8f0';
+      ctx.lineWidth = 2.6 * bikeScale;
+      ctx.beginPath();
+      ctx.moveTo(leftGripX, leftGripY);
+      ctx.lineTo(stemX, stemY);
+      ctx.lineTo(rightGripX, rightGripY);
+      ctx.stroke();
+
+      // Rubber Handgrips
       ctx.fillStyle = '#1a202c';
-      if (!hasLeftLeg) {
+      ctx.beginPath();
+      ctx.ellipse(leftGripX, leftGripY, 2.0 * bikeScale, 2.8 * bikeScale * TILT_Y, bikeAngle, 0, Math.PI * 2);
+      ctx.ellipse(rightGripX, rightGripY, 2.0 * bikeScale, 2.8 * bikeScale * TILT_Y, bikeAngle, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 5. Front Headlight
+      const hlX = frontAxleX * 0.85 + dirX * 2.5;
+      const hlY = frontAxleY * 0.85 + dirY * 2.5 * TILT_Y - 9 * bikeScale - bob * 0.2;
+      ctx.fillStyle = '#a0aec0';
+      ctx.beginPath();
+      ctx.arc(hlX, hlY, 3.6 * bikeScale, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = '#fef08a';
+      ctx.beginPath();
+      ctx.arc(hlX + dirX * 1.2, hlY + dirY * 1.2 * TILT_Y, 2.4 * bikeScale, 0, Math.PI * 2);
+      ctx.fill();
+    };
+
+    const drawZombieMotorcycleChassis = () => {
+      // 1. Dual Exhaust Pipes & Mufflers
+      const ex1X = rearAxleX - rightX * 5.2 * bikeScale;
+      const ex1Y = rearAxleY - rightY * 5.2 * bikeScale * TILT_Y - 3 * bikeScale;
+      const ex2X = rearAxleX + rightX * 5.2 * bikeScale;
+      const ex2Y = rearAxleY + rightY * 5.2 * bikeScale * TILT_Y - 3 * bikeScale;
+
+      ctx.strokeStyle = '#cbd5e0';
+      ctx.lineWidth = 2.4 * bikeScale;
+      ctx.beginPath();
+      ctx.moveTo(-dirX * 3 - rightX * 4 * bikeScale, -dirY * 3 * TILT_Y - rightY * 4 * bikeScale * TILT_Y - 4 * bikeScale);
+      ctx.lineTo(ex1X, ex1Y);
+      ctx.moveTo(-dirX * 3 + rightX * 4 * bikeScale, -dirY * 3 * TILT_Y + rightY * 4 * bikeScale * TILT_Y - 4 * bikeScale);
+      ctx.lineTo(ex2X, ex2Y);
+      ctx.stroke();
+
+      // Exhaust smoke puffs from high speed
+      const puffCycle = (performance.now() * 0.015) % (Math.PI * 2);
+      const puffR = (2.0 + Math.sin(puffCycle) * 0.8) * bikeScale;
+      ctx.fillStyle = 'rgba(203, 213, 225, 0.45)';
+      ctx.beginPath();
+      ctx.arc(ex1X - dirX * 3.5, ex1Y - dirY * 3.5 * TILT_Y - 1.5, puffR, 0, Math.PI * 2);
+      ctx.arc(ex2X - dirX * 3.5, ex2Y - dirY * 3.5 * TILT_Y - 1.5, puffR, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 2. Upright Rear Wheel & Tire
+      ctx.fillStyle = '#171923';
+      ctx.beginPath();
+      ctx.ellipse(
+        rearAxleX,
+        rearAxleY - 5 * bikeScale,
+        wheelR,
+        wheelR * 0.46 * TILT_Y,
+        bikeAngle,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+      ctx.strokeStyle = '#4a5568';
+      ctx.lineWidth = 1.8 * bikeScale;
+      ctx.stroke();
+
+      // Rear Hub
+      ctx.fillStyle = '#cbd5e0';
+      ctx.beginPath();
+      ctx.arc(rearAxleX, rearAxleY - 5 * bikeScale, 2.2 * bikeScale, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Rear Mudguard
+      ctx.strokeStyle = '#718096';
+      ctx.lineWidth = 2.8 * bikeScale;
+      ctx.beginPath();
+      ctx.ellipse(
+        rearAxleX,
+        rearAxleY - 6 * bikeScale,
+        wheelR * 0.95,
+        wheelR * 0.55 * TILT_Y,
+        bikeAngle,
+        Math.PI - 0.7,
+        Math.PI + 0.7
+      );
+      ctx.stroke();
+
+      // 3. Engine Block with Cooling Fins
+      ctx.fillStyle = '#2d3748';
+      ctx.strokeStyle = '#1a202c';
+      ctx.lineWidth = 1.6 * bikeScale;
+      ctx.beginPath();
+      ctx.roundRect(-dirX * 2 - 5 * bikeScale, -dirY * 2 * TILT_Y - 10 * bikeScale, 10 * bikeScale, 8 * bikeScale, 2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.strokeStyle = '#718096';
+      ctx.lineWidth = 1.0 * bikeScale;
+      for (let finY = -9 * bikeScale; finY <= -4 * bikeScale; finY += 2 * bikeScale) {
         ctx.beginPath();
-        ctx.arc(-rightX * e.radius * 0.48, -bodyHeight * 0.1 - bob, 4.2 * visualScale, 0, Math.PI * 2);
-        ctx.fill();
+        ctx.moveTo(-dirX * 2 - 4 * bikeScale, -dirY * 2 * TILT_Y + finY);
+        ctx.lineTo(-dirX * 2 + 4 * bikeScale, -dirY * 2 * TILT_Y + finY);
+        ctx.stroke();
       }
-      if (!hasRightLeg) {
-        ctx.beginPath();
-        ctx.arc(rightX * e.radius * 0.48, -bodyHeight * 0.1 - bob, 4.2 * visualScale, 0, Math.PI * 2);
-        ctx.fill();
+      ctx.fillStyle = '#cbd5e0';
+      ctx.beginPath();
+      ctx.arc(-dirX * 2, -dirY * 2 * TILT_Y - 7 * bikeScale, 2.6 * bikeScale, 0, Math.PI * 2);
+      ctx.fill();
+
+      // 4. Chassis Frame
+      ctx.strokeStyle = '#1a202c';
+      ctx.lineWidth = 2.8 * bikeScale;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(rearAxleX, rearAxleY - 5 * bikeScale);
+      ctx.lineTo(-dirX * 3 * bikeScale, -dirY * 3 * bikeScale * TILT_Y - 8 * bikeScale);
+      ctx.lineTo(dirX * 8 * bikeScale, dirY * 8 * bikeScale * TILT_Y - 9 * bikeScale);
+      ctx.stroke();
+
+      // 5. Left and Right Footpegs
+      ctx.strokeStyle = '#a0aec0';
+      ctx.lineWidth = 2.2 * bikeScale;
+      ctx.beginPath();
+      ctx.moveTo(-dirX * 1.5 - rightX * 7.5 * bikeScale, -dirY * 1.5 * TILT_Y - rightY * 7.5 * bikeScale * TILT_Y - 3.5 * bikeScale);
+      ctx.lineTo(-dirX * 1.5 + rightX * 7.5 * bikeScale, -dirY * 1.5 * TILT_Y + rightY * 7.5 * bikeScale * TILT_Y - 3.5 * bikeScale);
+      ctx.stroke();
+
+      // 6. Fuel Tank
+      const tankX = dirX * 4 * bikeScale;
+      const tankY = dirY * 4 * bikeScale * TILT_Y - 10 * bikeScale - bob * 0.2;
+      ctx.fillStyle = e.hurtFlash > 0 ? '#feb2b2' : '#742a2a';
+      ctx.strokeStyle = '#1a202c';
+      ctx.lineWidth = 1.4 * bikeScale;
+      ctx.beginPath();
+      ctx.ellipse(tankX, tankY, 6.5 * bikeScale, 4.0 * bikeScale * TILT_Y, bikeAngle, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // 7. Leather Seat
+      const seatX = -dirX * 3 * bikeScale;
+      const seatY = -dirY * 3 * bikeScale * TILT_Y - 9 * bikeScale - bob * 0.2;
+      ctx.fillStyle = '#171923';
+      ctx.strokeStyle = '#2d3748';
+      ctx.lineWidth = 1.2 * bikeScale;
+      ctx.beginPath();
+      ctx.ellipse(seatX, seatY, 5.8 * bikeScale, 3.8 * bikeScale * TILT_Y, bikeAngle, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    };
+
+    if (isMotorcycleZombie && !isDown) {
+      drawZombieMotorcycleChassis();
+      if (dirY < 0) {
+        drawZombieMotorcycleFront();
+      }
+    }
+
+    // 2. Shuffling Zombie Feet (or Single Hopping Foot, or Leg Stumps, or Motorcycle Footpegs)
+    if (isMotorcycleZombie && !isDown) {
+      // Zombie boots planted on motorcycle footpegs
+      ctx.fillStyle = '#14181f';
+      ctx.beginPath();
+      if (hasLeftLeg) {
+        ctx.ellipse(
+          -rightX * 7.5 * visualScale - dirX * 1.5,
+          (-rightY * 7.5 * visualScale - dirY * 1.5) * TILT_Y - 3.5 * visualScale,
+          4.5 * visualScale,
+          3.2 * visualScale,
+          0,
+          0,
+          Math.PI * 2
+        );
+      }
+      if (hasRightLeg) {
+        ctx.ellipse(
+          rightX * 7.5 * visualScale - dirX * 1.5,
+          (rightY * 7.5 * visualScale - dirY * 1.5) * TILT_Y - 3.5 * visualScale,
+          4.5 * visualScale,
+          3.2 * visualScale,
+          0,
+          0,
+          Math.PI * 2
+        );
+      }
+      ctx.fill();
+    } else {
+      const step = isDown || isWebbed ? 0 : Math.sin(e.walkPhase) * 4.5 * visualScale;
+      ctx.fillStyle = '#1a202c';
+      ctx.beginPath();
+      if (hasLeftLeg) {
+        ctx.ellipse(
+          -rightX * e.radius * 0.48 - dirX * step,
+          (-rightY * e.radius * 0.48 - dirY * step) * TILT_Y,
+          5.0 * visualScale,
+          3.4 * visualScale,
+          0,
+          0,
+          Math.PI * 2
+        );
+      }
+      if (hasRightLeg) {
+        ctx.ellipse(
+          rightX * e.radius * 0.48 + dirX * step,
+          (rightY * e.radius * 0.48 + dirY * step) * TILT_Y,
+          5.0 * visualScale,
+          3.4 * visualScale,
+          0,
+          0,
+          Math.PI * 2
+        );
+      }
+      ctx.fill();
+
+      // Pant leg stumps if legs are severed
+      if (!hasLeftLeg || !hasRightLeg) {
+        ctx.fillStyle = '#1a202c';
+        if (!hasLeftLeg) {
+          ctx.beginPath();
+          ctx.arc(-rightX * e.radius * 0.48, -bodyHeight * 0.1 - bob, 4.2 * visualScale, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        if (!hasRightLeg) {
+          ctx.beginPath();
+          ctx.arc(rightX * e.radius * 0.48, -bodyHeight * 0.1 - bob, 4.2 * visualScale, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
     }
 
@@ -10293,6 +11467,13 @@
         // Arms pinned tightly against the zombie's torso by spider webbing
         handX = shoulderX + dirX * e.radius * 0.32;
         handY = shoulderY + e.radius * 0.48;
+      } else if (isMotorcycleZombie) {
+        // Hands firmly gripping the motorcycle handlebars
+        const gripBarW = 10.5 * bikeScale;
+        const stemX = dirX * 8.5 * bikeScale;
+        const stemY = dirY * 8.5 * bikeScale * TILT_Y - 9 * bikeScale - bob * 0.2;
+        handX = stemX + rightX * sideSign * gripBarW;
+        handY = stemY + rightY * sideSign * gripBarW * TILT_Y;
       } else {
         const sway = isDown ? 0 : Math.sin(e.walkPhase + sideSign * 0.9) * 2.2 * visualScale;
         handX = shoulderX + dirX * reachLen + rightX * sway * 0.4;
@@ -10604,6 +11785,10 @@
       ctx.restore();
     }
 
+    if (isMotorcycleZombie && !isDown && dirY >= 0) {
+      drawZombieMotorcycleFront();
+    }
+
     ctx.restore();
 
     // 5. Floating 2.5D Health Bar above zombie's 3D head (or fallen body)
@@ -10613,6 +11798,8 @@
       const bx = sx - barW / 2;
       const by = isDown
         ? sy - e.radius * 0.95 - 12
+        : isMotorcycleZombie
+        ? sy - bodyHeight - e.radius * 1.15 - 16
         : !hasHead
         ? sy - bodyHeight - 12
         : sy - bodyHeight - e.radius * 1.15 - 10;
@@ -10624,6 +11811,147 @@
       ctx.fillStyle = hpRatio > 0.4 ? '#48bb78' : '#f6ad55';
       ctx.fillRect(bx, by, barW * hpRatio, barH);
     }
+  }
+
+  function drawLaidDownMotorcycle(m: any) {
+    const sx = m.x;
+    const sy = m.y * TILT_Y;
+    const dirX = Math.cos(m.angle);
+    const dirY = Math.sin(m.angle);
+    const rightX = -dirY;
+    const rightY = dirX;
+
+    const r = m.radius || MOTORCYCLE_WRECK_RADIUS;
+    const visualScale = Math.max(0.85, r / 18);
+    const bikeLen = r * 1.55;
+    const wheelR = r * 0.52;
+
+    // Smooth fade-out in final 0.8s of its duration
+    const fade = Math.max(0, Math.min(1, m.timer / 0.8));
+
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.globalAlpha = fade;
+
+    // 1. Skid mark & asphalt/turf scrape underneath
+    ctx.fillStyle = 'rgba(20, 24, 20, 0.42)';
+    ctx.beginPath();
+    ctx.ellipse(0, 2, Math.max(0.1, bikeLen * 0.9), Math.max(0.1, bikeLen * 0.35 * TILT_Y), m.angle, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Scrape scratch marks on the grass
+    ctx.strokeStyle = 'rgba(15, 20, 15, 0.55)';
+    ctx.lineWidth = 1.8 * visualScale;
+    ctx.beginPath();
+    ctx.moveTo(-dirX * bikeLen * 0.8 - rightX * 3, (-dirY * bikeLen * 0.8 - rightY * 3) * TILT_Y);
+    ctx.lineTo(dirX * bikeLen * 0.6, dirY * bikeLen * 0.6 * TILT_Y);
+    ctx.stroke();
+
+    // 2. Laid-Down Wheels (lying flat on ground with low vertical height)
+    const rearX = -dirX * bikeLen * 0.62;
+    const rearY = -dirY * bikeLen * 0.62 * TILT_Y;
+    const frontX = dirX * bikeLen * 0.62;
+    const frontY = dirY * bikeLen * 0.62 * TILT_Y;
+
+    // Rear Wheel (flat on ground)
+    ctx.save();
+    ctx.translate(rearX, rearY + 1);
+    ctx.fillStyle = '#171923';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, Math.max(0.1, wheelR * 0.95), Math.max(0.1, wheelR * 0.42 * TILT_Y), m.angle, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#718096';
+    ctx.lineWidth = 1.6 * visualScale;
+    ctx.stroke();
+    // Center hub
+    ctx.fillStyle = '#cbd5e0';
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(0.1, 2.2 * visualScale), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // Front Wheel (turned sideways / knocked flat)
+    ctx.save();
+    ctx.translate(frontX, frontY + 1);
+    ctx.fillStyle = '#171923';
+    ctx.beginPath();
+    ctx.ellipse(0, 0, Math.max(0.1, wheelR * 0.95), Math.max(0.1, wheelR * 0.42 * TILT_Y), m.angle + 0.35, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#718096';
+    ctx.lineWidth = 1.6 * visualScale;
+    ctx.stroke();
+    // Hub
+    ctx.fillStyle = '#cbd5e0';
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(0.1, 2.2 * visualScale), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // 3. Fallen Bike Frame & Exhaust
+    ctx.strokeStyle = '#2d3748';
+    ctx.lineWidth = 5 * visualScale;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(rearX, rearY);
+    ctx.lineTo(0, -2);
+    ctx.lineTo(frontX * 0.75, frontY * 0.75 - 2);
+    ctx.stroke();
+
+    // Chrome Exhaust Pipe resting on ground
+    const exhaustX = rearX * 0.5 + rightX * 4 * visualScale;
+    const exhaustY = rearY * 0.5 + rightY * 4 * visualScale * TILT_Y;
+    ctx.strokeStyle = '#a0aec0';
+    ctx.lineWidth = 3.0 * visualScale;
+    ctx.beginPath();
+    ctx.moveTo(exhaustX, exhaustY);
+    ctx.lineTo(rearX + rightX * 5 * visualScale, rearY + rightY * 5 * visualScale * TILT_Y);
+    ctx.stroke();
+
+    // Small wisp of heat/smoke rising from the crashed exhaust as it cools down
+    const totalDuration = m.duration || MOTORCYCLE_WRECK_DURATION || 5.0;
+    const elapsed = Math.max(0, totalDuration - (m.timer || 0));
+    const heatFade = Math.max(0, 1.0 - elapsed / 15.0);
+    if (heatFade > 0) {
+      const cycle = 1.8;
+      const progress = (elapsed % cycle) / cycle;
+      const smokeLift = progress * 16 * visualScale;
+      const smokeRadius = Math.max(0.5, (2.2 + progress * 4.0) * visualScale);
+      const smokeAlpha = Math.max(0, 0.4 * heatFade * (1.0 - progress));
+      ctx.fillStyle = `rgba(203, 213, 225, ${smokeAlpha.toFixed(3)})`;
+      ctx.beginPath();
+      ctx.arc(exhaustX, exhaustY - smokeLift - 4, smokeRadius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 4. Scratched Red Metallic Fuel Tank (resting sideways on frame)
+    ctx.fillStyle = '#9b2c2c';
+    ctx.beginPath();
+    ctx.ellipse(frontX * 0.35, frontY * 0.35 - 3, Math.max(0.1, 6.8 * visualScale), Math.max(0.1, 4.0 * visualScale), m.angle, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#e53e3e';
+    ctx.beginPath();
+    ctx.ellipse(frontX * 0.35, frontY * 0.35 - 4, Math.max(0.1, 4.5 * visualScale), Math.max(0.1, 2.5 * visualScale), m.angle, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 5. Twisted Handlebars lying on the ground
+    const hbX = frontX * 0.72;
+    const hbY = frontY * 0.72 - 3;
+    ctx.strokeStyle = '#718096';
+    ctx.lineWidth = 2.4 * visualScale;
+    ctx.beginPath();
+    ctx.moveTo(hbX - rightX * 8 * visualScale, hbY - rightY * 8 * visualScale * TILT_Y + 3);
+    ctx.lineTo(hbX + rightX * 8 * visualScale, hbY + rightY * 8 * visualScale * TILT_Y - 2);
+    ctx.stroke();
+
+    // Cracked / Shattered Headlight lens lying sideways
+    const hlX = frontX + dirX * 2;
+    const hlY = frontY + dirY * 2 * TILT_Y;
+    ctx.fillStyle = '#d69e2e';
+    ctx.beginPath();
+    ctx.arc(hlX, hlY, Math.max(0.1, 2.8 * visualScale), 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
   }
 
   function drawGhost(g: any) {
@@ -11134,10 +12462,16 @@
         BULLDOZER_DURATION,
         BULLDOZER_SPEED_MULT,
         BULLDOZER_TRACTION_MULT,
+        BULLDOZER_SCALE,
         BULLDOZER_RADIUS,
         HORSE_RADIUS,
         TORTOISE_RADIUS,
         ELEPHANT_RADIUS,
+        MOTORCYCLE_MOUNT_RADIUS,
+        MOTORCYCLE_TURN_RATE,
+        MOTORCYCLE_WRECK_DURATION,
+        MOTORCYCLE_WRECK_SCALE,
+        MOTORCYCLE_WRECK_RADIUS,
         GHOST_DURATION,
         EARTHQUAKE_DURATION,
         ZOMBIE_KNOCKDOWN_RECOVERY,
@@ -11194,6 +12528,7 @@
       floatingTexts,
       shockwaves,
       enemyGhosts,
+      laidDownMotorcycles,
       activeClotheslines,
       remotePlayers,
       localLeaderboardRecords,
@@ -11223,6 +12558,8 @@
         lastUserActivityTime,
         touchWheelState,
         hitStopTimer,
+        mountSoundTimer,
+        enemyMotorcycleSoundTimer,
       }),
       setState: (patch) => {
         if ('hasEnteredGame' in patch) hasEnteredGame = patch.hasEnteredGame;
@@ -11308,6 +12645,13 @@
       drawGhost,
       spawnEnemyGhost,
       updateGhosts,
+      drawLaidDownMotorcycle,
+      updateLaidDownMotorcycles,
+      playMountClaimSound,
+      playMountLocomotionSound,
+      playEnemyMotorcycleEngineSound,
+      playMotorcycleCrashSound,
+      checkMotorcycleDismount,
       processServerEvents,
       addPickupToWorld,
       spawnCheatPowerups,

@@ -105,13 +105,21 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.WHIRLWIND_MAX_LEVEL, 5);
     assert.deepEqual(srv.WHIRLWIND_LEVEL_DAMAGES, [0, 40, 100, 180, 280, 400]);
     assert.deepEqual(srv.WHIRLWIND_LEVEL_RADII, [0, 140, 180, 220, 260, 300]);
-    assert.equal(srv.CLOTHESLINE_DURATION, 2.0);
-    assert.equal(srv.CLOTHESLINE_TRIGGER_DIST, 42);
-    assert.equal(srv.CLOTHESLINE_BEAM_DAMAGE, 140);
+    assert.equal(srv.ARMORED_MOB_FIRST_MILESTONE, 50);
+    assert.equal(srv.ARMORED_MOB_INTERVAL, 50);
+    assert.equal(srv.ARMORED_MOB_BASE_SIZE, 6);
+    assert.equal(srv.ARMORED_MOB_MAX_SIZE, 12);
+    assert.equal(srv.ARMORED_MOB_SPEED_MULT, 1.5);
+    assert.equal(srv.ARMORED_MOB_HP_MULT, 4.0);
     assert.equal(srv.HIT_STOP_DURATION, 0.030);
     assert.equal(srv.HIT_STOP_DAMAGE_THRESHOLD, 350);
     assert.equal(srv.HIT_STOP_BIG_SHAKE_THRESHOLD, 425);
     assert.equal(srv.MULTI_KILL_WINDOW, 0.35);
+    assert.equal(srv.MOTORCYCLE_SPAWN_INTERVAL, 20);
+    assert.equal(srv.MOTORCYCLE_WRECK_DURATION, 5.0);
+    assert.equal(srv.MOTORCYCLE_WRECK_SCALE, 1.2);
+    assert.equal(srv.MOTORCYCLE_WRECK_RADIUS, 25);
+    assert.equal(srv.MOTORCYCLE_MOUNT_RADIUS, 30);
     assert.deepEqual(srv.ALL_LIMBS, ['left_arm', 'right_arm', 'left_leg', 'right_leg', 'head']);
   });
 
@@ -140,7 +148,8 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.THOR_BLAST_DAMAGE_MULT, 0.5);
     assert.equal(srv.ZOMBIE_WEB_DURATION, 30.0);
     assert.equal(srv.BULLDOZER_DURATION, 20.0);
-    assert.equal(srv.BULLDOZER_RADIUS, 34);
+    assert.equal(srv.BULLDOZER_SCALE, 1.4);
+    assert.equal(srv.BULLDOZER_RADIUS, 48);
     assert.equal(srv.HORSE_RADIUS, 35);
     assert.equal(srv.TORTOISE_RADIUS, 36);
     assert.equal(srv.ELEPHANT_RADIUS, 45);
@@ -904,6 +913,67 @@ describe('Enemy Production Scaling (>2 Players) & Cooperative Victory Mode', () 
     }
     assert.ok(p1.vx > 0 && p1.x > 2100, 'Warrior should move East toward mouse despite heavy hammers pulling West');
   });
+
+  it('detects continuous collision and impacts enemies at every point along the length of the chain between nodes', () => {
+    srv.enemies.length = 0;
+    srv.players.clear();
+    srv.setState({ pendingEvents: [] });
+
+    const p = addTestPlayer('p_chain', 2000, 2000);
+    p.vx = 0;
+    p.vy = 200;
+    const h = p.hammer;
+    h.chainLinks = 2;
+    h.mass = 4.0;
+    h.x = 2200;
+    h.y = 2000;
+    h.vx = 0;
+    h.vy = 200;
+
+    // Node 0 at (2000, 2000), Node 1 at (2100, 2000), Node 2 at (2200, 2000)
+    h.chainNodes[0].x = 2000;
+    h.chainNodes[0].y = 2000;
+    h.chainNodes[0].vx = 0;
+    h.chainNodes[0].vy = 200;
+
+    h.chainNodes[1].x = 2100;
+    h.chainNodes[1].y = 2000;
+    h.chainNodes[1].vx = 0;
+    h.chainNodes[1].vy = 200;
+
+    h.chainNodes[2].x = 2200;
+    h.chainNodes[2].y = 2000;
+    h.chainNodes[2].vx = 0;
+    h.chainNodes[2].vy = 200;
+
+    srv.updatePlayerBroadphaseBounds(p);
+
+    // Place an enemy halfway between Node 0 and Node 1 at x = 2050.
+    // Distance from enemy to Node 0 is ~52 > 25.5 (NO discrete node collision).
+    // Distance from enemy to Node 1 is ~52 > 25.5 (NO discrete node collision).
+    // Distance to the line segment between Node 0 and Node 1 is 15 <= 25.5.
+    const enemy = addTestEnemy(2050, 2015, 100);
+    enemy.vx = 0;
+    enemy.vy = 0;
+    enemy.mass = 1.0;
+
+    srv.stepWorldPhysics(0.016);
+
+    // Verify the chain impacted the enemy along the segment
+    assert.ok(enemy.hp < 100, `Enemy between chain nodes should take damage, hp was: ${enemy.hp}`);
+    assert.ok(enemy.vy > 0, `Enemy should receive downward impulse from moving chain, vy was: ${enemy.vy}`);
+
+    const impactEv = srv.getState().pendingEvents.find((ev) => ev.type === 'impact' && ev.isChain);
+    assert.ok(impactEv, 'Should emit an impact event with isChain: true');
+    assert.ok(
+      Math.abs(impactEv.x - 2050) < 5,
+      `Impact point x should be ~2050 along the chain segment, got: ${impactEv.x}`
+    );
+    assert.ok(
+      Math.abs(impactEv.y - 2000) < 5,
+      `Impact point y should be ~2000 along the chain segment, got: ${impactEv.y}`
+    );
+  });
 });
 
 describe('WebSocket RFC 6455 Framing & HTTP Static Server', () => {
@@ -1158,7 +1228,7 @@ describe('Adaptive Server Simulation Fidelity Under Load', () => {
   });
 });
 
-describe('Whirlwind / Momentum Spin-Up and The Clothesline (Tandem Wire)', () => {
+describe('Whirlwind / Momentum Spin-Up and Overdrive', () => {
   beforeEach(() => {
     resetTestWorld();
   });
@@ -1328,79 +1398,307 @@ describe('Whirlwind / Momentum Spin-Up and The Clothesline (Tandem Wire)', () =>
     assert.equal(eFar.burnTimer, 0, 'Enemy outside whirlwind radius should not be set on fire');
   });
 
-  it('activates The Clothesline (Tandem Wire) when two players hammers/chains touch or cross within 42px', () => {
+  it('spawns armored mob of 6 zombies at 50 kills with 4x HP, 1.5x speed, and group cohesion', () => {
     const p1 = addTestPlayer('p1', 2000, 2000);
-    const p2 = addTestPlayer('p2', 2050, 2000);
+    srv.enemies.length = 0;
+    srv.setState({ teamKills: 0, lastMobSpawnMilestone: 0, pendingEvents: [] });
 
-    const h1 = p1.hammer;
-    const h2 = p2.hammer;
+    // Defeat 49 enemies
+    for (let i = 0; i < 49; i++) {
+      addTestEnemy(2100, 2000, 10);
+      srv.defeatEnemy(srv.enemies.length - 1, p1);
+    }
+    assert.equal(srv.getState().teamKills, 49);
+    assert.ok(!srv.enemies.some((e) => e.variant === 'armored'), 'No armored mob should spawn before 50 kills');
 
-    // Position hammer heads within 42px of each other
-    h1.x = 2025;
-    h1.y = 2000;
-    h2.x = 2035;
-    h2.y = 2000;
+    // 50th kill triggers armored mob spawn of 6
+    addTestEnemy(2100, 2000, 10);
+    srv.defeatEnemy(srv.enemies.length - 1, p1);
+    assert.equal(srv.getState().teamKills, 50);
 
-    srv.setState({ pendingEvents: [] });
-    srv.checkAndStepClotheslines(1 / 60);
+    const armored = srv.enemies.filter((e) => e.variant === 'armored');
+    assert.equal(armored.length, 6, 'Should spawn exactly 6 armored zombies after 50 enemies');
 
-    assert.equal(srv.activeClotheslines.length, 1, 'Should create 1 active clothesline');
-    const cl = srv.activeClotheslines[0];
-    assert.ok(cl.timer > 1.95, 'Clothesline timer should initialize to 2.0s');
+    const first = armored[0];
+    assert.equal(first.variant, 'armored');
+    assert.equal(first.hp, 300, 'Armored zombie should have 4x normal hitpoints (4 * 75 = 300)');
+    assert.equal(first.maxHp, 300);
+    assert.equal(first.moveForce, 315, 'Armored zombie should move at 1.5x normal speed (1.5 * 210 = 315)');
+    assert.ok(first.mobId, 'Armored zombies should have a mobId');
 
-    const events = srv.getState().pendingEvents;
-    const startEv = events.find((ev) => ev.type === 'clothesline_start');
-    assert.ok(startEv, 'Should emit clothesline_start event');
-    const clText = events.find((ev) => ev.type === 'floating_text' && ev.text === 'CLOTHESLINE!');
-    assert.ok(clText, 'Should emit CLOTHESLINE! floating text');
+    // All 6 should share the same mobId and spawn together near each other
+    for (const az of armored) {
+      assert.equal(az.mobId, first.mobId);
+      assert.ok(Math.hypot(az.x - first.x, az.y - first.y) < 120, 'Mob should spawn grouped together');
+    }
+
+    // Verify group cohesion in stepWorldPhysics:
+    // Place one mob member separated away from the group centroid
+    const straggler = armored[0];
+    straggler.x = 1000;
+    straggler.y = 2000;
+    for (let k = 1; k < armored.length; k++) {
+      armored[k].x = 2000;
+      armored[k].y = 2000;
+    }
+    p1.x = 1000; // Player is directly at straggler's X
+    p1.y = 1500; // Player is North of straggler
+
+    straggler.vx = 0;
+    straggler.vy = 0;
+    srv.stepWorldPhysics(0.016);
+
+    // Because mob centroid is at (2000, 2000) (East of straggler), straggler should have positive vx pulling toward pack!
+    assert.ok(straggler.vx > 0, 'Straggler should steer East toward group centroid to maintain group cohesion');
   });
 
-  it('slices enemies caught between tandem wire beam and serializes clotheslines in state', () => {
+  it('scales mob size by +1 for every 50 kills after 100 up to limit of 12', () => {
     const p1 = addTestPlayer('p1', 2000, 2000);
-    const p2 = addTestPlayer('p2', 2200, 2000);
+    srv.enemies.length = 0;
+    srv.setState({ teamKills: 0, lastMobSpawnMilestone: 0 });
 
-    const h1 = p1.hammer;
-    const h2 = p2.hammer;
-    h1.x = 2000;
-    h1.y = 1950;
-    h2.x = 2200;
-    h2.y = 1950;
+    // Milestones and expected mob sizes:
+    // 50 -> 6
+    // 100 -> 7
+    // 150 -> 8
+    // 200 -> 9
+    // 250 -> 10
+    // 300 -> 11
+    // 350 -> 12
+    // 400 -> 12 (limit of 12)
+    const expected = [
+      { kills: 50, size: 6 },
+      { kills: 100, size: 7 },
+      { kills: 150, size: 8 },
+      { kills: 200, size: 9 },
+      { kills: 250, size: 10 },
+      { kills: 300, size: 11 },
+      { kills: 350, size: 12 },
+      { kills: 400, size: 12 },
+      { kills: 450, size: 12 },
+    ];
 
-    // Directly place an enemy midway along the beam line between h1 and h2
-    const eMid = addTestEnemy(2100, 1950, 150);
+    for (const exp of expected) {
+      srv.enemies.length = 0;
+      srv.setState({ teamKills: exp.kills - 1, lastMobSpawnMilestone: exp.kills - 50 });
 
-    // Manually register active clothesline
-    srv.activeClotheslines.length = 0;
-    srv.activeClotheslines.push({
-      id: `${p1.id}:0-${p2.id}:0`,
-      p1Id: p1.id,
-      p2Id: p2.id,
-      h1Idx: 0,
-      h2Idx: 0,
-      x1: h1.x,
-      y1: h1.y,
-      x2: h2.x,
-      y2: h2.y,
-      timer: 2.0,
-    });
+      addTestEnemy(2100, 2000, 10);
+      srv.defeatEnemy(srv.enemies.length - 1, p1);
+
+      assert.equal(srv.getState().teamKills, exp.kills);
+      const armored = srv.enemies.filter((e) => e.variant === 'armored');
+      assert.equal(armored.length, exp.size, `At ${exp.kills} kills, expected mob size ${exp.size}, got ${armored.length}`);
+    }
+  });
+
+  it('spawns motorcycle zombie every 20 kills with 5x speed, wide turning radius, and dismount on non-fatal hit', () => {
+    const p1 = addTestPlayer('p1', 2000, 2000);
+    srv.enemies.length = 0;
+    srv.setState({ teamKills: 0, lastMotorcycleSpawnMilestone: 0 });
+
+    // 1. Kills 1..19: no motorcycle zombie spawned
+    for (let k = 1; k <= 19; k++) {
+      addTestEnemy(2100, 2000, 10);
+      srv.defeatEnemy(srv.enemies.length - 1, p1);
+    }
+    assert.equal(srv.getState().teamKills, 19);
+    assert.ok(!srv.enemies.some((e) => e.variant === 'motorcycle'), 'No motorcycle zombie before 20 kills');
+
+    // 2. Kill 20: spawns motorcycle zombie
+    addTestEnemy(2100, 2000, 10);
+    srv.defeatEnemy(srv.enemies.length - 1, p1);
+    assert.equal(srv.getState().teamKills, 20);
+    const motoZombies = srv.enemies.filter((e) => e.variant === 'motorcycle');
+    assert.equal(motoZombies.length, 1, 'Exactly 1 motorcycle zombie spawned at 20 kills');
+
+    const mz = motoZombies[0];
+    assert.equal(mz.variant, 'motorcycle');
+    // Regular zombie walker has moveForce = 210. Motorcycle zombie is 5x = 1050
+    assert.equal(mz.moveForce, 1050, 'Motorcycle zombie moves 5x as fast as regular zombie (5 * 210 = 1050)');
+    assert.equal(mz.turnRate, 1.2, 'Motorcycle zombie has turnRate for wide turning radius');
+
+    // 3. Spawns again at 40 kills
+    srv.enemies.length = 0;
+    srv.setState({ teamKills: 39, lastMotorcycleSpawnMilestone: 20 });
+    addTestEnemy(2100, 2000, 10);
+    srv.defeatEnemy(srv.enemies.length - 1, p1);
+    assert.equal(srv.getState().teamKills, 40);
+    assert.equal(srv.enemies.filter((e) => e.variant === 'motorcycle').length, 1, 'Spawns motorcycle zombie at 40 kills');
+
+    // 4. Wide turning radius physics verification:
+    // Place a motorcycle zombie pointing East (angle = 0).
+    // Place player directly North (targetAngle = -PI/2).
+    // Angle difference is PI/2 = 1.5708 rad.
+    // In one step (dt = 0.016), turn rate is 1.2 rad/s.
+    // Max angular change is 1.2 * 0.016 = 0.0192 rad.
+    // Regular zombie immediately snaps angle to -PI/2; motorcycle zombie only turns by 0.0192 rad!
+    srv.enemies.length = 0;
+    const testMoto = srv.spawnMotorcycleZombie();
+    testMoto.x = 2000;
+    testMoto.y = 2000;
+    testMoto.vx = 0;
+    testMoto.vy = 0;
+    testMoto.angle = 0; // Pointing East
+    p1.x = 2000;
+    p1.y = 1500; // Directly North of motorcycle
+
+    const dt = 0.016;
+    srv.stepWorldPhysics(dt);
+
+    const expectedMaxTurn = 1.2 * dt;
+    assert.ok(
+      Math.abs(testMoto.angle) <= expectedMaxTurn + 0.001,
+      `Motorcycle angle should turn smoothly by <= ${expectedMaxTurn} rad, actual: ${testMoto.angle}`
+    );
+    // Acceleration should be directed along vehicle heading (mostly East), not snapped North
+    assert.ok(testMoto.vx > 0, 'Motorcycle zombie accelerates forward along its vehicle heading (East)');
+
+    // Compare with regular zombie walker:
+    const regularWalker = {
+      id: 9999,
+      variant: 'walker',
+      x: 2000,
+      y: 2000,
+      vx: 0,
+      vy: 0,
+      angle: 0,
+      radius: 19,
+      mass: 1.45,
+      hp: 75,
+      maxHp: 75,
+      moveForce: 210,
+      traction: 4.6,
+      hitCooldown: 0,
+      chainHitCooldown: 0,
+      contactCooldown: 0,
+      walkPhase: 0,
+    };
+    srv.enemies.push(regularWalker);
+    srv.stepWorldPhysics(dt);
+    // Regular walker immediately points North (angle ~ -PI/2) and moves North (negative vy)
+    assert.ok(regularWalker.vy < 0, 'Regular walker snaps acceleration directly towards player North');
+
+    // 5. Dismount on non-fatal hit:
+    // 5. Motorcycle dismount / wreck conditions:
+    // A. Injured <= 50% of maxHp: does NOT dismount, does NOT lay down motorcycle
+    testMoto.hp = 75;
+    testMoto.maxHp = 75;
+    srv.laidDownMotorcycles.length = 0;
+    srv.setState({ pendingEvents: [] });
+    testMoto.hp = 45; // 30 damage <= 50% (37.5) lost
+    const dismountMinor = srv.checkMotorcycleDismount(testMoto);
+    assert.strictEqual(dismountMinor, false, 'Damage <= 50% should not dismount motorcycle zombie');
+    assert.equal(testMoto.variant, 'motorcycle', 'Motorcycle zombie remains mounted when damage <= 50%');
+    assert.equal(srv.laidDownMotorcycles.length, 0, 'No motorcycle wreck laid down when damage <= 50%');
+
+    // B. Injured > 50% of maxHp: dismounts to walker and lays down motorcycle for 30s
+    testMoto.hp = 30; // 45 damage > 50% (37.5) lost
+    const dismounted = srv.checkMotorcycleDismount(testMoto);
+    assert.strictEqual(dismounted, true, 'Damage > 50% should dismount motorcycle zombie');
+    assert.equal(testMoto.variant, 'walker', 'Motorcycle zombie changes to regular walker zombie');
+    assert.equal(testMoto.moveForce, 210, 'Move force resets to regular zombie speed (210)');
+    assert.equal(testMoto.radius, 19, 'Radius resets to regular zombie radius (19)');
+    assert.equal(testMoto.turnRate, null, 'Turn rate is cleared so it moves like regular zombie');
+    assert.equal(testMoto.hp, 30, 'Retains remaining HP');
+
+    const crashEv = srv.getState().pendingEvents.find((e) => e.type === 'floating_text' && e.text === 'CRASH!');
+    assert.ok(crashEv, 'Should emit CRASH! floating text on dismount');
+
+    const wreckEv = srv.getState().pendingEvents.find((e) => e.type === 'motorcycle_wreck');
+    assert.ok(wreckEv, 'Should emit motorcycle_wreck event on dismount');
+    assert.equal(wreckEv.duration, 5.0, 'Motorcycle wreck duration should be 5 seconds');
+    assert.equal(wreckEv.radius, 25, 'Laid-down motorcycle radius is 20% larger (25px vs 21px)');
+    assert.equal(wreckEv.x, Math.round(testMoto.x));
+    assert.equal(wreckEv.y, Math.round(testMoto.y));
+
+    assert.equal(srv.laidDownMotorcycles.length, 1, 'Server tracks laid-down motorcycle');
+    assert.equal(srv.laidDownMotorcycles[0].radius, 25, 'Laid-down motorcycle is 20% larger');
+    assert.equal(srv.laidDownMotorcycles[0].duration, 5.0);
+    assert.equal(srv.laidDownMotorcycles[0].timer, 5.0);
+
+    // After 2.5s of physics, still present
+    srv.stepWorldPhysics(2.5);
+    assert.equal(srv.laidDownMotorcycles.length, 1, 'Laid-down motorcycle should still be present at 2.5s');
+    assert.ok(Math.abs(srv.laidDownMotorcycles[0].timer - 2.5) < 0.001);
+
+    // After another 3.0s (total 5.5s > 5.0s), motorcycle expires and is removed
+    srv.stepWorldPhysics(3.0);
+    assert.equal(srv.laidDownMotorcycles.length, 0, 'Laid-down motorcycle removed after 5 seconds');
+
+    // C. Fatal hit kills motorcycle zombie and lays down motorcycle for 5 seconds
+    const testMotoFatal = srv.spawnMotorcycleZombie();
+    testMotoFatal.hp = 0;
+    srv.laidDownMotorcycles.length = 0;
+    srv.defeatEnemy(testMotoFatal);
+    assert.equal(srv.laidDownMotorcycles.length, 1, 'Killed motorcycle zombie lays down motorcycle');
+    assert.equal(srv.laidDownMotorcycles[0].duration, 5.0, 'Wreck from defeated motorcycle zombie lasts 5s');
+
+    // D. Warrior claiming laid-down motorcycle as mount
+    srv.blackCircles.length = 0;
+    const pUnmounted = srv.players.get('p1');
+    assert.ok(pUnmounted, 'Player p1 exists');
+    pUnmounted.mountType = null;
+    pUnmounted.bulldozerTimer = 0;
+    pUnmounted.hp = 100;
+    const wreck = srv.laidDownMotorcycles[0];
+    pUnmounted.x = wreck.x;
+    pUnmounted.y = wreck.y;
 
     srv.setState({ pendingEvents: [] });
-    srv.checkAndStepClotheslines(1 / 60);
+    srv.stepPlayerPhysics(pUnmounted, 0.05);
 
-    assert.equal(eMid.hp, 150 - srv.CLOTHESLINE_BEAM_DAMAGE, 'Trapped enemy should take 140 damage');
+    assert.equal(pUnmounted.mountType, 'motorcycle', 'Touching laid-down motorcycle claims it as mount');
+    assert.equal(pUnmounted.mountMaxHp, 100);
+    assert.equal(pUnmounted.mountHp, 100);
+    assert.equal(pUnmounted.radius, srv.MOTORCYCLE_MOUNT_RADIUS);
+    assert.equal(srv.laidDownMotorcycles.length, 0, 'Claimed motorcycle wreck is removed from the ground');
 
-    // Slicing damage should defeat an enemy with <= 140 HP
-    const eWeak = addTestEnemy(2120, 1950, 80);
-    srv.checkAndStepClotheslines(1 / 60);
-    assert.ok(!srv.enemies.includes(eWeak), 'Weak trapped zombie should be defeated by beam');
+    const claimEv = srv.getState().pendingEvents.find((e) => e.type === 'claim_motorcycle');
+    assert.ok(claimEv, 'Emits claim_motorcycle event');
 
-    // Verify serialization in buildGameStatePayload
-    const payload = srv.buildGameStatePayload();
-    assert.ok(Array.isArray(payload.clotheslines));
-    assert.equal(payload.clotheslines.length, 1);
-    assert.equal(payload.clotheslines[0].x1, 2000);
-    assert.equal(payload.clotheslines[0].x2, 2200);
-    assert.equal(payload.players[0].hammers[0].isWhirlwind, false);
+    // E. Warrior already with mount cannot claim another motorcycle
+    const wreck2 = srv.spawnMotorcycleWreck(pUnmounted.x, pUnmounted.y, 0, 18);
+    assert.equal(srv.laidDownMotorcycles.length, 1);
+    srv.stepPlayerPhysics(pUnmounted, 0.05);
+    assert.equal(srv.laidDownMotorcycles.length, 1, 'Warrior already on mount cannot claim laid-down motorcycle');
+
+    // F. Warrior riding motorcycle enforces wide minimum turning radius (capped at 1.2 rad/s)
+    const motoRider = addTestPlayer('moto-rider', 2000, 2000);
+    motoRider.mountType = 'motorcycle';
+    motoRider.mountHp = 100;
+    motoRider.mountMaxHp = 100;
+    motoRider.angle = 0; // Pointing East
+    motoRider.vx = 250;
+    motoRider.vy = 0;
+    // Mouse directly North (targetAngle = -PI/2)
+    motoRider.input.mouseWorldX = 2000;
+    motoRider.input.mouseWorldY = 1500;
+
+    const motoDt = 0.05;
+    srv.stepPlayerPhysics(motoRider, motoDt);
+
+    // Turn rate capped at MOTORCYCLE_TURN_RATE (1.2 rad/s)
+    const expectedTurnCap = srv.MOTORCYCLE_TURN_RATE * motoDt; // 0.06 rad
+    assert.ok(
+      Math.abs(motoRider.angle) <= expectedTurnCap + 1e-4,
+      `Motorcycle warrior angle should turn slowly (<= ${expectedTurnCap} rad), actual: ${motoRider.angle}`
+    );
+    assert.ok(
+      motoRider.vx > 0,
+      'Motorcycle warrior maintains forward momentum through turn instead of reverse-braking'
+    );
+
+    // Contrast with warrior on foot (standard quick turning)
+    const footWarrior = addTestPlayer('foot-warrior', 2000, 2000);
+    footWarrior.mountType = null;
+    footWarrior.angle = 0;
+    footWarrior.input.mouseWorldX = 2000;
+    footWarrior.input.mouseWorldY = 1500;
+    srv.stepPlayerPhysics(footWarrior, motoDt);
+    assert.ok(
+      Math.abs(footWarrior.angle) > expectedTurnCap * 5,
+      'Warrior on foot turns much faster than motorcycle warrior'
+    );
   });
 
   it('handles zombie limb loss at 50% and 75% HP loss, hopping locomotion, and headless circling', () => {
@@ -1479,5 +1777,201 @@ describe('Whirlwind / Momentum Spin-Up and The Clothesline (Tandem Wire)', () =>
 
     assert.ok(speedOneLeg < speedNormal, '1 leg lost should move slower than normal');
     assert.ok(speedNoLegs < speedOneLeg, '2 legs lost should hop at a slower pace than 1 leg');
+  });
+});
+
+describe('Robot Warriors (Server-Controlled Bots) & Mode Cycling', () => {
+  beforeEach(() => {
+    resetTestWorld();
+  });
+
+  it('spawns a maximum of 1 robot warrior when exactly 1 human reaches multiples of 30 kills, and does not spawn when >1 human', () => {
+    const p1 = addTestPlayer('p1', 2000, 2000);
+    assert.equal(srv.countHumanPlayers(), 1);
+    assert.equal(srv.countBotWarriors(), 0);
+
+    // Defeat 29 enemies with human player p1
+    for (let k = 1; k <= 29; k++) {
+      const e = addTestEnemy(2100, 2000, 10);
+      srv.defeatEnemy(srv.enemies.indexOf(e), p1);
+      assert.equal(p1.kills, k);
+      assert.equal(srv.countBotWarriors(), 0, 'No bot should spawn before reaching 30 kills');
+    }
+
+    // 30th kill triggers bot spawn
+    const e30 = addTestEnemy(2100, 2000, 10);
+    srv.defeatEnemy(srv.enemies.indexOf(e30), p1);
+    assert.equal(p1.kills, 30);
+    assert.equal(srv.countBotWarriors(), 1, '1st bot warrior should spawn at 30 kills');
+
+    const bots = Array.from(srv.players.values()).filter((p) => p.isBot);
+    assert.equal(bots.length, 1);
+    const bot1 = bots[0];
+    assert.equal(bot1.isBot, true);
+    assert.equal(bot1.ws, null);
+    assert.ok(bot1.name.endsWith(' (bot)'), `Bot name should end with " (bot)", got: ${bot1.name}`);
+    assert.ok(bot1.name.length <= 26);
+    assert.ok(bot1.hammer !== null);
+    assert.ok(bot1.chainNodes.length >= 2);
+    assert.equal(bot1.alive, true);
+    assert.equal(bot1.botMode, 'aggressive');
+
+    // 60th kill should NOT spawn a 2nd bot because max is 1
+    for (let k = 31; k <= 60; k++) {
+      const e = addTestEnemy(2100, 2000, 10);
+      srv.defeatEnemy(srv.enemies.indexOf(e), p1);
+    }
+    assert.equal(p1.kills, 60);
+    assert.equal(srv.countBotWarriors(), 1, 'Should not exceed MAX_BOT_WARRIORS (1)');
+
+    // Multiple humans: when >1 human is in the game, reaching multiple of 30 does NOT spawn bot
+    srv.players.clear();
+    const h1 = addTestPlayer('h1', 1500, 1500);
+    const h2 = addTestPlayer('h2', 2500, 2500);
+    assert.equal(srv.countHumanPlayers(), 2);
+    assert.equal(srv.countBotWarriors(), 0);
+
+    for (let k = 1; k <= 30; k++) {
+      const e = addTestEnemy(1600, 1500, 10);
+      srv.defeatEnemy(srv.enemies.indexOf(e), h1);
+    }
+    assert.equal(h1.kills, 30);
+    assert.equal(srv.countBotWarriors(), 0, 'Should not spawn bot when there are 2 human players');
+  });
+
+  it('never adds robot warriors to the leaderboard regardless of kills or nickname updates', () => {
+    addTestPlayer('p1', 2000, 2000);
+    const bot = srv.spawnBotWarrior();
+    assert.ok(bot);
+    assert.equal(bot.isBot, true);
+
+    // Attempting to set nickname on bot should be a no-op
+    const origName = bot.name;
+    const res = srv.setPlayerNickname(bot, 'SpeedyCheater');
+    assert.equal(res, '');
+    assert.equal(bot.name, origName, 'Bot name must not be changed by setPlayerNickname');
+
+    // Bot kills enemies
+    for (let i = 0; i < 50; i++) {
+      const e = addTestEnemy(2100, 2000, 10);
+      srv.defeatEnemy(srv.enemies.indexOf(e), bot);
+    }
+    assert.equal(bot.kills, 50);
+
+    // Explicit call to updateLeaderboardForPlayer
+    srv.updateLeaderboardForPlayer(bot);
+
+    // Verify leaderboard is empty of bots
+    const leaderboard = srv.getTopLeaderboard();
+    assert.ok(!leaderboard.some((entry) => entry.name === bot.name || entry.name.includes('(bot)')));
+    assert.equal(srv.leaderboardRecords.size, 0, 'No leaderboard records should be recorded for bot');
+  });
+
+  it('cycles strictly between aggressive, evasive, and greedy modes regardless of remaining hitpoints', () => {
+    const bot = srv.spawnBotWarrior();
+    assert.ok(bot);
+
+    // 1. Test cycling at Full HP (100)
+    bot.hp = 100;
+    bot.botMode = 'aggressive';
+    bot.botModeTimer = srv.BOT_MODE_CYCLE_DURATION;
+
+    srv.stepBotAI(bot, srv.BOT_MODE_CYCLE_DURATION);
+    assert.equal(bot.botMode, 'evasive', 'Aggressive should transition to Evasive at 100 HP');
+
+    srv.stepBotAI(bot, srv.BOT_MODE_CYCLE_DURATION);
+    assert.equal(bot.botMode, 'greedy', 'Evasive should transition to Greedy at 100 HP');
+
+    srv.stepBotAI(bot, srv.BOT_MODE_CYCLE_DURATION);
+    assert.equal(bot.botMode, 'aggressive', 'Greedy should transition to Aggressive at 100 HP');
+
+    // 2. Test cycling at Half HP (50) - cycle behaves identically
+    bot.hp = 50;
+    srv.stepBotAI(bot, srv.BOT_MODE_CYCLE_DURATION);
+    assert.equal(bot.botMode, 'evasive', 'Aggressive should transition to Evasive at 50 HP');
+
+    srv.stepBotAI(bot, srv.BOT_MODE_CYCLE_DURATION);
+    assert.equal(bot.botMode, 'greedy', 'Evasive should transition to Greedy at 50 HP');
+
+    srv.stepBotAI(bot, srv.BOT_MODE_CYCLE_DURATION);
+    assert.equal(bot.botMode, 'aggressive', 'Greedy should transition to Aggressive at 50 HP');
+
+    // 3. Test cycling at Critical HP (10) - cycle still behaves identically
+    bot.hp = 10;
+    srv.stepBotAI(bot, srv.BOT_MODE_CYCLE_DURATION);
+    assert.equal(bot.botMode, 'evasive', 'Aggressive should transition to Evasive at 10 HP');
+
+    srv.stepBotAI(bot, srv.BOT_MODE_CYCLE_DURATION);
+    assert.equal(bot.botMode, 'greedy', 'Evasive should transition to Greedy at 10 HP');
+
+    srv.stepBotAI(bot, srv.BOT_MODE_CYCLE_DURATION);
+    assert.equal(bot.botMode, 'aggressive', 'Greedy should transition to Aggressive at 10 HP');
+  });
+
+  it('executes mode-specific steering and collects pickups in world physics', () => {
+    addTestPlayer('p1', 1000, 1000);
+    const bot = srv.spawnBotWarrior();
+    bot.x = 2000;
+    bot.y = 2000;
+    bot.vx = 0;
+    bot.vy = 0;
+
+    // 1. Aggressive mode: maintains chain length distance from nearest enemy
+    const enemy = addTestEnemy(2400, 2000, 100);
+    bot.botMode = 'aggressive';
+    bot.botModeTimer = 10;
+    srv.stepBotAI(bot, 0.016);
+    // When enemy is far (400px > 76px chainDist), bot steers toward enemy
+    assert.ok(bot.input.mouseWorldX > bot.x, 'Aggressive bot should move toward distant enemy');
+
+    // When enemy is too close (30px < 76px chainDist), bot backs away to avoid contact damage
+    enemy.x = 2030;
+    enemy.y = 2000;
+    srv.stepBotAI(bot, 0.016);
+    assert.ok(bot.input.mouseWorldX < bot.x, 'Aggressive bot should back away when enemy is closer than chain length');
+
+    // With longer chain (5 links = 85px), enemy at 60px is within chain distance and bot backs away
+    bot.chainLinks = 5;
+    enemy.x = 2060;
+    enemy.y = 2000;
+    srv.stepBotAI(bot, 0.016);
+    assert.ok(bot.input.mouseWorldX < bot.x, 'Aggressive bot should scale distance to longer chain links');
+
+    // Reset bot chain links and enemy position for remaining checks
+    bot.chainLinks = 2;
+    enemy.x = 2400;
+    enemy.y = 2000;
+
+    // 2. Evasive mode: steers away from enemy
+    bot.botMode = 'evasive';
+    bot.botModeTimer = 10;
+    srv.stepBotAI(bot, 0.016);
+    // Mouse target should steer West away from enemy at 2400
+    assert.ok(bot.input.mouseWorldX < 2000, 'Evasive bot should aim mouse away from enemy (West)');
+
+    // 3. Greedy mode: steers toward pickup
+    srv.enemies.length = 0;
+    srv.blackCircles.length = 0;
+    srv.blackCircles.push({
+      id: 'pickup_test',
+      x: 2150,
+      y: 2000,
+      radius: 12,
+      type: 'speed',
+      lifetime: 30,
+    });
+    bot.botMode = 'greedy';
+    bot.botModeTimer = 10;
+    srv.stepBotAI(bot, 0.016);
+    assert.equal(bot.input.mouseWorldX, 2150, 'Greedy bot should target pickup X');
+    assert.equal(bot.input.mouseWorldY, 2000, 'Greedy bot should target pickup Y');
+
+    // 4. World physics integration: stepping world physics moves bot and collects pickup
+    srv.blackCircles[0].x = bot.x;
+    srv.blackCircles[0].y = bot.y;
+    assert.equal(srv.blackCircles.length, 1);
+    srv.stepWorldPhysics(0.016);
+    assert.equal(srv.blackCircles.length, 0, 'Bot should have collected the pickup');
+    assert.equal(bot.speedMultiplier, 1.05);
   });
 });

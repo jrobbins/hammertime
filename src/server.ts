@@ -103,7 +103,8 @@ const ZOMBIE_DANCE_IMMUNE_DURATION = 45.0;
 const BULLDOZER_DURATION = 20.0;
 const BULLDOZER_SPEED_MULT = 0.5;
 const BULLDOZER_TRACTION_MULT = 10.0;
-const BULLDOZER_RADIUS = 34;
+const BULLDOZER_SCALE = 1.4;
+const BULLDOZER_RADIUS = Math.round(34 * BULLDOZER_SCALE); // 48 (40% larger)
 
 const HORSE_RADIUS = 35;
 const TORTOISE_RADIUS = 36;
@@ -140,9 +141,20 @@ const WHIRLWIND_LEVEL_RADII = [0, 140, 180, 220, 260, 300] as const;
 const WHIRLWIND_GUST_RADIUS = 140;
 const WHIRLWIND_GUST_DAMAGE = 40;
 
-const CLOTHESLINE_DURATION = 2.0;
-const CLOTHESLINE_TRIGGER_DIST = 42;
-const CLOTHESLINE_BEAM_DAMAGE = 140;
+const ARMORED_MOB_FIRST_MILESTONE = 50;
+const ARMORED_MOB_INTERVAL = 50;
+const ARMORED_MOB_BASE_SIZE = 6;
+const ARMORED_MOB_MAX_SIZE = 12;
+const ARMORED_MOB_SPEED_MULT = 1.5;
+const ARMORED_MOB_HP_MULT = 4.0;
+
+const MOTORCYCLE_SPAWN_INTERVAL = 20;
+const MOTORCYCLE_SPEED_MULT = 5.0;
+const MOTORCYCLE_TURN_RATE = 1.2;
+const MOTORCYCLE_WRECK_DURATION = 5.0;
+const MOTORCYCLE_WRECK_SCALE = 1.2;
+const MOTORCYCLE_WRECK_RADIUS = Math.round(21 * MOTORCYCLE_WRECK_SCALE); // 25
+const MOTORCYCLE_MOUNT_RADIUS = 30;
 
 const HIT_STOP_DURATION = 0.030;
 const HIT_STOP_DAMAGE_THRESHOLD = 350;
@@ -176,6 +188,270 @@ const PLAYER_PALETTES = [
   { name: 'Templar', armor: '#4fd1c5', cape: '#234e52', plume: '#ffffff' },
 ];
 
+const MAX_BOT_WARRIORS = 1;
+const BOT_SPAWN_KILL_INTERVAL = 30;
+const BOT_MODE_CYCLE_DURATION = 6.0;
+const BOT_MODES = ['aggressive', 'evasive', 'greedy'] as const;
+type BotMode = (typeof BOT_MODES)[number];
+
+const BOT_NAME_TITLES = ['Sir', 'Lord', 'Lady', 'Dame', 'Knight', 'Hero'];
+const BOT_NAME_FIRSTS = ['Arthur', 'Cedric', 'Gareth', 'Eleanor', 'Rosalind', 'Roland', 'Tristan', 'Guinevere', 'Isolde', 'Beatrice'];
+const BOT_NAME_DESCRIPTORS = ['Iron', 'Golden', 'Swift', 'Silent', 'Crimson', 'Storm'];
+const BOT_NAME_CLASSES = ['Knight', 'Warrior', 'Paladin', 'Champion', 'Slayer', 'Vanguard'];
+
+let nextBotId = 1;
+
+function getRandomBotName(): string {
+  const roll = Math.random();
+  let base: string;
+  if (roll < 0.5) {
+    const t = BOT_NAME_TITLES[Math.floor(Math.random() * BOT_NAME_TITLES.length)];
+    const n = BOT_NAME_FIRSTS[Math.floor(Math.random() * BOT_NAME_FIRSTS.length)];
+    base = `${t} ${n}`;
+  } else {
+    const d = BOT_NAME_DESCRIPTORS[Math.floor(Math.random() * BOT_NAME_DESCRIPTORS.length)];
+    const c = BOT_NAME_CLASSES[Math.floor(Math.random() * BOT_NAME_CLASSES.length)];
+    base = `${d} ${c}`;
+  }
+  return `${base} (bot)`;
+}
+
+function countHumanPlayers(): number {
+  let count = 0;
+  for (const p of players.values()) {
+    if (!p.isBot) count++;
+  }
+  return count;
+}
+
+function countBotWarriors(): number {
+  let count = 0;
+  for (const p of players.values()) {
+    if (p.isBot && p.alive) count++;
+  }
+  return count;
+}
+
+function spawnBotWarrior(): any {
+  if (countBotWarriors() >= MAX_BOT_WARRIORS) return null;
+  const num = nextPlayerNum++;
+  const palette = PLAYER_PALETTES[(num - 1) % PLAYER_PALETTES.length];
+  const botId = `bot_${nextBotId++}`;
+
+  const humans = Array.from(players.values()).filter((p) => !p.isBot && p.alive);
+  let spawnX = WORLD_WIDTH / 2;
+  let spawnY = WORLD_HEIGHT / 2;
+  if (humans.length > 0) {
+    const angle = Math.random() * Math.PI * 2;
+    const dist = 100 + Math.random() * 80;
+    spawnX = Math.max(120, Math.min(WORLD_WIDTH - 120, humans[0].x + Math.cos(angle) * dist));
+    spawnY = Math.max(120, Math.min(WORLD_HEIGHT - 120, humans[0].y + Math.sin(angle) * dist));
+  }
+
+  const bot = {
+    id: botId,
+    ws: null,
+    isBot: true,
+    num,
+    name: getRandomBotName(),
+    hasCustomNickname: true,
+    color: palette.armor,
+    capeColor: palette.cape,
+    plumeColor: palette.plume,
+    x: spawnX,
+    y: spawnY,
+    vx: 0,
+    vy: 0,
+    angle: Math.random() * Math.PI * 2,
+    radius: 20,
+    mass: 4.2,
+    turnSpeed: 3.3,
+    walkThrust: 980,
+    runThrust: 1520,
+    strideCharge: 0,
+    groundTraction: 5.2,
+    hp: 100,
+    maxHp: 100,
+    regenRate: 0,
+    alive: true,
+    mountType: null,
+    mountHp: 0,
+    mountMaxHp: 0,
+    bulldozerTimer: 0,
+    speedMultiplier: 1.0,
+    tractionMultiplier: 1.0,
+    chainLinks: INITIAL_CHAIN_LINKS,
+    walkCycle: 0,
+    hurtFlash: 0,
+    kills: 0,
+    maxDamageBlow: 0,
+    hammers: [],
+    hammer: null,
+    chainNodes: [],
+    input: {
+      mouseWorldX: spawnX,
+      mouseWorldY: spawnY,
+    },
+    lastActivityTime: Date.now(),
+    botMode: 'aggressive' as BotMode,
+    botModeTimer: BOT_MODE_CYCLE_DURATION,
+    botSwingPhase: Math.random() * Math.PI * 2,
+    botDeathTimer: 0,
+  };
+
+  bot.hammers = [createPlayerHammer(bot, Math.PI / 2)];
+  bot.hammer = bot.hammers[0];
+  bot.chainNodes = bot.hammer.chainNodes;
+  players.set(bot.id, bot);
+  return bot;
+}
+
+function stepBotAI(bot: any, dt: number) {
+  if (!bot || !bot.alive) return;
+
+  bot.lastActivityTime = Date.now();
+
+  // Mode cycle: aggressive -> evasive -> greedy -> aggressive (strictly timer-based, regardless of HP)
+  bot.botModeTimer = (bot.botModeTimer || BOT_MODE_CYCLE_DURATION) - dt;
+  if (bot.botModeTimer <= 0) {
+    bot.botModeTimer = BOT_MODE_CYCLE_DURATION;
+    if (bot.botMode === 'aggressive') {
+      bot.botMode = 'evasive';
+    } else if (bot.botMode === 'evasive') {
+      bot.botMode = 'greedy';
+    } else {
+      bot.botMode = 'aggressive';
+    }
+  }
+
+  bot.botSwingPhase = (bot.botSwingPhase || 0) + dt * 7.0;
+
+  if (bot.botMode === 'aggressive') {
+    // 1. Aggressive: find closest active enemy, steer to close distance, spin/swing hammer
+    let nearestEnemy = null;
+    let minEnemyDist = Infinity;
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i];
+      if (e.hp <= 0) continue;
+      const d = Math.hypot(e.x - bot.x, e.y - bot.y);
+      if (d < minEnemyDist) {
+        minEnemyDist = d;
+        nearestEnemy = e;
+      }
+    }
+
+    if (nearestEnemy) {
+      // Maintain distance from nearest enemy approximately equal to chain length
+      const chainDist = getChainRestLength(
+        bot.chainLinks || (bot.hammer && bot.hammer.chainLinks) || INITIAL_CHAIN_LINKS,
+        bot.hammer ? bot.hammer.linkLength : LENGTH_PER_LINK
+      );
+
+      const dx = bot.x - nearestEnemy.x;
+      const dy = bot.y - nearestEnemy.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const ux = dx / dist; // Unit vector pointing from enemy toward bot
+      const uy = dy / dist;
+
+      // Tangent vector for orbital swing around enemy
+      const tx = -uy;
+      const ty = ux;
+
+      // Radial correction: push outward if closer than chainDist, pull inward if further
+      const radialDiff = chainDist - dist;
+      const radialStep = Math.max(-240, Math.min(240, radialDiff * 2.0));
+      // Tangential sweep to keep hammer swinging around enemy
+      const tangentStep = 100;
+
+      let steerX = bot.x + ux * radialStep + tx * tangentStep;
+      let steerY = bot.y + uy * radialStep + ty * tangentStep;
+
+      // Gentle boundary avoidance so bot doesn't back up into arena walls
+      const margin = 140;
+      if (steerX < margin) steerX = margin + 40;
+      if (steerX > WORLD_WIDTH - margin) steerX = WORLD_WIDTH - margin - 40;
+      if (steerY < margin) steerY = margin + 40;
+      if (steerY > WORLD_HEIGHT - margin) steerY = WORLD_HEIGHT - margin - 40;
+
+      bot.input.mouseWorldX = steerX;
+      bot.input.mouseWorldY = steerY;
+    } else {
+      bot.input.mouseWorldX = WORLD_WIDTH / 2 + Math.cos(bot.botSwingPhase * 0.4) * 180;
+      bot.input.mouseWorldY = WORLD_HEIGHT / 2 + Math.sin(bot.botSwingPhase * 0.4) * 180;
+    }
+  } else if (bot.botMode === 'evasive') {
+    // 2. Evasive: steer away from enemies and world walls
+    let repX = 0;
+    let repY = 0;
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i];
+      if (e.hp <= 0) continue;
+      const dx = bot.x - e.x;
+      const dy = bot.y - e.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      if (dist < 340) {
+        const force = (340 - dist) / 340;
+        repX += (dx / dist) * force;
+        repY += (dy / dist) * force;
+      }
+    }
+    for (let c = 0; c < stoneColumns.length; c++) {
+      const col = stoneColumns[c];
+      const dx = bot.x - col.x;
+      const dy = bot.y - col.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const safeDist = col.radius + 60;
+      if (dist < safeDist) {
+        const force = (safeDist - dist) / safeDist;
+        repX += (dx / dist) * force * 1.5;
+        repY += (dy / dist) * force * 1.5;
+      }
+    }
+    const margin = 220;
+    if (bot.x < margin) repX += (margin - bot.x) / margin;
+    if (bot.x > WORLD_WIDTH - margin) repX -= (bot.x - (WORLD_WIDTH - margin)) / margin;
+    if (bot.y < margin) repY += (margin - bot.y) / margin;
+    if (bot.y > WORLD_HEIGHT - margin) repY -= (bot.y - (WORLD_HEIGHT - margin)) / margin;
+
+    const repLen = Math.hypot(repX, repY);
+    if (repLen > 0.001) {
+      bot.input.mouseWorldX = bot.x + (repX / repLen) * 200;
+      bot.input.mouseWorldY = bot.y + (repY / repLen) * 200;
+    } else {
+      const awayX = bot.x - WORLD_WIDTH / 2;
+      const awayY = bot.y - WORLD_HEIGHT / 2;
+      const awayLen = Math.hypot(awayX, awayY) || 1;
+      bot.input.mouseWorldX = bot.x + (awayX / awayLen) * 150;
+      bot.input.mouseWorldY = bot.y + (awayY / awayLen) * 150;
+    }
+  } else {
+    // 3. Greedy: steer directly to nearest pickup
+    let nearestPickup = null;
+    let minPickupDist = Infinity;
+    for (let i = 0; i < blackCircles.length; i++) {
+      const p = blackCircles[i];
+      const d = Math.hypot(p.x - bot.x, p.y - bot.y);
+      if (d < minPickupDist) {
+        minPickupDist = d;
+        nearestPickup = p;
+      }
+    }
+
+    if (nearestPickup) {
+      bot.input.mouseWorldX = nearestPickup.x;
+      bot.input.mouseWorldY = nearestPickup.y;
+    } else {
+      if (enemies.length > 0) {
+        bot.input.mouseWorldX = enemies[0].x;
+        bot.input.mouseWorldY = enemies[0].y;
+      } else {
+        bot.input.mouseWorldX = WORLD_WIDTH / 2;
+        bot.input.mouseWorldY = WORLD_HEIGHT / 2;
+      }
+    }
+  }
+}
+
 // --- World State ---
 const stoneColumns = STONE_COLUMNS.map((col) => ({ ...col }));
 const enemies = [];
@@ -205,21 +481,21 @@ let avgTickMs = 0;
 let isReducedFidelity = false;
 let lastEmptyTime: number | null = Date.now();
 let lastServerWallClockTime = Date.now();
+let lastMobSpawnMilestone = 0;
+let lastMotorcycleSpawnMilestone = 0;
+let nextMobId = 1;
+let nextMotorcycleWreckId = 1;
 
-interface ActiveClothesline {
-  id: string;
-  p1Id: string;
-  p2Id: string;
-  h1Idx: number;
-  h2Idx: number;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
+interface LaidDownMotorcycle {
+  id: number;
+  x: number;
+  y: number;
+  angle: number;
+  radius: number;
   timer: number;
+  duration: number;
 }
-const activeClotheslines: ActiveClothesline[] = [];
-const clotheslineCooldowns = new Map<string, number>();
+const laidDownMotorcycles: LaidDownMotorcycle[] = [];
 
 function getLastEmptyTime(): number | null {
   return lastEmptyTime;
@@ -578,14 +854,14 @@ function recordLeaderboardKillScore(name, killsCount, color = '#f6e05e') {
 }
 
 function updateLeaderboardForPlayer(p) {
-  if (!p || !p.name) return;
+  if (!p || !p.name || p.isBot) return;
   if (p.hasCustomNickname || (p.kills || 0) > 0) {
     recordLeaderboardKillScore(p.name, p.kills || 0, p.color);
   }
 }
 
 function setPlayerNickname(p, rawNickname) {
-  if (!p) return '';
+  if (!p || p.isBot) return '';
   const cleanName = sanitizeNickname(rawNickname, p.name || 'Warrior');
   const oldKey = (p.name || '').toLowerCase();
   const newKey = cleanName.toLowerCase();
@@ -667,6 +943,11 @@ function createPlayer(id, ws) {
   const p = {
     id,
     ws,
+    isBot: false,
+    botMode: null,
+    botModeTimer: 0,
+    botSwingPhase: 0,
+    botDeathTimer: 0,
     num,
     name: `${palette.name} #${num}`,
     hasCustomNickname: false,
@@ -969,19 +1250,64 @@ function spawnCheatPowerups() {
   return spawned;
 }
 
+function spawnMotorcycleWreck(x: number, y: number, angle: number, radius = MOTORCYCLE_WRECK_RADIUS): LaidDownMotorcycle {
+  const wreck: LaidDownMotorcycle = {
+    id: nextMotorcycleWreckId++,
+    x: Math.round(x),
+    y: Math.round(y),
+    angle: +(angle || 0).toFixed(2),
+    radius,
+    timer: MOTORCYCLE_WRECK_DURATION,
+    duration: MOTORCYCLE_WRECK_DURATION,
+  };
+  laidDownMotorcycles.push(wreck);
+
+  pendingEvents.push({
+    type: 'motorcycle_wreck',
+    id: wreck.id,
+    x: wreck.x,
+    y: wreck.y,
+    angle: wreck.angle,
+    radius: wreck.radius,
+    duration: MOTORCYCLE_WRECK_DURATION,
+  });
+
+  return wreck;
+}
+
 function defeatEnemy(
-  index,
-  killerPlayer,
+  target: any,
+  killerPlayer: any = null,
   killerHammer: any = null,
   strikeHvx: number = 0,
   strikeHvy: number = 0
 ) {
-  const e = enemies[index];
+  let e: any;
+  let index: number = -1;
+  if (typeof target === 'number') {
+    index = target;
+    e = enemies[index];
+  } else if (target && typeof target === 'object') {
+    e = target;
+    index = enemies.indexOf(e);
+  }
   if (!e) return;
+  if (e.variant === 'motorcycle') {
+    spawnMotorcycleWreck(e.x, e.y, e.angle, Math.round((e.radius || 21) * MOTORCYCLE_WRECK_SCALE));
+  }
   teamKills += 1;
+  checkArmoredMobSpawn();
+  checkMotorcycleSpawn();
   if (killerPlayer) {
     killerPlayer.kills += 1;
-    updateLeaderboardForPlayer(killerPlayer);
+    if (!killerPlayer.isBot) {
+      updateLeaderboardForPlayer(killerPlayer);
+      if (killerPlayer.kills > 0 && killerPlayer.kills % BOT_SPAWN_KILL_INTERVAL === 0) {
+        if (countHumanPlayers() === 1 && countBotWarriors() < MAX_BOT_WARRIORS) {
+          spawnBotWarrior();
+        }
+      }
+    }
   }
   const pool = PICKUP_TYPES;
   const rareRoll = Math.random();
@@ -1113,7 +1439,9 @@ function defeatEnemy(
     vx: Math.round(ghostVx * 10) / 10,
     vy: Math.round(ghostVy * 10) / 10,
   });
-  enemies.splice(index, 1);
+  if (index >= 0) {
+    enemies.splice(index, 1);
+  }
 
   if (roundState === 'playing' && teamKills > VICTORY_KILL_TARGET) {
     triggerCoopVictory();
@@ -1122,6 +1450,7 @@ function defeatEnemy(
 
 function checkEnemyLimbLoss(e: any, hitVx: number = 0, hitVy: number = 0) {
   if (!e) return;
+  checkMotorcycleDismount(e);
   if (!e.lostLimbs) e.lostLimbs = [];
   if (e.hp <= 0) return;
 
@@ -1191,6 +1520,7 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer, options: any
       target.hp -= blastDamage;
       target.hurtFlash = 0.32;
       target.lastBlastKiller = sourcePlayer || null;
+      checkMotorcycleDismount(target);
       checkEnemyLimbLoss(
         target,
         (blastImpulse / target.mass) * bnx * 0.5,
@@ -1268,6 +1598,7 @@ function triggerWhirlwindGust(gx, gy, sourcePlayer, sourceHammer, options: any =
       target.hp -= gustDamage;
       target.hurtFlash = 0.28;
       target.lastBlastKiller = sourcePlayer || null;
+      checkMotorcycleDismount(target);
       checkEnemyLimbLoss(
         target,
         (gustImpulse / target.mass) * bnx * 0.5,
@@ -1328,169 +1659,253 @@ function updateHammerWhirlwind(p, h, dt) {
   }
 }
 
-function distPointToSegment(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
-  const dx = x2 - x1;
-  const dy = y2 - y1;
-  const lenSq = dx * dx + dy * dy;
-  if (lenSq < 1e-6) return Math.hypot(px - x1, py - y1);
-  const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
-  const projX = x1 + t * dx;
-  const projY = y1 + t * dy;
-  return Math.hypot(px - projX, py - projY);
+function spawnArmoredMob(mobSize: number): any[] {
+  const mobId = `mob_${nextMobId++}`;
+  const mobZombies: any[] = [];
+
+  const alivePlayers = Array.from(players.values()).filter((p) => p.alive);
+  let spawnCenterX = WORLD_WIDTH / 2;
+  let spawnCenterY = 160;
+
+  if (alivePlayers.length > 0) {
+    let bestDist = -1;
+    for (let attempt = 0; attempt < 16; attempt++) {
+      let cx = 160 + Math.random() * (WORLD_WIDTH - 320);
+      let cy = 160 + Math.random() * (WORLD_HEIGHT - 320);
+      if (Math.random() < 0.5) {
+        cx = Math.random() < 0.5 ? 160 : WORLD_WIDTH - 160;
+      } else {
+        cy = Math.random() < 0.5 ? 160 : WORLD_HEIGHT - 160;
+      }
+
+      let minDistToPlayer = Infinity;
+      for (const p of alivePlayers) {
+        const d = Math.hypot(p.x - cx, p.y - cy);
+        if (d < minDistToPlayer) minDistToPlayer = d;
+      }
+      if (minDistToPlayer > bestDist) {
+        bestDist = minDistToPlayer;
+        spawnCenterX = cx;
+        spawnCenterY = cy;
+      }
+    }
+  }
+
+  // Normal walker base stats: maxHp: 75, moveForce: 210
+  // Armored zombie: 4x normal HP = 300, 1.5x normal speed = 315 moveForce
+  const baseHp = 75 * ARMORED_MOB_HP_MULT; // 300
+  const baseMoveForce = Math.round(210 * ARMORED_MOB_SPEED_MULT); // 315
+
+  const timeMinutes = elapsedGameTime / 60;
+  const sizeScale = 1 + Math.min(1.65, timeMinutes * 0.42);
+  const hpScale = 1 + timeMinutes * 0.95 + Math.pow(timeMinutes, 1.35) * 0.25;
+
+  const mobHp = Math.round(baseHp * hpScale);
+  const mobMoveForce = Math.round(baseMoveForce * Math.pow(sizeScale, 0.9));
+  const mobRadius = Math.round(20 * sizeScale);
+  const mobMass = +(2.0 * Math.pow(sizeScale, 1.35)).toFixed(2);
+
+  for (let i = 0; i < mobSize; i++) {
+    const angle = (i / mobSize) * Math.PI * 2 + (Math.random() - 0.5) * 0.4;
+    const dist = 15 + Math.random() * 30;
+    const x = Math.max(80, Math.min(WORLD_WIDTH - 80, spawnCenterX + Math.cos(angle) * dist));
+    const y = Math.max(80, Math.min(WORLD_HEIGHT - 80, spawnCenterY + Math.sin(angle) * dist));
+
+    const enemy = {
+      id: nextEnemyId++,
+      variant: 'armored',
+      mobId,
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      radius: mobRadius,
+      mass: mobMass,
+      hp: mobHp,
+      maxHp: mobHp,
+      moveForce: mobMoveForce,
+      traction: 4.6,
+      contactDamage: 8,
+      contactPush: 280,
+      skinColor: '#5a6e5a',
+      coatColor: '#3a4454',
+      shirtColor: '#718096',
+      angle: Math.random() * Math.PI * 2,
+      hitCooldown: 0,
+      chainHitCooldown: 0,
+      contactCooldown: 0,
+      walkPhase: Math.random() * 10,
+      hurtFlash: 0,
+      burnTimer: 0,
+      fireproofTimer: 0,
+      fearTimer: 0,
+      danceTimer: 0,
+      danceImmuneTimer: 0,
+      webTimer: 0,
+      knockdownTimer: 0,
+      lostLimbs: [],
+    };
+    enemies.push(enemy);
+    mobZombies.push(enemy);
+  }
+
+  pendingEvents.push({
+    type: 'floating_text',
+    x: Math.round(spawnCenterX),
+    y: Math.round(spawnCenterY - 30),
+    text: `ARMORED MOB INCOMING! (${mobSize})`,
+    color: '#e2e8f0',
+    scale: 1.5,
+  });
+
+  return mobZombies;
 }
 
-function checkAndStepClotheslines(dt: number) {
-  // 1. Advance active clotheslines & slice trapped enemies
-  for (let i = activeClotheslines.length - 1; i >= 0; i--) {
-    const cl = activeClotheslines[i];
-    cl.timer -= dt;
-
-    const p1 = players.get(cl.p1Id);
-    const p2 = players.get(cl.p2Id);
-    const h1 = p1 && p1.alive && p1.hammers ? p1.hammers[cl.h1Idx] : null;
-    const h2 = p2 && p2.alive && p2.hammers ? p2.hammers[cl.h2Idx] : null;
-
-    if (!h1 || !h2) {
-      activeClotheslines.splice(i, 1);
-      continue;
-    }
-
-    cl.x1 = h1.x;
-    cl.y1 = h1.y;
-    cl.x2 = h2.x;
-    cl.y2 = h2.y;
-
-    for (let eIdx = enemies.length - 1; eIdx >= 0; eIdx--) {
-      const e = enemies[eIdx];
-      const dist = distPointToSegment(e.x, e.y, cl.x1, cl.y1, cl.x2, cl.y2);
-      if (dist <= e.radius + 18) {
-        if (e.hitCooldown <= 0) {
-          e.hp -= CLOTHESLINE_BEAM_DAMAGE;
-          e.hitCooldown = 0.12;
-          e.hurtFlash = 0.28;
-          checkEnemyLimbLoss(e, 0, 0);
-          const killer = p1 || p2 || null;
-          if (killer && CLOTHESLINE_BEAM_DAMAGE > killer.maxDamageBlow) {
-            killer.maxDamageBlow = CLOTHESLINE_BEAM_DAMAGE;
-          }
-          pendingEvents.push({
-            type: 'impact',
-            x: Math.round(e.x),
-            y: Math.round(e.y),
-            damage: CLOTHESLINE_BEAM_DAMAGE,
-            isChain: false,
-            dirX: -(cl.y2 - cl.y1),
-            dirY: cl.x2 - cl.x1,
-          });
-          pendingEvents.push({
-            type: 'floating_text',
-            x: Math.round(e.x),
-            y: Math.round(e.y - e.radius - 12),
-            text: `-${CLOTHESLINE_BEAM_DAMAGE}`,
-            color: '#38bdf8',
-            scale: 1.35,
-          });
-          if (e.hp <= 0) {
-            defeatEnemy(eIdx, killer);
-          }
-        }
-      }
-    }
-
-    if (cl.timer <= 0) {
-      activeClotheslines.splice(i, 1);
-    }
+function checkArmoredMobSpawn() {
+  while (teamKills >= lastMobSpawnMilestone + ARMORED_MOB_INTERVAL) {
+    lastMobSpawnMilestone += ARMORED_MOB_INTERVAL;
+    const mobStep = Math.floor(
+      (lastMobSpawnMilestone - ARMORED_MOB_FIRST_MILESTONE) / ARMORED_MOB_INTERVAL
+    );
+    const mobSize = Math.min(ARMORED_MOB_MAX_SIZE, ARMORED_MOB_BASE_SIZE + mobStep);
+    spawnArmoredMob(mobSize);
   }
+}
 
-  // 2. Step cooldown timers
-  for (const [key, cd] of clotheslineCooldowns.entries()) {
-    const nextCd = cd - dt;
-    if (nextCd <= 0) {
-      clotheslineCooldowns.delete(key);
-    } else {
-      clotheslineCooldowns.set(key, nextCd);
-    }
-  }
+function spawnMotorcycleZombie(): any {
+  const alivePlayers = Array.from(players.values()).filter((p) => p.alive);
+  let spawnX = 160;
+  let spawnY = 160;
 
-  // 3. Detect pairs of hammer heads or chains touching or crossing
-  const aliveHammers: Array<{ player: any; hammer: any; hIdx: number }> = [];
-  for (const p of players.values()) {
-    if (!p.alive || !p.hammers) continue;
-    for (let hIdx = 0; hIdx < p.hammers.length; hIdx++) {
-      aliveHammers.push({ player: p, hammer: p.hammers[hIdx], hIdx });
-    }
-  }
-
-  for (let a = 0; a < aliveHammers.length; a++) {
-    for (let b = a + 1; b < aliveHammers.length; b++) {
-      const ha = aliveHammers[a];
-      const hb = aliveHammers[b];
-      const pairKey = `${ha.player.id}:${ha.hIdx}-${hb.player.id}:${hb.hIdx}`;
-
-      if (clotheslineCooldowns.has(pairKey)) continue;
-      if (activeClotheslines.some((c) => c.id === pairKey)) continue;
-
-      const headDist = Math.hypot(ha.hammer.x - hb.hammer.x, ha.hammer.y - hb.hammer.y);
-      let crossed = headDist <= ha.hammer.radius + hb.hammer.radius + CLOTHESLINE_TRIGGER_DIST;
-
-      if (!crossed && ha.hammer.chainNodes && hb.hammer.chainNodes) {
-        for (let ni = 1; ni < ha.hammer.chainNodes.length && !crossed; ni += 2) {
-          const na = ha.hammer.chainNodes[ni];
-          for (let nj = 1; nj < hb.hammer.chainNodes.length && !crossed; nj += 2) {
-            const nb = hb.hammer.chainNodes[nj];
-            if (Math.hypot(na.x - nb.x, na.y - nb.y) <= CLOTHESLINE_TRIGGER_DIST) {
-              crossed = true;
-            }
-          }
-        }
+  if (alivePlayers.length > 0) {
+    let bestDist = -1;
+    for (let attempt = 0; attempt < 16; attempt++) {
+      let cx = 160 + Math.random() * (WORLD_WIDTH - 320);
+      let cy = 160 + Math.random() * (WORLD_HEIGHT - 320);
+      if (Math.random() < 0.5) {
+        cx = Math.random() < 0.5 ? 160 : WORLD_WIDTH - 160;
+      } else {
+        cy = Math.random() < 0.5 ? 160 : WORLD_HEIGHT - 160;
       }
 
-      if (crossed) {
-        activeClotheslines.push({
-          id: pairKey,
-          p1Id: ha.player.id,
-          p2Id: hb.player.id,
-          h1Idx: ha.hIdx,
-          h2Idx: hb.hIdx,
-          x1: ha.hammer.x,
-          y1: ha.hammer.y,
-          x2: hb.hammer.x,
-          y2: hb.hammer.y,
-          timer: CLOTHESLINE_DURATION,
-        });
-        clotheslineCooldowns.set(pairKey, CLOTHESLINE_DURATION + 1.0);
-
-        pendingEvents.push({
-          type: 'clothesline_start',
-          x1: Math.round(ha.hammer.x),
-          y1: Math.round(ha.hammer.y),
-          x2: Math.round(hb.hammer.x),
-          y2: Math.round(hb.hammer.y),
-        });
-        const midX = (ha.hammer.x + hb.hammer.x) * 0.5;
-        const midY = (ha.hammer.y + hb.hammer.y) * 0.5;
-        pendingEvents.push({
-          type: 'floating_text',
-          x: Math.round(midX),
-          y: Math.round(midY - 20),
-          text: 'CLOTHESLINE!',
-          color: '#38bdf8',
-          scale: 1.4,
-        });
+      let minDistToPlayer = Infinity;
+      for (const p of alivePlayers) {
+        const d = Math.hypot(p.x - cx, p.y - cy);
+        if (d < minDistToPlayer) minDistToPlayer = d;
+      }
+      if (minDistToPlayer > bestDist) {
+        bestDist = minDistToPlayer;
+        spawnX = cx;
+        spawnY = cy;
       }
     }
   }
+
+  const timeMinutes = elapsedGameTime / 60;
+  const sizeScale = 1 + Math.min(1.65, timeMinutes * 0.42);
+  const hpScale = 1 + timeMinutes * 0.95 + Math.pow(timeMinutes, 1.35) * 0.25;
+
+  const baseMoveForce = Math.round(210 * MOTORCYCLE_SPEED_MULT);
+  const baseHp = Math.round(75 * hpScale);
+  const baseRadius = Math.round(21 * sizeScale);
+  const baseMass = +(2.0 * Math.pow(sizeScale, 1.35)).toFixed(2);
+
+  const enemy = {
+    id: nextEnemyId++,
+    variant: 'motorcycle',
+    x: spawnX,
+    y: spawnY,
+    vx: 0,
+    vy: 0,
+    radius: baseRadius,
+    mass: baseMass,
+    hp: baseHp,
+    maxHp: baseHp,
+    moveForce: baseMoveForce,
+    turnRate: MOTORCYCLE_TURN_RATE,
+    traction: 4.6,
+    contactDamage: 8,
+    contactPush: 320,
+    skinColor: '#567a4e',
+    coatColor: '#1a1a1a',
+    shirtColor: '#4a5568',
+    angle: Math.random() * Math.PI * 2,
+    hitCooldown: 0,
+    chainHitCooldown: 0,
+    contactCooldown: 0,
+    walkPhase: Math.random() * 10,
+    hurtFlash: 0,
+    burnTimer: 0,
+    fireproofTimer: 0,
+    burnTickAccum: 0,
+    burnOwner: null,
+    fearTimer: 0,
+    fearSource: null,
+    danceTimer: 0,
+    danceImmuneTimer: 0,
+    webTimer: 0,
+    knockdownTimer: earthquakeTimer > 0 ? ZOMBIE_KNOCKDOWN_RECOVERY : 0,
+    lostLimbs: [] as string[],
+  };
+  enemies.push(enemy);
+
+  pendingEvents.push({
+    type: 'floating_text',
+    x: Math.round(spawnX),
+    y: Math.round(spawnY - 30),
+    text: 'MOTORCYCLE ZOMBIE!',
+    color: '#ed8936',
+    scale: 1.4,
+  });
+
+  return enemy;
+}
+
+function checkMotorcycleSpawn() {
+  while (teamKills >= lastMotorcycleSpawnMilestone + MOTORCYCLE_SPAWN_INTERVAL) {
+    lastMotorcycleSpawnMilestone += MOTORCYCLE_SPAWN_INTERVAL;
+    spawnMotorcycleZombie();
+  }
+}
+
+function checkMotorcycleDismount(e: any): boolean {
+  if (!e || e.variant !== 'motorcycle') return false;
+  if (e.hp <= 0) return false;
+  // Make the motorcycle lay down if the zombie on it is killed or injured more than 50% of their hit points
+  if (e.hp >= e.maxHp * 0.5) return false;
+
+  const wreckRadius = Math.round((e.radius || 21) * MOTORCYCLE_WRECK_SCALE);
+  e.variant = 'walker';
+  e.moveForce = 210;
+  e.radius = 19;
+  e.mass = 1.45;
+  e.turnRate = null;
+  e.coatColor = '#35302b';
+
+  spawnMotorcycleWreck(e.x, e.y, e.angle, wreckRadius);
+
+  pendingEvents.push({
+    type: 'floating_text',
+    x: Math.round(e.x),
+    y: Math.round(e.y - e.radius - 12),
+    text: 'CRASH!',
+    color: '#fc8181',
+    scale: 1.2,
+  });
+
+  return true;
 }
 
 function resetGameWorld() {
   lastEmptyTime = null;
   roundState = 'playing';
   teamKills = 0;
+  lastMobSpawnMilestone = 0;
+  lastMotorcycleSpawnMilestone = 0;
+  laidDownMotorcycles.length = 0;
   victoryInfo = null;
   enemies.length = 0;
   blackCircles.length = 0;
-  activeClotheslines.length = 0;
-  clotheslineCooldowns.clear();
   elapsedGameTime = 0;
   spawnTimer = 0;
   earthquakeTimer = 0;
@@ -1501,8 +1916,12 @@ function resetGameWorld() {
   isReducedFidelity = false;
   initStoneColumns();
 
-  for (const p of players.values()) {
-    resetPlayerForNewRound(p);
+  for (const [pid, p] of players.entries()) {
+    if (p.isBot) {
+      players.delete(pid);
+    } else {
+      resetPlayerForNewRound(p);
+    }
   }
 
   for (let i = 0; i < INITIAL_ENEMY_COUNT; i++) {
@@ -1586,6 +2005,8 @@ function stepPlayerPhysics(p, dt) {
           ? TORTOISE_RADIUS
           : p.mountType === 'horse'
           ? HORSE_RADIUS
+          : p.mountType === 'motorcycle'
+          ? MOTORCYCLE_MOUNT_RADIUS
           : 20;
     } else {
       p.radius = BULLDOZER_RADIUS;
@@ -1601,6 +2022,8 @@ function stepPlayerPhysics(p, dt) {
     ? 0.25
     : p.mountType === 'elephant'
     ? 1.0
+    : p.mountType === 'motorcycle'
+    ? 2.5
     : 1.0;
   const mountTractionMult = isBulldozer
     ? BULLDOZER_TRACTION_MULT
@@ -1610,6 +2033,8 @@ function stepPlayerPhysics(p, dt) {
     ? 10.0
     : p.mountType === 'horse'
     ? 5.0
+    : p.mountType === 'motorcycle'
+    ? 4.0
     : 1.0;
   const totalSpeedMult = p.speedMultiplier * mountSpeedMult;
   const totalTractionMult = p.tractionMultiplier * mountTractionMult;
@@ -1618,6 +2043,8 @@ function stepPlayerPhysics(p, dt) {
   const mdx = p.input.mouseWorldX - p.x;
   const mdy = p.input.mouseWorldY - p.y;
   const distToMouse = Math.hypot(mdx, mdy);
+  const isMotorcycle = p.mountType === 'motorcycle';
+  const effectiveTurnRate = isMotorcycle ? MOTORCYCLE_TURN_RATE : p.turnSpeed * 6.0;
 
   if (distToMouse > 4) {
     const targetAngle = Math.atan2(mdy, mdx);
@@ -1625,7 +2052,7 @@ function stepPlayerPhysics(p, dt) {
       Math.sin(targetAngle - p.angle),
       Math.cos(targetAngle - p.angle)
     );
-    const maxTurn = p.turnSpeed * 6.0 * dt;
+    const maxTurn = effectiveTurnRate * dt;
     if (Math.abs(angleDiff) <= maxTurn) {
       p.angle = targetAngle;
     } else {
@@ -1639,16 +2066,22 @@ function stepPlayerPhysics(p, dt) {
       Math.sin(targetAngle - p.angle),
       Math.cos(targetAngle - p.angle)
     );
-    const alignment = Math.max(0, Math.cos(currentAngleDiff));
+    // On a motorcycle, enforce a wide turning radius: maintain forward drive through arcs
+    // rather than killing throttle or applying reverse braking when angled away from cursor
+    const alignment = isMotorcycle
+      ? Math.max(0.6, Math.cos(currentAngleDiff))
+      : Math.max(0, Math.cos(currentAngleDiff));
 
-    // Actively brake any reverse momentum moving away from target mouse
-    const uTx = mdx / distToMouse;
-    const uTy = mdy / distToMouse;
-    const velAlongTarget = p.vx * uTx + p.vy * uTy;
-    if (velAlongTarget < 0) {
-      const brakeAccel = Math.min(-velAlongTarget / dt, p.walkThrust * 2.5);
-      p.vx += brakeAccel * uTx * dt;
-      p.vy += brakeAccel * uTy * dt;
+    if (!isMotorcycle) {
+      // Actively brake any reverse momentum moving away from target mouse
+      const uTx = mdx / distToMouse;
+      const uTy = mdy / distToMouse;
+      const velAlongTarget = p.vx * uTx + p.vy * uTy;
+      if (velAlongTarget < 0) {
+        const brakeAccel = Math.min(-velAlongTarget / dt, p.walkThrust * 2.5);
+        p.vx += brakeAccel * uTx * dt;
+        p.vy += brakeAccel * uTy * dt;
+      }
     }
 
     p.strideCharge = Math.min(1, p.strideCharge + dt * 1.4);
@@ -2397,6 +2830,42 @@ function stepPlayerPhysics(p, dt) {
     }
   }
 
+  // Claim a laid-down motorcycle if the warrior has no mount
+  if (!p.mountType && (p.bulldozerTimer || 0) <= 0) {
+    for (let mIdx = laidDownMotorcycles.length - 1; mIdx >= 0; mIdx--) {
+      const m = laidDownMotorcycles[mIdx];
+      const mdx = p.x - m.x;
+      const mdy = p.y - m.y;
+      const claimDist = p.radius + m.radius;
+      if (mdx * mdx + mdy * mdy <= claimDist * claimDist) {
+        p.mountType = 'motorcycle';
+        p.mountMaxHp = Math.max(1, Math.round(p.hp));
+        p.mountHp = p.mountMaxHp;
+        p.radius = MOTORCYCLE_MOUNT_RADIUS;
+
+        pendingEvents.push({
+          type: 'claim_motorcycle',
+          id: m.id,
+          playerId: p.id,
+          x: Math.round(p.x),
+          y: Math.round(p.y),
+        });
+
+        pendingEvents.push({
+          type: 'floating_text',
+          x: Math.round(p.x),
+          y: Math.round(p.y - p.radius - 22),
+          text: 'MOTORCYCLE MOUNTED!',
+          color: '#f6ad55',
+          scale: 1.25,
+        });
+
+        laidDownMotorcycles.splice(mIdx, 1);
+        break;
+      }
+    }
+  }
+
   updatePlayerBroadphaseBounds(p);
 }
 
@@ -2405,15 +2874,52 @@ function stepWorldPhysics(dt) {
     earthquakeTimer = Math.max(0, earthquakeTimer - dt);
   }
 
+  for (let i = laidDownMotorcycles.length - 1; i >= 0; i--) {
+    laidDownMotorcycles[i].timer -= dt;
+    if (laidDownMotorcycles[i].timer <= 0) {
+      laidDownMotorcycles.splice(i, 1);
+    }
+  }
+
   const alivePlayers = [];
-  for (const p of players.values()) {
+  for (const [pid, p] of players.entries()) {
+    if (p.isBot && !p.alive) {
+      p.botDeathTimer = (p.botDeathTimer || 0) + dt;
+      if (p.botDeathTimer >= 2.0) {
+        players.delete(pid);
+        continue;
+      }
+    }
     if (p.alive) {
+      if (p.isBot) {
+        stepBotAI(p, dt);
+      }
       alivePlayers.push(p);
       stepPlayerPhysics(p, dt);
     }
   }
 
-  checkAndStepClotheslines(dt);
+  // Precompute group centroids for armored zombie mobs
+  const mobCentroids = new Map<string, { x: number; y: number; count: number }>();
+  for (let i = 0; i < enemies.length; i++) {
+    const en = enemies[i];
+    if (en.hp > 0 && en.mobId) {
+      let c = mobCentroids.get(en.mobId);
+      if (!c) {
+        c = { x: 0, y: 0, count: 0 };
+        mobCentroids.set(en.mobId, c);
+      }
+      c.x += en.x;
+      c.y += en.y;
+      c.count++;
+    }
+  }
+  for (const c of mobCentroids.values()) {
+    if (c.count > 0) {
+      c.x /= c.count;
+      c.y /= c.count;
+    }
+  }
 
   // Update Enemies (Zombies) — each moves toward the closest alive player
   for (let i = enemies.length - 1; i >= 0; i--) {
@@ -2590,15 +3096,69 @@ function stepWorldPhysics(dt) {
         dirX /= norm;
         dirY /= norm;
 
-        e.angle = Math.atan2(dirY, dirX);
-        e.vx += dirX * e.moveForce * speedMult * dt;
-        e.vy += dirY * e.moveForce * speedMult * dt;
+        if (e.variant === 'motorcycle') {
+          const targetAngle = Math.atan2(dirY, dirX);
+          let angleDiff = targetAngle - e.angle;
+          while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+          while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+          const maxTurn = (e.turnRate || MOTORCYCLE_TURN_RATE) * dt;
+          if (Math.abs(angleDiff) <= maxTurn) {
+            e.angle = targetAngle;
+          } else {
+            e.angle += Math.sign(angleDiff) * maxTurn;
+          }
+          const fwdX = Math.cos(e.angle);
+          const fwdY = Math.sin(e.angle);
+          e.vx += fwdX * e.moveForce * speedMult * dt;
+          e.vy += fwdY * e.moveForce * speedMult * dt;
+        } else {
+          e.angle = Math.atan2(dirY, dirX);
+          e.vx += dirX * e.moveForce * speedMult * dt;
+          e.vy += dirY * e.moveForce * speedMult * dt;
+        }
       } else {
-        const dirX = (closestPlayer.x - e.x) / closestDist;
-        const dirY = (closestPlayer.y - e.y) / closestDist;
-        e.angle = Math.atan2(dirY, dirX);
-        e.vx += dirX * e.moveForce * speedMult * dt;
-        e.vy += dirY * e.moveForce * speedMult * dt;
+        let dirX = (closestPlayer.x - e.x) / closestDist;
+        let dirY = (closestPlayer.y - e.y) / closestDist;
+
+        // Group cohesion for armored zombies in the same mob
+        if (e.mobId && mobCentroids.has(e.mobId)) {
+          const c = mobCentroids.get(e.mobId)!;
+          if (c.count > 1) {
+            const toCx = c.x - e.x;
+            const toCy = c.y - e.y;
+            const distC = Math.hypot(toCx, toCy);
+            if (distC > 35) {
+              const cohX = toCx / distC;
+              const cohY = toCy / distC;
+              dirX = dirX * 0.65 + cohX * 0.35;
+              dirY = dirY * 0.65 + cohY * 0.35;
+              const dLen = Math.hypot(dirX, dirY) || 1;
+              dirX /= dLen;
+              dirY /= dLen;
+            }
+          }
+        }
+
+        if (e.variant === 'motorcycle') {
+          const targetAngle = Math.atan2(dirY, dirX);
+          let angleDiff = targetAngle - e.angle;
+          while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+          while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+          const maxTurn = (e.turnRate || MOTORCYCLE_TURN_RATE) * dt;
+          if (Math.abs(angleDiff) <= maxTurn) {
+            e.angle = targetAngle;
+          } else {
+            e.angle += Math.sign(angleDiff) * maxTurn;
+          }
+          const fwdX = Math.cos(e.angle);
+          const fwdY = Math.sin(e.angle);
+          e.vx += fwdX * e.moveForce * speedMult * dt;
+          e.vy += fwdY * e.moveForce * speedMult * dt;
+        } else {
+          e.angle = Math.atan2(dirY, dirX);
+          e.vx += dirX * e.moveForce * speedMult * dt;
+          e.vy += dirY * e.moveForce * speedMult * dt;
+        }
       }
     }
 
@@ -2747,6 +3307,7 @@ function stepWorldPhysics(dt) {
                 if (e.hitCooldown <= 0 && impulse > 8) {
                   const damage = Math.max(1, Math.round(impulse * DAMAGE_PER_IMPULSE));
                   e.hp -= damage;
+                  checkMotorcycleDismount(e);
                   checkEnemyLimbLoss(e, strikeHvx, strikeHvy);
                   e.hitCooldown = 0.09;
                   e.hurtFlash = 0.18;
@@ -2798,7 +3359,7 @@ function stepWorldPhysics(dt) {
           }
         }
 
-        // B. Chain vs. Zombie (1/3 momentum transfer & 1/3 damage)
+        // B. Chain vs. Zombie: Continuous segment collision along every point of the chain (1/3 momentum transfer & 1/3 damage)
         const minChainEnemyDist = CHAIN_LINK_RADIUS + e.radius;
         if (
           e.x + e.radius >= h.chainMinX &&
@@ -2806,33 +3367,84 @@ function stepWorldPhysics(dt) {
           e.y + e.radius >= h.chainMinY &&
           e.y - e.radius <= h.chainMaxY
         ) {
-          let closestNodeIdx = -1;
-          let minNodeDistSq = minChainEnemyDist * minChainEnemyDist;
-          for (let cIdx = 1; cIdx < links; cIdx++) {
-            const node = h.chainNodes[cIdx];
-            const ndx = e.x - node.x;
-            const ndy = e.y - node.y;
-            const dSq = ndx * ndx + ndy * ndy;
-            if (dSq < minNodeDistSq) {
-              minNodeDistSq = dSq;
-              closestNodeIdx = cIdx;
+          let closestSegIdx = -1;
+          let closestT = 0;
+          let closestDistSq = minChainEnemyDist * minChainEnemyDist;
+          let closestPointX = 0;
+          let closestPointY = 0;
+
+          for (let sIdx = 0; sIdx < links; sIdx++) {
+            const nA = h.chainNodes[sIdx];
+            const nB = h.chainNodes[sIdx + 1];
+            if (!nA || !nB) continue;
+            const segDx = nB.x - nA.x;
+            const segDy = nB.y - nA.y;
+            const segLenSq = segDx * segDx + segDy * segDy;
+            let t = 0;
+            if (segLenSq > 1e-8) {
+              t = ((e.x - nA.x) * segDx + (e.y - nA.y) * segDy) / segLenSq;
+              if (t < 0) t = 0;
+              else if (t > 1) t = 1;
+            }
+            const px = nA.x + t * segDx;
+            const py = nA.y + t * segDy;
+            const edx = e.x - px;
+            const edy = e.y - py;
+            const dSq = edx * edx + edy * edy;
+            if (dSq < closestDistSq) {
+              closestDistSq = dSq;
+              closestSegIdx = sIdx;
+              closestT = t;
+              closestPointX = px;
+              closestPointY = py;
             }
           }
 
-          if (closestNodeIdx !== -1 && minNodeDistSq > 1e-8) {
-            const minNodeDist = Math.sqrt(minNodeDistSq);
-            const node = h.chainNodes[closestNodeIdx];
-            const cnx = (e.x - node.x) / minNodeDist;
-            const cny = (e.y - node.y) / minNodeDist;
-            const cOverlap = minChainEnemyDist - minNodeDist;
+          if (closestSegIdx !== -1) {
+            const minChainDist = Math.sqrt(closestDistSq);
+            let cnx = 1;
+            let cny = 0;
+            if (minChainDist > 1e-4) {
+              cnx = (e.x - closestPointX) / minChainDist;
+              cny = (e.y - closestPointY) / minChainDist;
+            } else {
+              const nA = h.chainNodes[closestSegIdx];
+              const nB = h.chainNodes[closestSegIdx + 1];
+              const sdx = nB.x - nA.x;
+              const sdy = nB.y - nA.y;
+              const slen = Math.hypot(sdx, sdy);
+              if (slen > 1e-4) {
+                cnx = -sdy / slen;
+                cny = sdx / slen;
+              }
+            }
+            const cOverlap = minChainEnemyDist - minChainDist;
+            const nA = h.chainNodes[closestSegIdx];
+            const nB = h.chainNodes[closestSegIdx + 1];
+            const t = closestT;
 
-            node.x -= cnx * cOverlap * 0.82;
-            node.y -= cny * cOverlap * 0.82;
+            if (closestSegIdx === 0) {
+              nB.x -= cnx * cOverlap * 0.82;
+              nB.y -= cny * cOverlap * 0.82;
+            } else if (closestSegIdx + 1 === links) {
+              nA.x -= cnx * cOverlap * 0.82 * (1 - t);
+              nA.y -= cny * cOverlap * 0.82 * (1 - t);
+              nB.x -= cnx * cOverlap * 0.82 * t;
+              nB.y -= cny * cOverlap * 0.82 * t;
+            } else {
+              nA.x -= cnx * cOverlap * 0.82 * (1 - t);
+              nA.y -= cny * cOverlap * 0.82 * (1 - t);
+              nB.x -= cnx * cOverlap * 0.82 * t;
+              nB.y -= cny * cOverlap * 0.82 * t;
+            }
+
             e.x += cnx * cOverlap * 0.18;
             e.y += cny * cOverlap * 0.18;
 
-            const crvx = node.vx - e.vx;
-            const crvy = node.vy - e.vy;
+            const chainVx = nA.vx + (nB.vx - nA.vx) * t;
+            const chainVy = nA.vy + (nB.vy - nA.vy) * t;
+            const crvx = chainVx - e.vx;
+            const crvy = chainVy - e.vy;
             const cVelAlongNormal = crvx * cnx + crvy * cny;
 
             if (cVelAlongNormal > 0) {
@@ -2844,18 +3456,21 @@ function stepWorldPhysics(dt) {
               e.vx += (chainImpulse / e.mass) * cnx;
               e.vy += (chainImpulse / e.mass) * cny;
 
-              node.vx -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cnx;
-              node.vy -= cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION) * cny;
-              if (closestNodeIdx > 1) {
-                h.chainNodes[closestNodeIdx - 1].vx -= cVelAlongNormal * 0.45 * cnx;
-                h.chainNodes[closestNodeIdx - 1].vy -= cVelAlongNormal * 0.45 * cny;
+              const deltaV = cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION);
+              nA.vx -= deltaV * (1 - t) * cnx;
+              nA.vy -= deltaV * (1 - t) * cny;
+              nB.vx -= deltaV * t * cnx;
+              nB.vy -= deltaV * t * cny;
+              if (closestSegIdx > 0) {
+                h.chainNodes[closestSegIdx - 1].vx -= deltaV * 0.45 * (1 - t) * cnx;
+                h.chainNodes[closestSegIdx - 1].vy -= deltaV * 0.45 * (1 - t) * cny;
               }
-              if (closestNodeIdx + 1 < links) {
-                h.chainNodes[closestNodeIdx + 1].vx -= cVelAlongNormal * 0.45 * cnx;
-                h.chainNodes[closestNodeIdx + 1].vy -= cVelAlongNormal * 0.45 * cny;
+              if (closestSegIdx + 2 <= links) {
+                h.chainNodes[closestSegIdx + 2].vx -= deltaV * 0.45 * t * cnx;
+                h.chainNodes[closestSegIdx + 2].vy -= deltaV * 0.45 * t * cny;
               }
 
-              const leverRatio = closestNodeIdx / links;
+              const leverRatio = Math.max(0, Math.min(1, (closestSegIdx + t) / links));
               h.vx -= ((chainImpulse * leverRatio) / h.mass) * cnx;
               h.vy -= ((chainImpulse * leverRatio) / h.mass) * cny;
               const warriorChainRecoil = Math.min(
@@ -2871,6 +3486,7 @@ function stepWorldPhysics(dt) {
                   Math.round(hammerEquivImpulse * DAMAGE_PER_IMPULSE * CHAIN_DAMAGE_FACTOR)
                 );
                 e.hp -= chainDamage;
+                checkMotorcycleDismount(e);
                 checkEnemyLimbLoss(e, cnx * hammerEquivImpulse * 0.2, cny * hammerEquivImpulse * 0.2);
                 e.chainHitCooldown = 0.09;
                 e.hurtFlash = 0.14;
@@ -2881,8 +3497,8 @@ function stepWorldPhysics(dt) {
 
                 pendingEvents.push({
                   type: 'impact',
-                  x: Math.round(node.x),
-                  y: Math.round(node.y),
+                  x: Math.round(closestPointX),
+                  y: Math.round(closestPointY),
                   enemyX: Math.round(e.x),
                   enemyY: Math.round(e.y - e.radius - 6),
                   damage: chainDamage,
@@ -3088,6 +3704,12 @@ function tickServer(dt) {
   // Prune idle players who left their browser window open without any input
   const nowMs = Date.now();
   for (const [pid, p] of players.entries()) {
+    if (p.isBot) {
+      if (countHumanPlayers() === 0) {
+        players.delete(pid);
+      }
+      continue;
+    }
     const idleSec = (nowMs - (p.lastActivityTime || nowMs)) / 1000;
     const maxIdleSec = p.alive ? 120 : 45;
     if (idleSec >= maxIdleSec) {
@@ -3985,6 +4607,7 @@ function buildGameStatePayload() {
     webTimer: +(e.webTimer || 0).toFixed(2),
     knockdownTimer: +(e.knockdownTimer || 0).toFixed(2),
     walkPhase: +e.walkPhase.toFixed(2),
+    mobId: e.mobId || null,
   }));
 
   return {
@@ -3996,14 +4619,6 @@ function buildGameStatePayload() {
     players: serializedPlayers,
     enemies: serializedEnemies,
     pickups: serializePickups(),
-    clotheslines: activeClotheslines.map((cl) => ({
-      id: cl.id,
-      x1: +cl.x1.toFixed(1),
-      y1: +cl.y1.toFixed(1),
-      x2: +cl.x2.toFixed(1),
-      y2: +cl.y2.toFixed(1),
-      timer: +cl.timer.toFixed(2),
-    })),
     events: pendingEvents,
     leaderboard: getTopLeaderboard(),
     roundRestartTimer: +roundRestartTimer.toFixed(2),
@@ -4107,10 +4722,15 @@ module.exports = {
   BULLDOZER_DURATION,
   BULLDOZER_SPEED_MULT,
   BULLDOZER_TRACTION_MULT,
+  BULLDOZER_SCALE,
   BULLDOZER_RADIUS,
   HORSE_RADIUS,
   TORTOISE_RADIUS,
   ELEPHANT_RADIUS,
+  MOTORCYCLE_MOUNT_RADIUS,
+  MOTORCYCLE_WRECK_SCALE,
+  MOTORCYCLE_WRECK_RADIUS,
+  MOTORCYCLE_WRECK_DURATION,
   GHOST_DURATION,
   EARTHQUAKE_DURATION,
   ZOMBIE_KNOCKDOWN_RECOVERY,
@@ -4137,9 +4757,15 @@ module.exports = {
   WHIRLWIND_LEVEL_RADII,
   WHIRLWIND_GUST_RADIUS,
   WHIRLWIND_GUST_DAMAGE,
-  CLOTHESLINE_DURATION,
-  CLOTHESLINE_TRIGGER_DIST,
-  CLOTHESLINE_BEAM_DAMAGE,
+  ARMORED_MOB_FIRST_MILESTONE,
+  ARMORED_MOB_INTERVAL,
+  ARMORED_MOB_BASE_SIZE,
+  ARMORED_MOB_MAX_SIZE,
+  ARMORED_MOB_SPEED_MULT,
+  ARMORED_MOB_HP_MULT,
+  MOTORCYCLE_SPAWN_INTERVAL,
+  MOTORCYCLE_SPEED_MULT,
+  MOTORCYCLE_TURN_RATE,
   HIT_STOP_DURATION,
   HIT_STOP_DAMAGE_THRESHOLD,
   HIT_STOP_BIG_SHAKE_THRESHOLD,
@@ -4160,8 +4786,8 @@ module.exports = {
   stoneColumns,
   enemies,
   blackCircles,
+  laidDownMotorcycles,
   players,
-  activeClotheslines,
   leaderboardRecords,
   getLeaderboardFilePath,
   setLeaderboardFilePath,
@@ -4173,6 +4799,9 @@ module.exports = {
     roundRestartTimer,
     roundState,
     teamKills,
+    lastMobSpawnMilestone,
+    lastMotorcycleSpawnMilestone,
+    laidDownMotorcycles,
     victoryInfo,
     pendingEvents,
     activePhysicsSubsteps,
@@ -4187,6 +4816,12 @@ module.exports = {
     if ('roundRestartTimer' in patch) roundRestartTimer = patch.roundRestartTimer;
     if ('roundState' in patch) roundState = patch.roundState;
     if ('teamKills' in patch) teamKills = patch.teamKills;
+    if ('lastMobSpawnMilestone' in patch) lastMobSpawnMilestone = patch.lastMobSpawnMilestone;
+    if ('lastMotorcycleSpawnMilestone' in patch) lastMotorcycleSpawnMilestone = patch.lastMotorcycleSpawnMilestone;
+    if ('laidDownMotorcycles' in patch) {
+      laidDownMotorcycles.length = 0;
+      laidDownMotorcycles.push(...patch.laidDownMotorcycles);
+    }
     if ('victoryInfo' in patch) victoryInfo = patch.victoryInfo;
     if ('pendingEvents' in patch) pendingEvents = patch.pendingEvents;
     if ('activePhysicsSubsteps' in patch) activePhysicsSubsteps = patch.activePhysicsSubsteps;
@@ -4215,6 +4850,12 @@ module.exports = {
   resetPlayerForNewRound,
   createPlayer,
   spawnEnemy,
+  spawnArmoredMob,
+  checkArmoredMobSpawn,
+  spawnMotorcycleZombie,
+  checkMotorcycleSpawn,
+  checkMotorcycleDismount,
+  spawnMotorcycleWreck,
   startEnemyDance,
   taintEnemyWithFear,
   igniteEnemy,
@@ -4229,8 +4870,6 @@ module.exports = {
   triggerHammerExplosion,
   triggerWhirlwindGust,
   updateHammerWhirlwind,
-  distPointToSegment,
-  checkAndStepClotheslines,
   resetGameWorld,
   updatePlayerBroadphaseBounds,
   stepPlayerPhysics,
@@ -4244,4 +4883,13 @@ module.exports = {
   renderStatsDashboardHtml,
   encodeWsFrame,
   setupSocketReader,
+  MAX_BOT_WARRIORS,
+  BOT_SPAWN_KILL_INTERVAL,
+  BOT_MODE_CYCLE_DURATION,
+  BOT_MODES,
+  spawnBotWarrior,
+  stepBotAI,
+  countHumanPlayers,
+  countBotWarriors,
+  getRandomBotName,
 };

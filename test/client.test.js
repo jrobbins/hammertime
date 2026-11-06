@@ -27,9 +27,23 @@ function createMockCanvasContext() {
     lineTo: noop,
     quadraticCurveTo: noop,
     bezierCurveTo: noop,
-    arc: noop,
+    arc: (x, y, radius, startAngle, endAngle, counterclockwise) => {
+      if (radius < 0) {
+        throw new DOMException(
+          `Failed to execute 'arc' on 'CanvasRenderingContext2D': The radius provided (${radius}) is negative.`,
+          'IndexSizeError'
+        );
+      }
+    },
     arcTo: noop,
-    ellipse: noop,
+    ellipse: (x, y, radiusX, radiusY, rotation, startAngle, endAngle, counterclockwise) => {
+      if (radiusX < 0 || radiusY < 0) {
+        throw new DOMException(
+          `Failed to execute 'ellipse' on 'CanvasRenderingContext2D': The radius provided is negative.`,
+          'IndexSizeError'
+        );
+      }
+    },
     rect: noop,
     roundRect: noop,
     fill: noop,
@@ -309,7 +323,10 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.ZOMBIE_WEB_DURATION, srv.ZOMBIE_WEB_DURATION);
     assert.equal(c.BULLDOZER_DURATION, srv.BULLDOZER_DURATION);
     assert.equal(c.BULLDOZER_TRACTION_MULT, srv.BULLDOZER_TRACTION_MULT);
+    assert.equal(c.BULLDOZER_SCALE, srv.BULLDOZER_SCALE);
+    assert.equal(c.BULLDOZER_SCALE, 1.4);
     assert.equal(c.BULLDOZER_RADIUS, srv.BULLDOZER_RADIUS);
+    assert.equal(c.BULLDOZER_RADIUS, 48);
     assert.equal(c.HORSE_RADIUS, srv.HORSE_RADIUS);
     assert.equal(c.TORTOISE_RADIUS, srv.TORTOISE_RADIUS);
     assert.equal(c.ELEPHANT_RADIUS, srv.ELEPHANT_RADIUS);
@@ -324,12 +341,13 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.WHIRLWIND_MAX_LEVEL, srv.WHIRLWIND_MAX_LEVEL);
     assert.deepEqual([...c.WHIRLWIND_LEVEL_DAMAGES], [...srv.WHIRLWIND_LEVEL_DAMAGES]);
     assert.deepEqual([...c.WHIRLWIND_LEVEL_RADII], [...srv.WHIRLWIND_LEVEL_RADII]);
-    assert.equal(c.CLOTHESLINE_DURATION, srv.CLOTHESLINE_DURATION);
-    assert.equal(c.CLOTHESLINE_TRIGGER_DIST, srv.CLOTHESLINE_TRIGGER_DIST);
-    assert.equal(c.CLOTHESLINE_BEAM_DAMAGE, srv.CLOTHESLINE_BEAM_DAMAGE);
     assert.equal(c.HIT_STOP_DURATION, srv.HIT_STOP_DURATION);
     assert.equal(c.HIT_STOP_DAMAGE_THRESHOLD, srv.HIT_STOP_DAMAGE_THRESHOLD);
     assert.equal(c.HIT_STOP_BIG_SHAKE_THRESHOLD, srv.HIT_STOP_BIG_SHAKE_THRESHOLD);
+    assert.equal(c.MOTORCYCLE_WRECK_DURATION, srv.MOTORCYCLE_WRECK_DURATION);
+    assert.equal(c.MOTORCYCLE_WRECK_SCALE, srv.MOTORCYCLE_WRECK_SCALE);
+    assert.equal(c.MOTORCYCLE_WRECK_RADIUS, srv.MOTORCYCLE_WRECK_RADIUS);
+    assert.equal(c.MOTORCYCLE_MOUNT_RADIUS, srv.MOTORCYCLE_MOUNT_RADIUS);
     assert.equal(c.MULTI_KILL_WINDOW, srv.MULTI_KILL_WINDOW);
     assert.deepEqual([...c.ALL_LIMBS], [...srv.ALL_LIMBS]);
     assert.deepEqual([...c.PICKUP_TYPES], srv.PICKUP_TYPES);
@@ -595,31 +613,61 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     w.mountHp = 100;
     w.mountMaxHp = 100;
     api.updateHUD();
+    assert.equal(elements.get('mount-label').textContent, 'WARHORSE HP');
     api.drawWarrior(w, true);
     assert.ok(scaleCalls.some(([sx, sy]) => Math.abs(sx - 1.4) < 1e-4 && Math.abs(sy - 1.4) < 1e-4), 'Should scale horse mount 1.4x (reduced 30%)');
 
     scaleCalls.length = 0;
     w.mountType = 'tortoise';
     api.updateHUD();
+    assert.equal(elements.get('mount-label').textContent, 'GIANT TORTOISE HP');
     api.drawWarrior(w, true);
     assert.ok(scaleCalls.some(([sx, sy]) => Math.abs(sx - 1.4) < 1e-4 && Math.abs(sy - 1.4) < 1e-4), 'Should scale tortoise mount 1.4x (reduced 30%)');
 
     scaleCalls.length = 0;
     w.mountType = 'elephant';
     api.updateHUD();
+    assert.equal(elements.get('mount-label').textContent, 'WAR ELEPHANT HP');
     api.drawWarrior(w, true);
     assert.ok(scaleCalls.some(([sx, sy]) => Math.abs(sx - 1.4) < 1e-4 && Math.abs(sy - 1.4) < 1e-4), 'Should scale elephant mount 1.4x (reduced 30%)');
+
+    scaleCalls.length = 0;
+    w.mountType = 'motorcycle';
+    w.mountHp = 100;
+    w.mountMaxHp = 100;
+    api.updateHUD();
+    assert.equal(elements.get('mount-label').textContent, 'MOTORCYCLE HP');
+    assert.ok(!elements.get('mount-label').textContent.toLowerCase().includes('horse'), 'HUD should say motorcycle instead of horse');
+    // Test warrior riding motorcycle facing south (towards camera) and north (away from camera)
+    w.angle = Math.PI / 2;
+    w.vx = 250;
+    w.vy = 50;
+    api.drawWarrior(w, true);
+    assert.ok(scaleCalls.some(([sx, sy]) => Math.abs(sx - 1.4) < 1e-4 && Math.abs(sy - 1.4) < 1e-4), 'Should scale warrior motorcycle mount 1.4x');
+
+    w.angle = -Math.PI / 2;
+    api.drawWarrior(w, false);
 
     gameCtx.scale = origScale;
 
     w.bulldozerTimer = 20.0;
     api.updateHUD();
     assert.equal(elements.get('mount-label').textContent, 'BULLDOZER MODE');
+    scaleCalls.length = 0;
+    gameCtx.scale = (sx, sy) => {
+      scaleCalls.push([sx, sy]);
+      if (origScale) origScale(sx, sy);
+    };
     // Test drawWarrior with bulldozer active facing both north and south
     w.angle = -Math.PI / 2;
     api.drawWarrior(w, true);
+    assert.ok(
+      scaleCalls.some(([sx, sy]) => Math.abs(sx - 1.4) < 1e-4 && Math.abs(sy - 1.4) < 1e-4),
+      'Should scale bulldozer 1.4x (40% larger)'
+    );
     w.angle = Math.PI / 2;
     api.drawWarrior(w, false);
+    gameCtx.scale = origScale;
     assert.ok(api.getState().gameTime > 0);
 
     // 2. drawHammer in Normal, Bomb, Flaming, Disco, Jack-o'-Lantern, and Spider modes
@@ -679,6 +727,147 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
 
     e.knockdownTimer = 4;
     api.drawEnemy(e);
+    e.knockdownTimer = 0;
+
+    // Motorcycle zombie rendering (full health, speeding, facing south and north, and damaged with health bar)
+    e.variant = 'motorcycle';
+    e.hp = 75;
+    e.maxHp = 75;
+    e.angle = Math.PI / 2; // Facing south (towards camera)
+    e.vx = 220;
+    e.vy = 0;
+    api.drawEnemy(e);
+
+    e.angle = -Math.PI / 2; // Facing north (away from camera)
+    e.vx = 180;
+    e.vy = 90;
+    e.hp = 45;
+    api.drawEnemy(e);
+
+    // Motorcycle zombie with severed left arm (steering with single arm)
+    e.lostLimbs = ['left_arm'];
+    api.drawEnemy(e);
+    e.lostLimbs = [];
+    e.variant = 'walker';
+
+    // 3b. drawLaidDownMotorcycle (30 seconds duration on the ground)
+    const testWreck = {
+      x: 2150,
+      y: 2150,
+      angle: 0.78,
+      radius: api.constants.MOTORCYCLE_WRECK_RADIUS,
+      timer: 30.0,
+      duration: 30.0,
+    };
+    assert.equal(api.constants.MOTORCYCLE_WRECK_RADIUS, 25, 'Laid-down motorcycle radius should be 20% larger (25px)');
+    // Test across entire 30s lifecycle: fresh crash, mid-life cooling, near expiration, fading out, and boundary values
+    for (const testTimer of [30.0, 29.5, 20.0, 15.0, 10.0, 5.0, 2.0, 1.0, 0.5, 0.08, 0.0, -0.5]) {
+      testWreck.timer = testTimer;
+      assert.doesNotThrow(() => {
+        api.drawLaidDownMotorcycle(testWreck);
+      }, `drawLaidDownMotorcycle should render without throwing at timer=${testTimer}`);
+    }
+
+    // Process motorcycle_wreck event and verify 5-second duration
+    api.laidDownMotorcycles.length = 0;
+    api.processServerEvents([
+      {
+        type: 'motorcycle_wreck',
+        x: 2100,
+        y: 2100,
+        angle: 1.2,
+        radius: 21,
+        duration: 5.0,
+      },
+    ]);
+    assert.equal(api.laidDownMotorcycles.length, 1, 'Client should receive and track motorcycle wreck');
+    assert.equal(api.laidDownMotorcycles[0].duration, 5.0);
+    assert.equal(api.laidDownMotorcycles[0].timer, 5.0);
+
+    // Update by 2.5s
+    api.updateLaidDownMotorcycles(2.5);
+    assert.equal(api.laidDownMotorcycles.length, 1, 'Wreck should still exist at 2.5s');
+    assert.ok(Math.abs(api.laidDownMotorcycles[0].timer - 2.5) < 0.001);
+
+    // Update by another 3.0s (total 5.5s > 5.0s) -> removed
+    api.updateLaidDownMotorcycles(3.0);
+    assert.equal(api.laidDownMotorcycles.length, 0, 'Wreck should be removed after 5 seconds');
+
+    // Verify claim_motorcycle event processing on client
+    api.laidDownMotorcycles.push({
+      id: 'wreck-claim-test',
+      x: 2200,
+      y: 2200,
+      angle: 0,
+      radius: 20,
+      timer: 20,
+      duration: 30,
+    });
+    assert.equal(api.laidDownMotorcycles.length, 1);
+    api.processServerEvents([
+      {
+        type: 'claim_motorcycle',
+        id: 'wreck-claim-test',
+        x: 2200,
+        y: 2200,
+      },
+    ]);
+    assert.equal(api.laidDownMotorcycles.length, 0, 'Client removes wreck when claim_motorcycle event is processed');
+
+    // Verify drawing warrior riding a motorcycle mount
+    const testRider = {
+      x: 2000,
+      y: 2000,
+      angle: 0.5,
+      mountType: 'motorcycle',
+      mountHp: 80,
+      mountMaxHp: 100,
+      radius: api.constants.MOTORCYCLE_MOUNT_RADIUS,
+      hp: 100,
+      maxHp: 100,
+      name: 'BikerKnight',
+    };
+    assert.doesNotThrow(() => {
+      api.drawWarrior(testRider, true);
+      // Also when facing north (dirY < 0)
+      testRider.angle = -Math.PI / 2;
+      api.drawWarrior(testRider, false);
+    }, 'drawWarrior with motorcycle mount should render cleanly in both directions');
+
+    // Verify warrior on motorcycle enforces wide minimum turning radius in client prediction
+    api.warrior.x = 2000;
+    api.warrior.y = 2000;
+    api.warrior.angle = 0; // East
+    api.warrior.vx = 200;
+    api.warrior.vy = 0;
+    api.warrior.mountType = 'motorcycle';
+    api.warrior.mountHp = 100;
+    api.camera.x = 2000;
+    api.camera.y = 2000;
+    api.mouse.screenX = 0;
+    api.mouse.screenY = -300; // Directly North
+
+    const predDt = 0.05;
+    api.stepLocalWarriorAndHammers(predDt, true);
+
+    const expectedPredTurnCap = api.constants.MOTORCYCLE_TURN_RATE * predDt; // 0.06 rad
+    assert.ok(
+      Math.abs(api.warrior.angle) <= expectedPredTurnCap + 1e-4,
+      `Client motorcycle warrior turns slowly (<= ${expectedPredTurnCap} rad), actual: ${api.warrior.angle}`
+    );
+    assert.ok(
+      api.warrior.vx > 0,
+      'Client motorcycle warrior maintains forward drive along heading instead of reverse-braking'
+    );
+
+    // Unmounted warrior turns rapidly toward mouse
+    api.warrior.mountType = null;
+    api.warrior.angle = 0;
+    api.stepLocalWarriorAndHammers(predDt, true);
+    assert.ok(
+      Math.abs(api.warrior.angle) > expectedPredTurnCap * 5,
+      'Unmounted client warrior turns significantly faster than motorcycle mount'
+    );
 
     // 4. drawBlackCircle for all 16 pickup types
     const allPickupTypes = [
@@ -2207,7 +2396,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(api.getState().kills, 20);
   });
 
-  it('implements Whirlwind Spin-Up Overdrive and The Clothesline tandem wire on client', () => {
+  it('implements Whirlwind Spin-Up Overdrive on client', () => {
     const w = api.warrior;
     const h = api.hammer;
     w.alive = true;
@@ -2309,39 +2498,25 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.ok(e.burnTimer > 0, 'Direct hit enemy should be burning');
     assert.ok(eBystander.burnTimer > 0, 'Bystander affected by flame whirlwind should be set on fire');
 
-    // Test The Clothesline: add extra hammer to warrior and position heads near each other
-    const extraH = api.createExtraHammer(0);
-    w.hammers = [h, extraH];
-    h.x = w.x + 50;
-    h.y = w.y;
-    extraH.x = w.x + 70;
-    extraH.y = w.y;
-
-    api.activeClotheslines.length = 0;
-    api.checkAndStepClotheslines(dt);
-
-    assert.equal(api.activeClotheslines.length, 1, 'Should trigger an active clothesline between 2 hammers');
-    const cl = api.activeClotheslines[0];
-    assert.ok(cl.timer > 1.9);
-
-    // Place an enemy across the line between the two hammers
-    cl.x1 = 100;
-    cl.y1 = 100;
-    cl.x2 = 300;
-    cl.y2 = 100;
-    if (api.enemies.length === 0) {
-      api.spawnEnemy(false);
-    }
-    const targetEnemy = api.enemies[0];
-    targetEnemy.x = 200;
-    targetEnemy.y = 100;
-    targetEnemy.hp = 200;
-    targetEnemy.hitCooldown = 0;
-
-    api.checkAndStepClotheslines(dt);
-    assert.equal(targetEnemy.hp, 200 - api.constants.CLOTHESLINE_BEAM_DAMAGE, 'Trapped enemy should be sliced for 140 damage');
-
-    // Verify rendering with active clothesline beam does not throw
+    // Verify rendering armored zombie does not throw
+    const armoredEnemy = {
+      id: 9999,
+      variant: 'armored',
+      x: w.x + 80,
+      y: w.y,
+      vx: 0,
+      vy: 0,
+      angle: 0,
+      radius: 20,
+      hp: 300,
+      maxHp: 300,
+      walkPhase: 0,
+      hurtFlash: 0,
+      skinColor: '#5a6e5a',
+      coatColor: '#3a4454',
+      shirtColor: '#718096',
+    };
+    api.enemies.push(armoredEnemy);
     api.render();
   });
 
@@ -2708,5 +2883,204 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.ok(chainSound, 'Chain sound should be generated');
     assert.ok(Math.abs(chainSound.duration - baseDuration) < 0.0001, 'Chain hit sound should not get hammer duration multiplier');
     assert.ok(Math.abs(chainSound.peakGain - baseGain) < 0.0001, 'Chain hit sound should not get hammer gain multiplier');
+  });
+
+  it('detects continuous collision and impacts enemies at every point along the length of the chain in local physics', () => {
+    api.initGame();
+    api.enemies.length = 0;
+    api.warrior.x = 2000;
+    api.warrior.y = 2000;
+    api.warrior.vx = 0;
+    api.warrior.vy = 200;
+
+    const h = api.hammer;
+    h.chainLinks = 2;
+    h.mass = 4.0;
+    h.x = 2200;
+    h.y = 2000;
+    h.vx = 0;
+    h.vy = 200;
+
+    api.initHammerChainNodes(h);
+    h.chainNodes[0].x = 2000;
+    h.chainNodes[0].y = 2000;
+    h.chainNodes[0].vx = 0;
+    h.chainNodes[0].vy = 200;
+
+    h.chainNodes[1].x = 2100;
+    h.chainNodes[1].y = 2000;
+    h.chainNodes[1].vx = 0;
+    h.chainNodes[1].vy = 200;
+
+    h.chainNodes[2].x = 2200;
+    h.chainNodes[2].y = 2000;
+    h.chainNodes[2].vx = 0;
+    h.chainNodes[2].vy = 200;
+
+    api.updateWarriorBroadphaseBounds(api.warrior);
+
+    // Place an enemy halfway between Node 0 and Node 1 at x = 2050, y = 2015.
+    // Distance from enemy to Node 0 is ~52 > 25.5 (NO discrete node collision).
+    // Distance from enemy to Node 1 is ~52 > 25.5 (NO discrete node collision).
+    // BUT distance to the line segment between Node 0 and Node 1 is 15 <= 25.5.
+    api.spawnEnemy(false);
+    const enemy = api.enemies[0];
+    enemy.x = 2050;
+    enemy.y = 2015;
+    enemy.vx = 0;
+    enemy.vy = 0;
+    enemy.hp = 100;
+    enemy.maxHp = 100;
+    enemy.mass = 1.0;
+    enemy.hitCooldown = 0;
+    enemy.chainHitCooldown = 0;
+
+    api.stepPhysics(0.016);
+
+    // Verify enemy took damage and was pushed
+    assert.ok(enemy.hp < 100, `Enemy between chain nodes should take damage, hp was: ${enemy.hp}`);
+    assert.ok(enemy.vy > 0, `Enemy should receive downward impulse from moving chain, vy was: ${enemy.vy}`);
+  });
+
+  it('plays moderate sound effects for warrior mounts and enemy motorcycles', () => {
+    let mockOscillators = [];
+    let mockGains = [];
+    function createMockAudioContext() {
+      const createParam = (init = 0) => ({
+        value: init,
+        setValueAtTime(v) { this.value = v; },
+        linearRampToValueAtTime(v) { this.value = v; },
+        exponentialRampToValueAtTime(v) { this.value = v; },
+      });
+      return {
+        currentTime: 1.0,
+        state: 'running',
+        destination: {},
+        createOscillator() {
+          const osc = {
+            type: 'sine',
+            frequency: createParam(100),
+            connect: () => {},
+            start: () => {},
+            stop: () => {},
+          };
+          mockOscillators.push(osc);
+          return osc;
+        },
+        createGain() {
+          const g = {
+            gain: createParam(1),
+            connect: () => {},
+          };
+          mockGains.push(g);
+          return g;
+        },
+      };
+    }
+    win.AudioContext = createMockAudioContext;
+
+    // 1. Mount claim sounds for all 4 mounts
+    const mounts = ['horse', 'tortoise', 'elephant', 'motorcycle'];
+    for (const m of mounts) {
+      mockOscillators = [];
+      mockGains = [];
+      const res = api.playMountClaimSound(m);
+      assert.ok(res, `Claim sound for ${m} should return audio metadata`);
+      assert.equal(res.mountType, m);
+      assert.ok(res.duration >= 0.25 && res.duration <= 0.45, `Duration for ${m} should be between 0.25s and 0.45s, got: ${res.duration}`);
+      assert.ok(res.peakGain >= 0.08 && res.peakGain <= 0.18, `Peak gain for ${m} should be moderate (0.08-0.18), got: ${res.peakGain}`);
+      assert.ok(mockOscillators.length >= 1, `Should construct oscillator nodes for ${m}`);
+      assert.ok(mockGains.length >= 1, `Should construct gain node for ${m}`);
+    }
+
+    // 2. Locomotion sounds for all 4 mounts
+    for (const m of mounts) {
+      mockOscillators = [];
+      mockGains = [];
+      const res = api.playMountLocomotionSound(m, 1.2);
+      assert.ok(res, `Locomotion sound for ${m} should return audio metadata`);
+      assert.equal(res.mountType, m);
+      assert.ok(res.duration >= 0.04 && res.duration <= 0.15, `Locomotion duration for ${m} should be quick, got: ${res.duration}`);
+      assert.ok(res.peakGain >= 0.08 && res.peakGain <= 0.16, `Locomotion peak gain for ${m} should be moderate (0.08-0.16), got: ${res.peakGain}`);
+    }
+
+    // 3. Enemy motorcycle engine sound with distance volume attenuation
+    const closeSound = api.playEnemyMotorcycleEngineSound(0.12, 1.0);
+    assert.ok(closeSound);
+    assert.equal(closeSound.peakGain, 0.12, 'Close enemy motorcycle should have volume 0.12');
+
+    const farSound = api.playEnemyMotorcycleEngineSound(0.03, 1.0);
+    assert.ok(farSound);
+    assert.equal(farSound.peakGain, 0.03, 'Far enemy motorcycle should have attenuated volume 0.03');
+
+    // 4. Motorcycle crash sound on dismount/wreck
+    mockOscillators = [];
+    mockGains = [];
+    const crash = api.playMotorcycleCrashSound();
+    assert.ok(crash);
+    assert.ok(crash.duration >= 0.20 && crash.duration <= 0.35);
+    assert.ok(crash.peakGain >= 0.10 && crash.peakGain <= 0.18, 'Crash sound should have moderate peak gain');
+    assert.ok(mockOscillators.length >= 2, 'Crash sound should use dual oscillators for metallic skid');
+
+    // 5. Locomotion integration in updateEffects(dt)
+    api.initGame();
+    api.warrior.alive = true;
+    api.warrior.mountType = 'horse';
+    api.warrior.mountHp = 100;
+    api.warrior.vx = 80;
+    api.warrior.vy = 60; // speed = 100 > 20
+
+    // Step by 0.1s -> timer increases but hasn't reached interval
+    api.updateEffects(0.1);
+    assert.ok(api.getState().mountSoundTimer > 0, 'Mount sound timer should accumulate when moving');
+
+    // Step by another 0.25s -> exceeds horse interval (~0.24s) -> triggers sound and resets timer
+    api.updateEffects(0.25);
+    assert.ok(api.getState().mountSoundTimer < 0.2, 'Mount sound timer should reset after playing locomotion sound');
+
+    // When stationary, mount sound timer should stay 0
+    api.warrior.vx = 0;
+    api.warrior.vy = 0;
+    api.updateEffects(0.05);
+    assert.equal(api.getState().mountSoundTimer, 0, 'Stationary mounted warrior should reset sound timer');
+
+    // 6. Enemy motorcycle engine integration in updateEffects(dt)
+    api.enemies.length = 0;
+    api.spawnEnemy(false);
+    const motoEnemy = api.enemies[0];
+    motoEnemy.variant = 'motorcycle';
+    motoEnemy.hp = 75;
+    motoEnemy.x = api.warrior.x + 200;
+    motoEnemy.y = api.warrior.y;
+    motoEnemy.vx = 300;
+    motoEnemy.vy = 0;
+
+    mockOscillators = [];
+    api.updateEffects(0.2); // Exceeds 0.14s enemy motorcycle loop interval
+    assert.ok(mockOscillators.length > 0, 'Nearby enemy motorcycle should trigger engine audio in updateEffects');
+
+    // 7. Server events trigger audio
+    mockOscillators = [];
+    api.processServerEvents([
+      {
+        type: 'motorcycle_wreck',
+        x: api.warrior.x + 100,
+        y: api.warrior.y,
+        radius: 21,
+        duration: 30,
+      },
+    ]);
+    assert.ok(mockOscillators.length >= 2, 'motorcycle_wreck event should trigger crash sound');
+
+    mockOscillators = [];
+    api.processServerEvents([
+      {
+        type: 'claim_motorcycle',
+        id: 'wreck-sound-test',
+        x: api.warrior.x,
+        y: api.warrior.y,
+      },
+    ]);
+    assert.ok(mockOscillators.length >= 2, 'claim_motorcycle event should trigger motorcycle mount claim sound');
   });
 });
