@@ -108,6 +108,10 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.CLOTHESLINE_DURATION, 2.0);
     assert.equal(srv.CLOTHESLINE_TRIGGER_DIST, 42);
     assert.equal(srv.CLOTHESLINE_BEAM_DAMAGE, 140);
+    assert.equal(srv.HIT_STOP_DURATION, 0.030);
+    assert.equal(srv.HIT_STOP_DAMAGE_THRESHOLD, 350);
+    assert.equal(srv.HIT_STOP_BIG_SHAKE_THRESHOLD, 425);
+    assert.equal(srv.MULTI_KILL_WINDOW, 0.35);
     assert.deepEqual(srv.ALL_LIMBS, ['left_arm', 'right_arm', 'left_leg', 'right_leg', 'head']);
   });
 

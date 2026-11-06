@@ -144,6 +144,11 @@ const CLOTHESLINE_DURATION = 2.0;
 const CLOTHESLINE_TRIGGER_DIST = 42;
 const CLOTHESLINE_BEAM_DAMAGE = 140;
 
+const HIT_STOP_DURATION = 0.030;
+const HIT_STOP_DAMAGE_THRESHOLD = 350;
+const HIT_STOP_BIG_SHAKE_THRESHOLD = 425;
+const MULTI_KILL_WINDOW = 0.35;
+
 const ALL_LIMBS = ['left_arm', 'right_arm', 'left_leg', 'right_leg', 'head'] as const;
 type LimbType = (typeof ALL_LIMBS)[number];
 
@@ -1374,6 +1379,8 @@ function checkAndStepClotheslines(dt: number) {
             y: Math.round(e.y),
             damage: CLOTHESLINE_BEAM_DAMAGE,
             isChain: false,
+            dirX: -(cl.y2 - cl.y1),
+            dirY: cl.x2 - cl.x1,
           });
           pendingEvents.push({
             type: 'floating_text',
@@ -2759,6 +2766,8 @@ function stepWorldPhysics(dt) {
                     enemyY: Math.round(e.y - e.radius - 6),
                     damage,
                     isChain: false,
+                    dirX: nx,
+                    dirY: ny,
                   });
 
                   if ((h.whirlwindLevel || 0) > 0 || h.isWhirlwind) {
@@ -2878,6 +2887,8 @@ function stepWorldPhysics(dt) {
                   enemyY: Math.round(e.y - e.radius - 6),
                   damage: chainDamage,
                   isChain: true,
+                  dirX: cnx,
+                  dirY: cny,
                 });
 
                 if (e.hp <= 0) {
@@ -4129,6 +4140,10 @@ module.exports = {
   CLOTHESLINE_DURATION,
   CLOTHESLINE_TRIGGER_DIST,
   CLOTHESLINE_BEAM_DAMAGE,
+  HIT_STOP_DURATION,
+  HIT_STOP_DAMAGE_THRESHOLD,
+  HIT_STOP_BIG_SHAKE_THRESHOLD,
+  MULTI_KILL_WINDOW,
   ALL_LIMBS,
   checkTimeGap,
   getLastEmptyTime,

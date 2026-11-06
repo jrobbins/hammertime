@@ -327,6 +327,10 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.CLOTHESLINE_DURATION, srv.CLOTHESLINE_DURATION);
     assert.equal(c.CLOTHESLINE_TRIGGER_DIST, srv.CLOTHESLINE_TRIGGER_DIST);
     assert.equal(c.CLOTHESLINE_BEAM_DAMAGE, srv.CLOTHESLINE_BEAM_DAMAGE);
+    assert.equal(c.HIT_STOP_DURATION, srv.HIT_STOP_DURATION);
+    assert.equal(c.HIT_STOP_DAMAGE_THRESHOLD, srv.HIT_STOP_DAMAGE_THRESHOLD);
+    assert.equal(c.HIT_STOP_BIG_SHAKE_THRESHOLD, srv.HIT_STOP_BIG_SHAKE_THRESHOLD);
+    assert.equal(c.MULTI_KILL_WINDOW, srv.MULTI_KILL_WINDOW);
     assert.deepEqual([...c.ALL_LIMBS], [...srv.ALL_LIMBS]);
     assert.deepEqual([...c.PICKUP_TYPES], srv.PICKUP_TYPES);
     assert.deepEqual([...c.PICKUP_TYPES], ['link', 'weight', 'health', 'bomb', 'speed', 'flame']);
@@ -2477,5 +2481,232 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     ]);
     assert.equal(api.enemyGhosts.length, 1);
     assert.equal(api.enemyGhosts[0].limb, 'head');
+  });
+
+  it('implements Hit-Stop (Impact Freeze) and Directional Screen Shake', () => {
+    const c = api.constants;
+    // 1. Verify constants
+    assert.equal(c.HIT_STOP_DURATION, 0.030);
+    assert.equal(c.HIT_STOP_DAMAGE_THRESHOLD, 350);
+    assert.equal(c.HIT_STOP_BIG_SHAKE_THRESHOLD, 425);
+    assert.equal(c.MULTI_KILL_WINDOW, 0.35);
+
+    // 2. Initial state
+    api.initGame();
+    assert.equal(api.getHitStopTimer(), 0);
+    assert.equal(api.camera.dirShake, 0);
+    assert.equal(api.camera.dirX, 0);
+    assert.equal(api.camera.dirY, 0);
+
+    // 3. triggerHitStop: damage < 350 should not trigger, damage >= 350 triggers, damage > 425 gives bigger shake
+    api.triggerHitStop(0.030, 1, 0, 200);
+    assert.equal(api.getHitStopTimer(), 0, 'Damage < 350 should not trigger hit-stop');
+    assert.equal(api.camera.dirShake, 0, 'Damage < 350 should not set dirShake');
+
+    api.triggerHitStop(0.030, 1, 0, 380);
+    assert.equal(api.getHitStopTimer(), 0.030, 'Damage >= 350 should trigger hit-stop');
+    assert.equal(api.camera.dirX, 1);
+    assert.equal(api.camera.dirY, 0);
+    const standardDirShake = api.camera.dirShake;
+    assert.ok(standardDirShake > 0, 'Directional shake intensity should be positive');
+    assert.ok(api.camera.shake > 0, 'Camera shake should be positive');
+
+    // Bigger shake for damage > 425
+    api.camera.dirShake = 0;
+    api.camera.shake = 0;
+    api.triggerHitStop(0.030, 1, 0, 500);
+    const bigDirShake = api.camera.dirShake;
+    assert.ok(bigDirShake > standardDirShake, 'Damage > 425 should give bigger directional shake');
+    assert.ok(bigDirShake >= 22, 'Damage > 425 should trigger shakeAmt >= 22');
+
+    // 4. Update effects decays directional shake
+    const initialDirShake = api.camera.dirShake;
+    api.updateEffects(0.016);
+    assert.ok(api.camera.dirShake < initialDirShake, 'dirShake should decay over time');
+
+    // 5. High-damage crushing blow triggers Hit-Stop in stepPhysics
+    api.initGame();
+    api.warrior.x = 2100;
+    api.warrior.y = 2050;
+    api.warrior.vx = 0;
+    api.warrior.vy = 0;
+
+    api.enemies.length = 1;
+    const enemy = api.enemies[0];
+    enemy.hp = 1000;
+    enemy.maxHp = 1000;
+    enemy.x = 2100;
+    enemy.y = 2100;
+    enemy.vx = 0;
+    enemy.vy = 0;
+    enemy.moveForce = 0; // stationary enemy to prevent relative velocity drift
+    enemy.mass = 2.0;
+    enemy.hitCooldown = 0;
+
+    api.hammer.chainLinks = 6; // ample rest length (168px) so spring does not fight hammer velocity
+    api.hammer.x = 2100;
+    api.hammer.y = 2100 + api.hammer.radius + enemy.radius - 2; // overlapping
+    api.hammer.vx = 0;
+    api.hammer.vy = -1600; // fast upward strike into enemy
+    api.hammer.mass = 8.0;
+    api.initHammerChainNodes(api.hammer);
+    api.updateWarriorBroadphaseBounds(api.warrior);
+
+    api.setHitStopTimer(0);
+    api.stepPhysics(0.016);
+    assert.ok(api.getHitStopTimer() >= 0.030, 'High-damage crushing blow should trigger 30ms hit-stop');
+    assert.ok(api.camera.dirShake >= 22, 'Crushing blow with damage > 425 should trigger big directional shake');
+
+    // 6. Multi-kill triggers Hit-Stop
+    api.initGame();
+    api.warrior.x = 2100;
+    api.warrior.y = 2100;
+    api.camera.x = 2100 - 640;
+    api.camera.y = 2100 - 400 / api.constants.TILT_Y;
+    api.setHitStopTimer(0);
+    api.enemies.length = 3;
+    for (let i = 0; i < 3; i++) {
+      api.enemies[i].hp = 10;
+      api.enemies[i].maxHp = 100;
+    }
+    // Defeat first enemy
+    api.defeatEnemy(0, null, 100, 0);
+    // Defeat second enemy within multi-kill window
+    api.defeatEnemy(1, null, 100, 0);
+    assert.ok(api.getHitStopTimer() >= 0.030, 'Defeating multiple enemies within multi-kill window should trigger hit-stop');
+
+    // 7. Multiplayer impact event: damage < 350 does not trigger, damage >= 350 triggers, damage > 425 gives bigger shake
+    api.camera.x = 2100 - 640;
+    api.camera.y = 2100 - 400 / api.constants.TILT_Y;
+    api.setHitStopTimer(0);
+    api.camera.dirShake = 0;
+    api.camera.dirX = 0;
+    api.camera.dirY = 0;
+    api.processServerEvents([
+      {
+        type: 'impact',
+        x: 2100,
+        y: 2100,
+        enemyX: 2100,
+        enemyY: 2100,
+        damage: 250,
+        isChain: false,
+        dirX: 0.6,
+        dirY: 0.8,
+      }
+    ]);
+    assert.equal(api.getHitStopTimer(), 0, 'Server impact with damage < 350 should not trigger hit-stop');
+    assert.equal(api.camera.dirShake, 0, 'Server impact with damage < 350 should not set dirShake');
+
+    api.processServerEvents([
+      {
+        type: 'impact',
+        x: 2100,
+        y: 2100,
+        enemyX: 2100,
+        enemyY: 2100,
+        damage: 380,
+        isChain: false,
+        dirX: 0.6,
+        dirY: 0.8,
+      }
+    ]);
+    assert.ok(api.getHitStopTimer() >= 0.030, 'Server impact with damage >= 350 should trigger hit-stop');
+    assert.ok(Math.abs(api.camera.dirX - 0.6) < 0.01, 'camera.dirX should match impact direction');
+    assert.ok(Math.abs(api.camera.dirY - 0.8) < 0.01, 'camera.dirY should match impact direction');
+    const srvDirShake = api.camera.dirShake;
+    assert.ok(srvDirShake > 0, 'camera.dirShake should be primed');
+
+    // Server impact with damage > 425 triggers bigger shake
+    api.camera.dirShake = 0;
+    api.processServerEvents([
+      {
+        type: 'impact',
+        x: 2100,
+        y: 2100,
+        enemyX: 2100,
+        enemyY: 2100,
+        damage: 480,
+        isChain: false,
+        dirX: 0.6,
+        dirY: 0.8,
+      }
+    ]);
+    assert.ok(api.camera.dirShake > srvDirShake, 'Server impact with damage > 425 should trigger bigger shake');
+    assert.ok(api.camera.dirShake >= 22, 'Server impact with damage > 425 should have dirShake >= 22');
+
+    // 8. Multiplayer multi-kill (multiple enemy_die events) triggers hit-stop
+    api.camera.x = 2100 - 640;
+    api.camera.y = 2100 - 400 / api.constants.TILT_Y;
+    api.setHitStopTimer(0);
+    api.processServerEvents([
+      { type: 'enemy_die', x: 2100, y: 2100, vx: 50, vy: 0 },
+      { type: 'enemy_die', x: 2120, y: 2100, vx: 50, vy: 0 },
+    ]);
+    assert.ok(api.getHitStopTimer() >= 0.030, 'Multi-kill in server events should trigger hit-stop');
+
+    // 9. Directional rendering does not throw and computes shake offsets
+    assert.doesNotThrow(() => {
+      api.render();
+    }, 'render with directional screen shake should not throw');
+
+    // 10. Hammer hit sound effect: 20% longer and louder when damage >= 350, 40% when damage > 425
+    function createMockAudioContext() {
+      const createParam = (init = 0) => ({
+        value: init,
+        setValueAtTime(v) { this.value = v; },
+        linearRampToValueAtTime(v) { this.value = v; },
+        exponentialRampToValueAtTime(v) { this.value = v; },
+      });
+      return {
+        currentTime: 0.5,
+        state: 'running',
+        destination: {},
+        createOscillator() {
+          return {
+            type: 'sine',
+            frequency: createParam(100),
+            connect: () => {},
+            start: () => {},
+            stop: () => {},
+          };
+        },
+        createGain() {
+          return {
+            gain: createParam(1),
+            connect: () => {},
+          };
+        },
+      };
+    }
+    win.AudioContext = createMockAudioContext;
+
+    // Base hammer hit (< 350 damage, e.g. 100)
+    api.setState({ soundWindowStartMs: -1000, soundsInCurrentWindow: 0 });
+    const normalSound = api.playImpactSound(100, false);
+    assert.ok(normalSound, 'Normal impact sound should be generated');
+    const baseDuration = normalSound.duration; // 0.123
+    const baseGain = normalSound.peakGain;     // 0.31
+
+    // Hammer hit >= 350 (e.g. 380): 20% longer and louder
+    api.setState({ soundWindowStartMs: -1000, soundsInCurrentWindow: 0 });
+    const sound350 = api.playImpactSound(380, false);
+    assert.ok(sound350, 'Impact sound for 380 damage should be generated');
+    assert.ok(Math.abs(sound350.duration - baseDuration * 1.2) < 0.0001, 'Hit sound >= 350 should be 20% longer');
+    assert.ok(Math.abs(sound350.peakGain - baseGain * 1.2) < 0.0001, 'Hit sound >= 350 should be 20% louder');
+
+    // Hammer hit > 425 (e.g. 500): 40% longer and louder
+    api.setState({ soundWindowStartMs: -1000, soundsInCurrentWindow: 0 });
+    const sound425 = api.playImpactSound(500, false);
+    assert.ok(sound425, 'Impact sound for 500 damage should be generated');
+    assert.ok(Math.abs(sound425.duration - baseDuration * 1.4) < 0.0001, 'Hit sound > 425 should be 40% longer');
+    assert.ok(Math.abs(sound425.peakGain - baseGain * 1.4) < 0.0001, 'Hit sound > 425 should be 40% louder');
+
+    // Chain hit (isChain = true) should not scale even if damage >= 350
+    api.setState({ soundWindowStartMs: -1000, soundsInCurrentWindow: 0 });
+    const chainSound = api.playImpactSound(400, true);
+    assert.ok(chainSound, 'Chain sound should be generated');
+    assert.ok(Math.abs(chainSound.duration - baseDuration) < 0.0001, 'Chain hit sound should not get hammer duration multiplier');
+    assert.ok(Math.abs(chainSound.peakGain - baseGain) < 0.0001, 'Chain hit sound should not get hammer gain multiplier');
   });
 });

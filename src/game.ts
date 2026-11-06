@@ -167,6 +167,11 @@
   const CLOTHESLINE_TRIGGER_DIST = 42;
   const CLOTHESLINE_BEAM_DAMAGE = 140;
 
+  const HIT_STOP_DURATION = 0.030; // 30ms micro-freeze on high-damage crushing blows or multi-kills
+  const HIT_STOP_DAMAGE_THRESHOLD = 350;
+  const HIT_STOP_BIG_SHAKE_THRESHOLD = 425;
+  const MULTI_KILL_WINDOW = 0.35;
+
   const ALL_LIMBS = ['left_arm', 'right_arm', 'left_leg', 'right_leg', 'head'] as const;
   type LimbType = (typeof ALL_LIMBS)[number];
 
@@ -238,8 +243,18 @@
     const now = ctxAudio.currentTime;
     // Normalize damage intensity (0.06 for tiny 1-2 dmg taps up to 1.0 for 75+ dmg blows)
     const intensity = Math.min(1, Math.max(0.06, damage / 75));
-    const duration = 0.038 + intensity * 0.085;
-    const peakGain = 0.03 + intensity * 0.28;
+    let duration = 0.038 + intensity * 0.085;
+    let peakGain = 0.03 + intensity * 0.28;
+
+    if (!isChain) {
+      if (damage > 425) {
+        duration *= 1.4;
+        peakGain *= 1.4;
+      } else if (damage >= 350) {
+        duration *= 1.2;
+        peakGain *= 1.2;
+      }
+    }
 
     const osc = ctxAudio.createOscillator();
     const gain = ctxAudio.createGain();
@@ -275,6 +290,7 @@
       overtone.start(now);
       overtone.stop(now + duration * 0.65 + 0.005);
     }
+    return { duration, peakGain };
   }
 
   /**
@@ -1082,7 +1098,39 @@
     x: 0,
     y: 0,
     shake: 0,
+    dirX: 0,
+    dirY: 0,
+    dirShake: 0,
   };
+
+  let hitStopTimer = 0;
+  const recentKillTimes: number[] = [];
+
+  function triggerHitStop(
+    duration: number = HIT_STOP_DURATION,
+    dirX: number = 0,
+    dirY: number = 0,
+    damage: number = HIT_STOP_DAMAGE_THRESHOLD
+  ) {
+    if (damage < HIT_STOP_DAMAGE_THRESHOLD) {
+      return;
+    }
+    hitStopTimer = Math.max(hitStopTimer, duration);
+    const isBigShake = damage > HIT_STOP_BIG_SHAKE_THRESHOLD;
+    const shakeAmt = isBigShake
+      ? Math.min(32, 22 + (damage - HIT_STOP_BIG_SHAKE_THRESHOLD) * 0.08)
+      : Math.min(18, 8 + (damage - HIT_STOP_DAMAGE_THRESHOLD) * 0.1);
+    const maxOmniShake = isBigShake ? 30 : 22;
+    if (dirX !== 0 || dirY !== 0) {
+      const len = Math.hypot(dirX, dirY) || 1;
+      camera.dirX = dirX / len;
+      camera.dirY = dirY / len;
+      camera.dirShake = Math.max(camera.dirShake, shakeAmt);
+      camera.shake = Math.min(maxOmniShake, camera.shake + (isBigShake ? shakeAmt * 0.7 : shakeAmt * 0.5));
+    } else {
+      camera.shake = Math.min(maxOmniShake, camera.shake + shakeAmt);
+    }
+  }
 
   const warrior = {
     x: WORLD_WIDTH / 2,
@@ -1977,12 +2025,18 @@
         if (ev.isChain) {
           addParticles(ev.x, ev.y, '#cbd5e0', 5, 40, 160, 2.5);
           addFloatingText(ev.enemyX, ev.enemyY, `-${ev.damage}`, '#cbd5e0', 0.92);
+          if (ev.damage >= HIT_STOP_DAMAGE_THRESHOLD) {
+            triggerHitStop(HIT_STOP_DURATION, ev.dirX || 0, ev.dirY || 0, ev.damage);
+          }
         } else {
           const sparkCount = Math.min(22, 5 + Math.floor(ev.damage / 8));
           addParticles(ev.x, ev.y, '#fbd38d', sparkCount, 60, 260, 3.2);
           if (ev.damage >= 25) {
             addShockwave(ev.x, ev.y, Math.min(65, 20 + ev.damage * 0.45));
             camera.shake = Math.min(12, camera.shake + ev.damage * 0.08);
+          }
+          if (ev.damage >= HIT_STOP_DAMAGE_THRESHOLD) {
+            triggerHitStop(HIT_STOP_DURATION, ev.dirX || 0, ev.dirY || 0, ev.damage);
           }
           const dmgColor = ev.damage >= 50 ? '#fbd38d' : '#ffffff';
           const dmgScale = ev.damage >= 50 ? 1.25 : 1.0;
@@ -1991,6 +2045,14 @@
       } else if (ev.type === 'enemy_die') {
         if (!isWorldPointVisible(ev.x, ev.y, cullMargin)) {
           continue;
+        }
+        const nowSec = performance.now() * 0.001;
+        recentKillTimes.push(nowSec);
+        while (recentKillTimes.length > 0 && nowSec - recentKillTimes[0] > MULTI_KILL_WINDOW) {
+          recentKillTimes.shift();
+        }
+        if (recentKillTimes.length >= 2) {
+          triggerHitStop(HIT_STOP_DURATION, ev.vx || 0, ev.vy || 0, HIT_STOP_DAMAGE_THRESHOLD);
         }
         playEnemyDisappearSound();
         spawnEnemyGhost(
@@ -3071,6 +3133,16 @@
     kills++;
     teamKills = kills;
     recordLocalLeaderboardScore(warrior.name, kills, warrior.color);
+
+    const nowSec = performance.now() * 0.001;
+    recentKillTimes.push(nowSec);
+    while (recentKillTimes.length > 0 && nowSec - recentKillTimes[0] > MULTI_KILL_WINDOW) {
+      recentKillTimes.shift();
+    }
+    if (recentKillTimes.length >= 2) {
+      triggerHitStop(HIT_STOP_DURATION, strikeHvx, strikeHvy, HIT_STOP_DAMAGE_THRESHOLD);
+    }
+
     playEnemyDisappearSound();
 
     let ghostVx = 0;
@@ -3279,6 +3351,10 @@
 
         if (blastDamage > maxDamageBlow) {
           maxDamageBlow = blastDamage;
+        }
+
+        if (blastDamage >= HIT_STOP_DAMAGE_THRESHOLD) {
+          triggerHitStop(HIT_STOP_DURATION, bnx, bny, blastDamage);
         }
 
         addFloatingText(
@@ -3773,6 +3849,10 @@
           maxDamageBlow = gustDamage;
         }
 
+        if (gustDamage >= HIT_STOP_DAMAGE_THRESHOLD) {
+          triggerHitStop(HIT_STOP_DURATION, bnx, bny, gustDamage);
+        }
+
         addFloatingText(target.x, target.y - target.radius - 8, `-${gustDamage}`, isFlaming ? '#ff6b35' : (levelColors[level] || '#a7f3d0'), 1.05 + level * 0.1);
       }
     }
@@ -3836,6 +3916,11 @@
             checkEnemyLimbLoss(e, 0, 0);
             if (CLOTHESLINE_BEAM_DAMAGE > maxDamageBlow) {
               maxDamageBlow = CLOTHESLINE_BEAM_DAMAGE;
+            }
+            if (CLOTHESLINE_BEAM_DAMAGE >= HIT_STOP_DAMAGE_THRESHOLD) {
+              const cldx = cl.x2 - cl.x1;
+              const cldy = cl.y2 - cl.y1;
+              triggerHitStop(HIT_STOP_DURATION, -cldy, cldx, CLOTHESLINE_BEAM_DAMAGE);
             }
             addParticles(e.x, e.y, '#38bdf8', 12, 100, 280, 2.5);
             addFloatingText(e.x, e.y - e.radius - 12, `-${CLOTHESLINE_BEAM_DAMAGE}`, '#38bdf8', 1.35);
@@ -4007,6 +4092,11 @@
     camera.x = warrior.x - viewportWidth / 2;
     camera.y = warrior.y - viewportHeight / 2 / TILT_Y;
     camera.shake = 0;
+    camera.dirShake = 0;
+    camera.dirX = 0;
+    camera.dirY = 0;
+    hitStopTimer = 0;
+    recentKillTimes.length = 0;
     updateCamera();
 
     enemies.length = 0;
@@ -4671,9 +4761,16 @@
 
     // 1. Local Player Prediction & Smooth Reconciliation
     if (roundState === 'playing' && warrior.alive) {
-      const subDt = frameDt / PHYSICS_SUBSTEPS;
-      for (let s = 0; s < PHYSICS_SUBSTEPS; s++) {
-        stepLocalWarriorAndHammers(subDt, true);
+      if (hitStopTimer > 0) {
+        hitStopTimer = Math.max(0, hitStopTimer - frameDt);
+      } else {
+        const subDt = frameDt / PHYSICS_SUBSTEPS;
+        for (let s = 0; s < PHYSICS_SUBSTEPS; s++) {
+          stepLocalWarriorAndHammers(subDt, true);
+          if (hitStopTimer > 0) {
+            break;
+          }
+        }
       }
       const warriorSpeed = Math.hypot(warrior.vx, warrior.vy);
       if (warriorSpeed > 15) {
@@ -5138,6 +5235,10 @@
                     maxDamageBlow = damage;
                   }
 
+                  if (damage >= HIT_STOP_DAMAGE_THRESHOLD) {
+                    triggerHitStop(HIT_STOP_DURATION, nx, ny, damage);
+                  }
+
                   const contactX = h.x + nx * h.radius;
                   const contactY = h.y + ny * h.radius;
 
@@ -5261,6 +5362,10 @@
                   maxDamageBlow = chainDamage;
                 }
 
+                if (chainDamage >= HIT_STOP_DAMAGE_THRESHOLD) {
+                  triggerHitStop(HIT_STOP_DURATION, cnx, cny, chainDamage);
+                }
+
                 addParticles(node.x, node.y, '#cbd5e0', 5, 40, 160, 2.5);
                 addFloatingText(
                   e.x,
@@ -5298,6 +5403,9 @@
           const crushDmg = Math.max(1, Math.ceil(e.hp));
           if (crushDmg > maxDamageBlow) {
             maxDamageBlow = crushDmg;
+          }
+          if (crushDmg >= HIT_STOP_DAMAGE_THRESHOLD) {
+            triggerHitStop(HIT_STOP_DURATION, warrior.vx, warrior.vy, crushDmg);
           }
           playImpactSound(85, false);
           addFloatingText(e.x, e.y - e.radius - 10, 'CRUSHED!', '#ecc94b', 1.2);
@@ -5842,6 +5950,14 @@
     if (camera.shake > 0) {
       camera.shake = Math.max(0, camera.shake - dt * 28);
     }
+    if (camera.dirShake > 0) {
+      camera.dirShake = Math.max(0, camera.dirShake - dt * 32);
+      if (camera.dirShake <= 0.001) {
+        camera.dirShake = 0;
+        camera.dirX = 0;
+        camera.dirY = 0;
+      }
+    }
 
     // Active earthquake effects: rattle the ground with pebbles & seismic rings
     if (earthquakeTimer > 0) {
@@ -6307,10 +6423,20 @@
     const quakeY = isQuaking
       ? Math.cos(nowMs * 0.115) * 11 + (Math.random() - 0.5) * 13
       : 0;
+
+    let dirShakeX = 0;
+    let dirShakeY = 0;
+    if (camera.dirShake > 0) {
+      const dirKick = camera.dirShake * Math.cos(nowMs * 0.055);
+      const perpKick = camera.dirShake * 0.28 * Math.sin(nowMs * 0.075);
+      dirShakeX = camera.dirX * dirKick - camera.dirY * perpKick;
+      dirShakeY = camera.dirY * dirKick + camera.dirX * perpKick;
+    }
+
     const shakeX =
-      (camera.shake > 0 ? (Math.random() - 0.5) * camera.shake * 2 : 0) + quakeX;
+      (camera.shake > 0 ? (Math.random() - 0.5) * camera.shake * 1.5 : 0) + dirShakeX + quakeX;
     const shakeY =
-      (camera.shake > 0 ? (Math.random() - 0.5) * camera.shake * 2 : 0) + quakeY;
+      (camera.shake > 0 ? (Math.random() - 0.5) * camera.shake * 1.5 : 0) + dirShakeY + quakeY;
 
     if (isQuaking) {
       const canvasTilt = Math.sin(nowMs * 0.075) * 0.012;
@@ -10921,9 +11047,16 @@
         updateHUD();
       } else if (!isGameOver) {
         if (roundState === 'playing') {
-          const subDt = frameDt / PHYSICS_SUBSTEPS;
-          for (let s = 0; s < PHYSICS_SUBSTEPS; s++) {
-            stepPhysics(subDt);
+          if (hitStopTimer > 0) {
+            hitStopTimer = Math.max(0, hitStopTimer - frameDt);
+          } else {
+            const subDt = frameDt / PHYSICS_SUBSTEPS;
+            for (let s = 0; s < PHYSICS_SUBSTEPS; s++) {
+              stepPhysics(subDt);
+              if (hitStopTimer > 0) {
+                break;
+              }
+            }
           }
         }
         updateCamera();
@@ -11047,6 +11180,10 @@
         SOUND_RATE_WINDOW_MS,
         MINIMAP_UPDATE_INTERVAL,
         ALL_LIMBS,
+        HIT_STOP_DURATION,
+        HIT_STOP_DAMAGE_THRESHOLD,
+        HIT_STOP_BIG_SHAKE_THRESHOLD,
+        MULTI_KILL_WINDOW,
       },
       warrior,
       hammer,
@@ -11085,6 +11222,7 @@
         animationFrameId,
         lastUserActivityTime,
         touchWheelState,
+        hitStopTimer,
       }),
       setState: (patch) => {
         if ('hasEnteredGame' in patch) hasEnteredGame = patch.hasEnteredGame;
@@ -11107,6 +11245,7 @@
         if ('soundWindowStartMs' in patch) soundWindowStartMs = patch.soundWindowStartMs;
         if ('soundsInCurrentWindow' in patch) soundsInCurrentWindow = patch.soundsInCurrentWindow;
         if ('lastUserActivityTime' in patch) lastUserActivityTime = patch.lastUserActivityTime;
+        if ('hitStopTimer' in patch) hitStopTimer = patch.hitStopTimer;
       },
       initGame,
       enterGame,
@@ -11134,6 +11273,7 @@
       renderLeaderboard,
       updateVisualQuality,
       canPlayRateLimitedSound,
+      playImpactSound,
       isWorldPointVisible,
       addParticles,
       addFloatingText,
@@ -11141,6 +11281,11 @@
       addBombBlastAnimation,
       addThorLightningAnimation,
       triggerWhirlwindGust,
+      triggerHitStop,
+      getHitStopTimer: () => hitStopTimer,
+      setHitStopTimer: (v: number) => {
+        hitStopTimer = v;
+      },
       checkAndStepClotheslines,
       updateHammerWhirlwind,
       distPointToSegment,
