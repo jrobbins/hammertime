@@ -327,6 +327,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.CLOTHESLINE_DURATION, srv.CLOTHESLINE_DURATION);
     assert.equal(c.CLOTHESLINE_TRIGGER_DIST, srv.CLOTHESLINE_TRIGGER_DIST);
     assert.equal(c.CLOTHESLINE_BEAM_DAMAGE, srv.CLOTHESLINE_BEAM_DAMAGE);
+    assert.deepEqual([...c.ALL_LIMBS], [...srv.ALL_LIMBS]);
     assert.deepEqual([...c.PICKUP_TYPES], srv.PICKUP_TYPES);
     assert.deepEqual([...c.PICKUP_TYPES], ['link', 'weight', 'health', 'bomb', 'speed', 'flame']);
     assert.equal(c.PICKUP_TYPES.includes('traction'), false);
@@ -2338,5 +2339,143 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
 
     // Verify rendering with active clothesline beam does not throw
     api.render();
+  });
+
+  it('renders zombies without lost limbs, hops when legs are missing, wanders in circles when headless, and animates ghost limbs', () => {
+    // 1. Initial zombie starts with 0 lost limbs
+    const enemy = {
+      variant: 'regular',
+      x: 2000,
+      y: 2000,
+      vx: 0,
+      vy: 0,
+      angle: 0,
+      radius: 18,
+      mass: 1.2,
+      hp: 100,
+      maxHp: 100,
+      moveForce: 360,
+      traction: 6.0,
+      skinColor: '#5e8c52',
+      coatColor: '#2d3748',
+      shirtColor: '#4a5568',
+      eyeColor: '#f6e05e',
+      hitCooldown: 0,
+      chainHitCooldown: 0,
+      contactCooldown: 0,
+      hurtFlash: 0,
+      burnTimer: 0,
+      fireproofTimer: 0,
+      fearTimer: 0,
+      danceTimer: 0,
+      danceImmuneTimer: 0,
+      webTimer: 0,
+      knockdownTimer: 0,
+      walkPhase: 0,
+      lostLimbs: [],
+    };
+    api.enemies.length = 0;
+    api.enemies.push(enemy);
+
+    // 2. checkEnemyLimbLoss at 50% HP threshold: loses 1 limb and spawns ghost limb
+    api.enemyGhosts.length = 0;
+    enemy.hp = 50;
+    api.checkEnemyLimbLoss(enemy, 120, -60);
+    assert.equal(enemy.lostLimbs.length, 1);
+    assert.ok(api.ALL_LIMBS.includes(enemy.lostLimbs[0]));
+    assert.equal(api.enemyGhosts.length, 1);
+    const ghostLimb1 = api.enemyGhosts[0];
+    assert.equal(ghostLimb1.limb, enemy.lostLimbs[0]);
+    assert.ok(ghostLimb1.timer > 0);
+    assert.ok(ghostLimb1.duration > 0);
+
+    // 3. checkEnemyLimbLoss at 75% HP threshold: loses 2nd limb
+    enemy.hp = 20;
+    api.checkEnemyLimbLoss(enemy, 80, 40);
+    assert.equal(enemy.lostLimbs.length, 2);
+    assert.notEqual(enemy.lostLimbs[0], enemy.lostLimbs[1]);
+    assert.equal(api.enemyGhosts.length, 2);
+    const ghostLimb2 = api.enemyGhosts[1];
+    assert.equal(ghostLimb2.limb, enemy.lostLimbs[1]);
+
+    // 4. Ghost limb animation & update: moves with drag and records trail
+    const g0x = ghostLimb1.x;
+    api.updateGhosts(0.05);
+    assert.notEqual(ghostLimb1.x, g0x, 'Ghost limb should move with velocity');
+    assert.ok(ghostLimb1.trail.length > 0, 'Ghost limb should record spectral trail points');
+
+    // 5. Draw ghost limb for each limb type without errors
+    for (const limb of api.ALL_LIMBS) {
+      assert.doesNotThrow(() => {
+        api.drawGhost({
+          x: 2000,
+          y: 2000,
+          vx: 20,
+          vy: -10,
+          radius: 18,
+          skinColor: '#5e8c52',
+          angle: 0.5,
+          limb,
+          timer: 1.5,
+          duration: 2.0,
+          trail: [{ x: 2000, y: 2000, lift: 5, alpha: 0.4, radius: 18 }],
+        });
+      }, `drawGhost for limb ${limb} should not throw`);
+    }
+
+    // 6. drawEnemy without severed limbs (and hopping pose)
+    // A: 1 leg missing (hopping on single leg)
+    enemy.lostLimbs = ['left_leg'];
+    assert.doesNotThrow(() => {
+      api.drawEnemy(enemy);
+    }, 'drawEnemy with 1 missing leg should not throw');
+
+    // B: 2 legs missing (slower hopping on stumps)
+    enemy.lostLimbs = ['left_leg', 'right_leg'];
+    assert.doesNotThrow(() => {
+      api.drawEnemy(enemy);
+    }, 'drawEnemy with 2 missing legs should not throw');
+
+    // C: Missing head (severed neck stump)
+    enemy.lostLimbs = ['head'];
+    assert.doesNotThrow(() => {
+      api.drawEnemy(enemy);
+    }, 'drawEnemy with missing head should not throw');
+
+    // D: Missing arms
+    enemy.lostLimbs = ['left_arm', 'right_arm'];
+    assert.doesNotThrow(() => {
+      api.drawEnemy(enemy);
+    }, 'drawEnemy with missing arms should not throw');
+
+    // E: Down / earthquake pose with missing limbs
+    enemy.lostLimbs = ['head', 'left_leg', 'right_arm'];
+    enemy.knockdownTimer = 2.0;
+    assert.doesNotThrow(() => {
+      api.drawEnemy(enemy);
+    }, 'drawEnemy down pose with missing limbs should not throw');
+
+    // 7. Headless zombie in stepPhysics wanders in circles rather than chasing warrior
+    enemy.knockdownTimer = 0;
+    enemy.lostLimbs = ['head'];
+    enemy.angle = 0;
+    enemy.wanderAngle = 0;
+    enemy.vx = 0;
+    enemy.vy = 0;
+    api.warrior.x = 2800; // warrior far away to East
+    api.warrior.y = 2000;
+    enemy.x = 2000;
+    enemy.y = 2000;
+
+    api.stepPhysics(0.1);
+    assert.ok(enemy.wanderAngle > 0, 'Headless zombie wanderAngle should advance in circles');
+
+    // 8. Multiplayer server event limb_loss spawns ghost limb
+    api.enemyGhosts.length = 0;
+    api.processServerEvents([
+      { type: 'limb_loss', limb: 'head', x: 2100, y: 2100, radius: 18, color: '#567a4e', vx: 50, vy: -50, angle: 1.0 }
+    ]);
+    assert.equal(api.enemyGhosts.length, 1);
+    assert.equal(api.enemyGhosts[0].limb, 'head');
   });
 });

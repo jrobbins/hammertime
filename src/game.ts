@@ -167,6 +167,9 @@
   const CLOTHESLINE_TRIGGER_DIST = 42;
   const CLOTHESLINE_BEAM_DAMAGE = 140;
 
+  const ALL_LIMBS = ['left_arm', 'right_arm', 'left_leg', 'right_leg', 'head'] as const;
+  type LimbType = (typeof ALL_LIMBS)[number];
+
   const ZOMBIE_ATTACK_VARIATIONS = ['normal', 'heavy', 'fast'] as const;
   type ZombieAttackVariationKey = (typeof ZOMBIE_ATTACK_VARIATIONS)[number];
   const HURT_SOUNDS = ZOMBIE_ATTACK_VARIATIONS;
@@ -1998,6 +2001,22 @@
           ev.vx || 0,
           ev.vy || 0
         );
+      } else if (ev.type === 'limb_loss') {
+        if (!isWorldPointVisible(ev.x, ev.y, cullMargin)) {
+          continue;
+        }
+        playEnemyDisappearSound();
+        spawnEnemyGhost(
+          ev.x,
+          ev.y,
+          ev.radius || 18,
+          ev.color || '#567a4e',
+          ev.vx || 0,
+          ev.vy || 0,
+          ev.angle || 0,
+          1.2,
+          ev.limb
+        );
       } else if (ev.type === 'pickup') {
         playCollectLinkSound();
         addFloatingText(ev.playerX, ev.playerY, ev.label, ev.color || '#f6e05e', 1.12);
@@ -2758,10 +2777,30 @@
               if (typeof prevE.walkPhase !== 'number') {
                 prevE.walkPhase = inc.walkPhase || 0;
               }
+              if (Array.isArray(inc.lostLimbs)) {
+                if (!prevE.lostLimbs) prevE.lostLimbs = [];
+                for (const limb of inc.lostLimbs) {
+                  if (!prevE.lostLimbs.includes(limb)) {
+                    spawnEnemyGhost(
+                      inc.x,
+                      inc.y,
+                      inc.radius || 18,
+                      inc.skinColor || '#567a4e',
+                      inc.vx || 0,
+                      inc.vy || 0,
+                      inc.angle || 0,
+                      1.2,
+                      limb
+                    );
+                  }
+                }
+                prevE.lostLimbs = [...inc.lostLimbs];
+              }
               enemies.push(prevE);
             } else {
               enemies.push({
                 ...inc,
+                lostLimbs: inc.lostLimbs ? [...inc.lostLimbs] : [],
                 targetX: inc.x,
                 targetY: inc.y,
                 targetAngle: inc.angle || 0,
@@ -2923,7 +2962,8 @@
     vx: number = 0,
     vy: number = 0,
     angle: number = 0,
-    mass: number = 1.2
+    mass: number = 1.2,
+    limb: string | null = null
   ) {
     const ghost = {
       x,
@@ -2933,6 +2973,7 @@
       radius,
       skinColor,
       angle,
+      limb,
       timer: GHOST_DURATION,
       duration: GHOST_DURATION,
       mass: mass * 0.8064,
@@ -2940,6 +2981,41 @@
     };
     enemyGhosts.push(ghost);
     return ghost;
+  }
+
+  function checkEnemyLimbLoss(e: any, hitVx: number = 0, hitVy: number = 0) {
+    if (!e) return;
+    if (!e.lostLimbs) e.lostLimbs = [];
+    if (e.hp <= 0) return;
+
+    const hpRatio = e.hp / e.maxHp;
+    let targetCount = 0;
+    if (hpRatio <= 0.25) {
+      targetCount = 2;
+    } else if (hpRatio <= 0.50) {
+      targetCount = 1;
+    }
+
+    const availableLimbs = ALL_LIMBS.filter((l) => !e.lostLimbs.includes(l));
+    while (e.lostLimbs.length < targetCount && availableLimbs.length > 0) {
+      const pickIdx = Math.floor(Math.random() * availableLimbs.length);
+      const severedLimb = availableLimbs.splice(pickIdx, 1)[0];
+      e.lostLimbs.push(severedLimb);
+
+      const flingAng = Math.random() * Math.PI * 2;
+      const flingSpeed = 40 + Math.random() * 60;
+      spawnEnemyGhost(
+        e.x,
+        e.y,
+        e.radius,
+        e.skinColor,
+        hitVx * 0.8 + Math.cos(flingAng) * flingSpeed,
+        hitVy * 0.8 + Math.sin(flingAng) * flingSpeed,
+        e.angle,
+        e.mass || 1.2,
+        severedLimb
+      );
+    }
   }
 
   function updateGhosts(dt: number) {
@@ -3191,6 +3267,11 @@
         target.vy += (blastImpulse / target.mass) * bny;
         target.hp -= blastDamage;
         target.hurtFlash = 0.32;
+        checkEnemyLimbLoss(
+          target,
+          (blastImpulse / target.mass) * bnx * 0.5,
+          (blastImpulse / target.mass) * bny * 0.5
+        );
 
         if ((sourceHammer && sourceHammer.flameTimer > 0) || hammer.flameTimer > 0) {
           igniteEnemy(target);
@@ -3366,6 +3447,7 @@
       mass: scaledMass,
       hp: scaledMaxHp,
       maxHp: scaledMaxHp,
+      lostLimbs: [] as string[],
       moveForce: scaledMoveForce,
       traction: archetype.traction,
       contactDamage: Math.round(archetype.contactDamage * Math.pow(sizeScale, 0.5)),
@@ -3673,6 +3755,11 @@
         target.vy += (gustImpulse / target.mass) * bny;
         target.hp -= gustDamage;
         target.hurtFlash = 0.28;
+        checkEnemyLimbLoss(
+          target,
+          (gustImpulse / target.mass) * bnx * 0.5,
+          (gustImpulse / target.mass) * bny * 0.5
+        );
 
         if (isFlaming) {
           if (igniteEnemy(target)) {
@@ -3746,6 +3833,7 @@
             e.hp -= CLOTHESLINE_BEAM_DAMAGE;
             e.hitCooldown = 0.12;
             e.hurtFlash = 0.28;
+            checkEnemyLimbLoss(e, 0, 0);
             if (CLOTHESLINE_BEAM_DAMAGE > maxDamageBlow) {
               maxDamageBlow = CLOTHESLINE_BEAM_DAMAGE;
             }
@@ -4756,6 +4844,7 @@
         const stepBurn = Math.min(dt, e.burnTimer);
         e.burnTimer -= stepBurn;
         e.hp -= ZOMBIE_BURN_DPS * stepBurn;
+        checkEnemyLimbLoss(e, 0, 0);
         e.burnTickAccum = (e.burnTickAccum || 0) + stepBurn;
 
         if (e.burnTickAccum >= 1.0) {
@@ -4811,6 +4900,12 @@
       if (isFeared) {
         speedMult = Math.max(speedMult, FEAR_SPEED_MULT);
       }
+      const lostLegsCount = (e.lostLimbs || []).filter((l: string) => l === 'left_leg' || l === 'right_leg').length;
+      if (lostLegsCount === 1) {
+        speedMult *= 0.75;
+      } else if (lostLegsCount >= 2) {
+        speedMult *= 0.45;
+      }
 
       // Move toward warrior (or away from warrior at 4x speed when tainted with fear, or stand in place when dancing)
       const toWarriorX = warrior.x - e.x;
@@ -4837,6 +4932,25 @@
       } else if (isDancing) {
         e.vx = 0;
         e.vy = 0;
+      } else if (Array.isArray(e.lostLimbs) && e.lostLimbs.includes('head')) {
+        // A zombie that has lost its head should wander in circles rather than following a warrior
+        e.wanderAngle = (typeof e.wanderAngle === 'number' ? e.wanderAngle : e.angle || 0) + dt * 2.0;
+        let dirX = Math.cos(e.wanderAngle);
+        let dirY = Math.sin(e.wanderAngle);
+        const wallMargin = e.radius + 60;
+        if ((e.x < wallMargin && dirX < 0) || (e.x > WORLD_WIDTH - wallMargin && dirX > 0)) {
+          e.wanderAngle = Math.PI - e.wanderAngle;
+          dirX = Math.cos(e.wanderAngle);
+          dirY = Math.sin(e.wanderAngle);
+        }
+        if ((e.y < wallMargin && dirY < 0) || (e.y > WORLD_HEIGHT - wallMargin && dirY > 0)) {
+          e.wanderAngle = -e.wanderAngle;
+          dirX = Math.cos(e.wanderAngle);
+          dirY = Math.sin(e.wanderAngle);
+        }
+        e.angle = Math.atan2(dirY, dirX);
+        e.vx += dirX * e.moveForce * speedMult * dt;
+        e.vy += dirY * e.moveForce * speedMult * dt;
       } else if (distToWarrior > 0.001) {
         if (isFeared) {
           let dirX = -toWarriorX / distToWarrior;
@@ -4884,7 +4998,8 @@
       if (isDancing && !isKnockedDown && !isWebbed) {
         e.walkPhase += dt * 11.5;
       } else if (!isKnockedDown && !isWebbed) {
-        e.walkPhase += Math.sqrt(e.vx * e.vx + e.vy * e.vy) * dt * 0.09;
+        const legHopRate = lostLegsCount === 1 ? 0.12 : lostLegsCount >= 2 ? 0.07 : 0.09;
+        e.walkPhase += Math.sqrt(e.vx * e.vx + e.vy * e.vy) * dt * legHopRate;
       }
 
       // Clamp enemy inside world
@@ -5014,6 +5129,7 @@
                 if (e.hitCooldown <= 0 && impulse > 8) {
                   const damage = Math.max(1, Math.round(impulse * DAMAGE_PER_IMPULSE));
                   e.hp -= damage;
+                  checkEnemyLimbLoss(e, strikeHvx, strikeHvy);
                   e.hitCooldown = 0.09;
                   e.hurtFlash = 0.18;
                   playImpactSound(damage, false);
@@ -5051,6 +5167,7 @@
 
               if (justIgnited && !detonatedBomb && e.hp <= 0) {
                 e.hp = Math.max(18, Math.round(e.maxHp * 0.3));
+                checkEnemyLimbLoss(e, 0, 0);
               }
 
               if (e.hp <= 0) {
@@ -5135,6 +5252,7 @@
                   Math.round(hammerEquivImpulse * DAMAGE_PER_IMPULSE * CHAIN_DAMAGE_FACTOR)
                 );
                 e.hp -= chainDamage;
+                checkEnemyLimbLoss(e, cnx * hammerEquivImpulse * 0.2, cny * hammerEquivImpulse * 0.2);
                 e.chainHitCooldown = 0.09;
                 e.hurtFlash = 0.14;
                 playImpactSound(chainDamage, true);
@@ -9569,16 +9687,36 @@
     const isDanceImmune = !isDown && !isDancing && (e.danceImmuneTimer || 0) > 0;
     const nowSec = performance.now() * 0.001;
     const danceBeat = nowSec * 10.5 + e.walkPhase * 0.35;
-    const lurch = isDown || isWebbed
-      ? 0
-      : isDancing
-      ? Math.sin(danceBeat) * 5.2 * visualScale
-      : Math.sin(e.walkPhase) * 2.2 * visualScale;
-    const bob = isDown || isWebbed
-      ? 0
-      : isDancing
-      ? Math.abs(Math.sin(danceBeat * 2)) * 4.5 * visualScale
-      : Math.abs(Math.sin(e.walkPhase)) * 2.2;
+
+    const lostLimbs: string[] = Array.isArray(e.lostLimbs) ? e.lostLimbs : [];
+    const hasLeftArm = !lostLimbs.includes('left_arm');
+    const hasRightArm = !lostLimbs.includes('right_arm');
+    const hasLeftLeg = !lostLimbs.includes('left_leg');
+    const hasRightLeg = !lostLimbs.includes('right_leg');
+    const hasHead = !lostLimbs.includes('head');
+    const legsCount = (hasLeftLeg ? 1 : 0) + (hasRightLeg ? 1 : 0);
+
+    let lurch = 0;
+    let bob = 0;
+    if (!isDown && !isWebbed) {
+      if (isDancing) {
+        lurch = Math.sin(danceBeat) * 5.2 * visualScale;
+        bob = Math.abs(Math.sin(danceBeat * 2)) * 4.5 * visualScale;
+      } else if (legsCount === 1) {
+        // Single-leg hop: vigorous vertical bounce and forward pitch
+        const hopCycle = e.walkPhase * 1.5;
+        bob = Math.abs(Math.sin(hopCycle)) * 7.5 * visualScale;
+        lurch = Math.sin(hopCycle) * 4.5 * visualScale;
+      } else if (legsCount === 0) {
+        // No legs: slower, heavier torso-stump hop/crawl
+        const crawlCycle = e.walkPhase * 0.9;
+        bob = Math.abs(Math.sin(crawlCycle)) * 3.5 * visualScale;
+        lurch = Math.sin(crawlCycle) * 2.5 * visualScale;
+      } else {
+        lurch = Math.sin(e.walkPhase) * 2.2 * visualScale;
+        bob = Math.abs(Math.sin(e.walkPhase)) * 2.2;
+      }
+    }
 
     let skinCol = e.skinColor || '#5e8c52';
     let coatCol = e.coatColor || '#2d3748';
@@ -9648,53 +9786,63 @@
       ctx.lineWidth = 6.2 * visualScale;
       ctx.lineCap = 'round';
       ctx.beginPath();
-      ctx.moveTo(legBaseX * 0.45, -3 * visualScale);
-      ctx.lineTo(legBaseX * 1.38, -6.5 * visualScale);
-      ctx.moveTo(legBaseX * 0.45, 3.5 * visualScale);
-      ctx.lineTo(legBaseX * 1.42, 7.5 * visualScale);
+      if (hasLeftLeg) {
+        ctx.moveTo(legBaseX * 0.45, -3 * visualScale);
+        ctx.lineTo(legBaseX * 1.38, -6.5 * visualScale);
+      }
+      if (hasRightLeg) {
+        ctx.moveTo(legBaseX * 0.45, 3.5 * visualScale);
+        ctx.lineTo(legBaseX * 1.42, 7.5 * visualScale);
+      }
       ctx.stroke();
 
       // Boots flat on the turf
       ctx.fillStyle = '#14181f';
       ctx.beginPath();
-      ctx.ellipse(
-        legBaseX * 1.44,
-        -6.5 * visualScale,
-        4.6 * visualScale,
-        3.2 * visualScale,
-        0.2,
-        0,
-        Math.PI * 2
-      );
-      ctx.ellipse(
-        legBaseX * 1.48,
-        7.5 * visualScale,
-        4.6 * visualScale,
-        3.2 * visualScale,
-        -0.2,
-        0,
-        Math.PI * 2
-      );
+      if (hasLeftLeg) {
+        ctx.ellipse(
+          legBaseX * 1.44,
+          -6.5 * visualScale,
+          4.6 * visualScale,
+          3.2 * visualScale,
+          0.2,
+          0,
+          Math.PI * 2
+        );
+      }
+      if (hasRightLeg) {
+        ctx.ellipse(
+          legBaseX * 1.48,
+          7.5 * visualScale,
+          4.6 * visualScale,
+          3.2 * visualScale,
+          -0.2,
+          0,
+          Math.PI * 2
+        );
+      }
       ctx.fill();
 
-      // Back sprawled zombie arm lying flat on the turf
+      // Back sprawled zombie arm lying flat on the turf (if not severed)
       const shoulderX = fallSign * e.radius * 0.42;
-      ctx.strokeStyle = coatCol;
-      ctx.lineWidth = 6.0 * visualScale;
-      ctx.beginPath();
-      ctx.moveTo(shoulderX, -3 * visualScale);
-      ctx.lineTo(shoulderX + fallSign * e.radius * 0.75, -11.5 * visualScale);
-      ctx.stroke();
-      ctx.fillStyle = skinCol;
-      ctx.beginPath();
-      ctx.arc(
-        shoulderX + fallSign * e.radius * 0.82,
-        -12 * visualScale,
-        3.3 * visualScale,
-        0,
-        Math.PI * 2
-      );
-      ctx.fill();
+      if (hasLeftArm) {
+        ctx.strokeStyle = coatCol;
+        ctx.lineWidth = 6.0 * visualScale;
+        ctx.beginPath();
+        ctx.moveTo(shoulderX, -3 * visualScale);
+        ctx.lineTo(shoulderX + fallSign * e.radius * 0.75, -11.5 * visualScale);
+        ctx.stroke();
+        ctx.fillStyle = skinCol;
+        ctx.beginPath();
+        ctx.arc(
+          shoulderX + fallSign * e.radius * 0.82,
+          -12 * visualScale,
+          3.3 * visualScale,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+      }
 
       // Horizontal Fallen Zombie Torso lying flat on the ground
       const torsoW = bodyHeight * 1.25;
@@ -9727,71 +9875,93 @@
       );
       ctx.fill();
 
-      // Front sprawled zombie arm splayed across the grass
-      ctx.strokeStyle = skinCol;
-      ctx.lineWidth = 5.2 * visualScale;
-      ctx.beginPath();
-      ctx.moveTo(shoulderX, 2 * visualScale);
-      ctx.lineTo(shoulderX + fallSign * e.radius * 0.85, 10.5 * visualScale);
-      ctx.stroke();
-      ctx.fillStyle = skinCol;
-      ctx.strokeStyle = '#161e14';
-      ctx.lineWidth = 1.3;
-      ctx.beginPath();
-      ctx.arc(
-        shoulderX + fallSign * e.radius * 0.9,
-        11 * visualScale,
-        3.4 * visualScale,
-        0,
-        Math.PI * 2
-      );
-      ctx.fill();
-      ctx.stroke();
+      // Front sprawled zombie arm splayed across the grass (if not severed)
+      if (hasRightArm) {
+        ctx.strokeStyle = skinCol;
+        ctx.lineWidth = 5.2 * visualScale;
+        ctx.beginPath();
+        ctx.moveTo(shoulderX, 2 * visualScale);
+        ctx.lineTo(shoulderX + fallSign * e.radius * 0.85, 10.5 * visualScale);
+        ctx.stroke();
+        ctx.fillStyle = skinCol;
+        ctx.strokeStyle = '#161e14';
+        ctx.lineWidth = 1.3;
+        ctx.beginPath();
+        ctx.arc(
+          shoulderX + fallSign * e.radius * 0.9,
+          11 * visualScale,
+          3.4 * visualScale,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+        ctx.stroke();
+      }
 
-      // Fallen Zombie Head resting flat on the turf at +fallSign end
+      // Fallen Zombie Head or Neck Stump
       const headX = fallSign * (torsoW * 0.52 + e.radius * 0.34);
       const headY = -e.radius * 0.15;
       const headRadius = e.radius * 0.62;
 
-      ctx.fillStyle = skinCol;
-      ctx.strokeStyle = '#162014';
-      ctx.lineWidth = 2.1;
-      ctx.beginPath();
-      ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      // Dizzy / Knocked-Out X-Eyes on the fallen zombie head
-      ctx.strokeStyle = '#141a12';
-      ctx.lineWidth = 1.9 * visualScale;
-      const eyeOffset = 3.2 * visualScale;
-      for (const eySign of [-1, 1]) {
-        const ex = headX + fallSign * headRadius * 0.22;
-        const ey = headY + eySign * eyeOffset;
-        const xr = 2.2 * visualScale;
+      if (hasHead) {
+        ctx.fillStyle = skinCol;
+        ctx.strokeStyle = '#162014';
+        ctx.lineWidth = 2.1;
         ctx.beginPath();
-        ctx.moveTo(ex - xr, ey - xr);
-        ctx.lineTo(ex + xr, ey + xr);
-        ctx.moveTo(ex + xr, ey - xr);
-        ctx.lineTo(ex - xr, ey + xr);
+        ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
+        ctx.fill();
         ctx.stroke();
-      }
 
-      // Orbiting golden stun halo & stars above the fallen zombie's head
-      const haloY = headY - headRadius - 7 * visualScale;
-      ctx.strokeStyle = 'rgba(246, 224, 94, 0.75)';
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.ellipse(headX, haloY, 9.5 * visualScale, 4.2 * visualScale, 0, 0, Math.PI * 2);
-      ctx.stroke();
+        // Dizzy / Knocked-Out X-Eyes on the fallen zombie head
+        ctx.strokeStyle = '#141a12';
+        ctx.lineWidth = 1.9 * visualScale;
+        const eyeOffset = 3.2 * visualScale;
+        for (const eySign of [-1, 1]) {
+          const ex = headX + fallSign * headRadius * 0.22;
+          const ey = headY + eySign * eyeOffset;
+          const xr = 2.2 * visualScale;
+          ctx.beginPath();
+          ctx.moveTo(ex - xr, ey - xr);
+          ctx.lineTo(ex + xr, ey + xr);
+          ctx.moveTo(ex + xr, ey - xr);
+          ctx.lineTo(ex - xr, ey + xr);
+          ctx.stroke();
+        }
 
-      for (let s = 0; s < 2; s++) {
-        const starAng = nowSec * 5.5 + s * Math.PI + e.walkPhase;
-        const starX = headX + Math.cos(starAng) * 9.5 * visualScale;
-        const starY = haloY + Math.sin(starAng) * 4.2 * visualScale;
-        ctx.fillStyle = s === 0 ? '#fefcbf' : '#ecc94b';
+        // Orbiting golden stun halo & stars above the fallen zombie's head
+        const haloY = headY - headRadius - 7 * visualScale;
+        ctx.strokeStyle = 'rgba(246, 224, 94, 0.75)';
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        ctx.arc(starX, starY, 2.3 * visualScale, 0, Math.PI * 2);
+        ctx.ellipse(headX, haloY, 9.5 * visualScale, 4.2 * visualScale, 0, 0, Math.PI * 2);
+        ctx.stroke();
+
+        for (let s = 0; s < 2; s++) {
+          const starAng = nowSec * 5.5 + s * Math.PI + e.walkPhase;
+          const starX = headX + Math.cos(starAng) * 9.5 * visualScale;
+          const starY = haloY + Math.sin(starAng) * 4.2 * visualScale;
+          ctx.fillStyle = s === 0 ? '#fefcbf' : '#ecc94b';
+          ctx.beginPath();
+          ctx.arc(starX, starY, 2.3 * visualScale, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      } else {
+        // Neck stump when headless
+        ctx.fillStyle = '#742a2a';
+        ctx.beginPath();
+        ctx.ellipse(
+          fallSign * (torsoW * 0.5),
+          -torsoH * 0.15,
+          4.5 * visualScale,
+          torsoH * 0.35,
+          0,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+        ctx.fillStyle = '#e2e8f0';
+        ctx.beginPath();
+        ctx.arc(fallSign * (torsoW * 0.5), -torsoH * 0.15, 2.2 * visualScale, 0, Math.PI * 2);
         ctx.fill();
       }
 
@@ -9919,34 +10089,72 @@
       ctx.stroke();
     }
 
-    // 2. Shuffling Zombie Feet (motionless when fallen on ground or webbed)
+    // 2. Shuffling Zombie Feet (or Single Hopping Foot, or Leg Stumps)
     const step = isDown || isWebbed ? 0 : Math.sin(e.walkPhase) * 4.5 * visualScale;
     ctx.fillStyle = '#1a202c';
     ctx.beginPath();
-    ctx.ellipse(
-      rightX * e.radius * 0.48 + dirX * step,
-      (rightY * e.radius * 0.48 + dirY * step) * TILT_Y,
-      5.0 * visualScale,
-      3.4 * visualScale,
-      0,
-      0,
-      Math.PI * 2
-    );
-    ctx.ellipse(
-      -rightX * e.radius * 0.48 - dirX * step,
-      (-rightY * e.radius * 0.48 - dirY * step) * TILT_Y,
-      5.0 * visualScale,
-      3.4 * visualScale,
-      0,
-      0,
-      Math.PI * 2
-    );
+    if (hasLeftLeg) {
+      ctx.ellipse(
+        -rightX * e.radius * 0.48 - dirX * step,
+        (-rightY * e.radius * 0.48 - dirY * step) * TILT_Y,
+        5.0 * visualScale,
+        3.4 * visualScale,
+        0,
+        0,
+        Math.PI * 2
+      );
+    }
+    if (hasRightLeg) {
+      ctx.ellipse(
+        rightX * e.radius * 0.48 + dirX * step,
+        (rightY * e.radius * 0.48 + dirY * step) * TILT_Y,
+        5.0 * visualScale,
+        3.4 * visualScale,
+        0,
+        0,
+        Math.PI * 2
+      );
+    }
     ctx.fill();
+
+    // Pant leg stumps if legs are severed
+    if (!hasLeftLeg || !hasRightLeg) {
+      ctx.fillStyle = '#1a202c';
+      if (!hasLeftLeg) {
+        ctx.beginPath();
+        ctx.arc(-rightX * e.radius * 0.48, -bodyHeight * 0.1 - bob, 4.2 * visualScale, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (!hasRightLeg) {
+        ctx.beginPath();
+        ctx.arc(rightX * e.radius * 0.48, -bodyHeight * 0.1 - bob, 4.2 * visualScale, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
 
     // Helper to draw an outstretched zombie arm reaching forward toward target (or disco dancing!)
     const drawZombieArm = (sideSign) => {
+      const armKey = sideSign < 0 ? 'left_arm' : 'right_arm';
       const shoulderX = rightX * sideSign * e.radius * 0.78 + (isDancing ? lurch * 0.35 : 0);
       const shoulderY = -bodyHeight * 0.72 - bob + rightY * sideSign * e.radius * 0.35 * TILT_Y;
+
+      if (lostLimbs.includes(armKey)) {
+        // Severed shoulder stump: torn cuff & bloody bone nub
+        ctx.fillStyle = coatCol;
+        ctx.beginPath();
+        ctx.arc(shoulderX, shoulderY, 4.8 * visualScale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#742a2a';
+        ctx.beginPath();
+        ctx.arc(shoulderX + rightX * sideSign * 2, shoulderY, 3.2 * visualScale, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = '#e2e8f0';
+        ctx.beginPath();
+        ctx.arc(shoulderX + rightX * sideSign * 2, shoulderY, 1.8 * visualScale, 0, Math.PI * 2);
+        ctx.fill();
+        return;
+      }
+
       const reachLen = e.radius * 1.18;
       let handX;
       let handY;
@@ -10060,63 +10268,76 @@
       drawZombieArm(1);
     }
 
-    // 4. 3D Undead Zombie Head (tilted / lurching forward)
+    // 4. 3D Undead Zombie Head or Severed Neck Stump
     const headX = dirX * e.radius * 0.16 + lurch * 0.45;
     const headY = -bodyHeight - e.radius * 0.32 - bob + dirY * e.radius * 0.1 * TILT_Y;
     const headRadius = e.radius * 0.62;
 
-    ctx.fillStyle = skinCol;
-    ctx.strokeStyle = '#162014';
-    ctx.lineWidth = 2.1;
-    ctx.beginPath();
-    ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.stroke();
-
-    // Cranial suture / zombie scar on top-side of head
-    ctx.strokeStyle = 'rgba(45, 22, 28, 0.65)';
-    ctx.lineWidth = 1.5 * visualScale;
-    ctx.beginPath();
-    ctx.moveTo(headX - headRadius * 0.45, headY - headRadius * 0.45);
-    ctx.lineTo(headX + headRadius * 0.15, headY - headRadius * 0.2);
-    ctx.stroke();
-
-    // Sunken dark eye sockets, glowing undead eyes & gaping jaw when facing camera
-    if (dirY > -0.75) {
-      const eyeBaseX = headX + dirX * headRadius * 0.52;
-      const eyeBaseY = headY + dirY * headRadius * 0.32 * TILT_Y;
-      const eyeSpacing = 4.1 * visualScale;
-      const socketRadius = 3.1 * visualScale;
-      const pupilRadius = 1.9 * visualScale;
-
-      // Dark sunken sockets
-      ctx.fillStyle = '#141a12';
+    if (!hasHead) {
+      // Severed neck stump
+      const neckY = -bodyHeight * 0.88 - bob;
+      ctx.fillStyle = '#742a2a';
       ctx.beginPath();
-      ctx.arc(eyeBaseX - rightX * eyeSpacing, eyeBaseY, socketRadius, 0, Math.PI * 2);
-      ctx.arc(eyeBaseX + rightX * eyeSpacing, eyeBaseY, socketRadius, 0, Math.PI * 2);
+      ctx.ellipse(lurch * 0.3, neckY, 5.5 * visualScale, 3.2 * visualScale, 0, 0, Math.PI * 2);
       ctx.fill();
-
-      // Glowing yellow-red undead eyes
-      ctx.fillStyle = e.eyeColor || '#f6e05e';
+      ctx.fillStyle = '#e2e8f0';
       ctx.beginPath();
-      ctx.arc(eyeBaseX - rightX * eyeSpacing, eyeBaseY, pupilRadius, 0, Math.PI * 2);
-      ctx.arc(eyeBaseX + rightX * eyeSpacing, eyeBaseY, pupilRadius, 0, Math.PI * 2);
+      ctx.arc(lurch * 0.3, neckY, 2.2 * visualScale, 0, Math.PI * 2);
       ctx.fill();
+    } else {
+      ctx.fillStyle = skinCol;
+      ctx.strokeStyle = '#162014';
+      ctx.lineWidth = 2.1;
+      ctx.beginPath();
+      ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
 
-      // Dark slack zombie mouth below eyes
-      if (dirY > -0.25) {
-        ctx.fillStyle = '#2d1216';
+      // Cranial suture / zombie scar on top-side of head
+      ctx.strokeStyle = 'rgba(45, 22, 28, 0.65)';
+      ctx.lineWidth = 1.5 * visualScale;
+      ctx.beginPath();
+      ctx.moveTo(headX - headRadius * 0.45, headY - headRadius * 0.45);
+      ctx.lineTo(headX + headRadius * 0.15, headY - headRadius * 0.2);
+      ctx.stroke();
+
+      // Sunken dark eye sockets, glowing undead eyes & gaping jaw when facing camera
+      if (dirY > -0.75) {
+        const eyeBaseX = headX + dirX * headRadius * 0.52;
+        const eyeBaseY = headY + dirY * headRadius * 0.32 * TILT_Y;
+        const eyeSpacing = 4.1 * visualScale;
+        const socketRadius = 3.1 * visualScale;
+        const pupilRadius = 1.9 * visualScale;
+
+        // Dark sunken sockets
+        ctx.fillStyle = '#141a12';
         ctx.beginPath();
-        ctx.ellipse(
-          eyeBaseX,
-          eyeBaseY + 4.4 * visualScale,
-          3.4 * visualScale,
-          2.0 * visualScale,
-          0,
-          0,
-          Math.PI * 2
-        );
+        ctx.arc(eyeBaseX - rightX * eyeSpacing, eyeBaseY, socketRadius, 0, Math.PI * 2);
+        ctx.arc(eyeBaseX + rightX * eyeSpacing, eyeBaseY, socketRadius, 0, Math.PI * 2);
         ctx.fill();
+
+        // Glowing yellow-red undead eyes
+        ctx.fillStyle = e.eyeColor || '#f6e05e';
+        ctx.beginPath();
+        ctx.arc(eyeBaseX - rightX * eyeSpacing, eyeBaseY, pupilRadius, 0, Math.PI * 2);
+        ctx.arc(eyeBaseX + rightX * eyeSpacing, eyeBaseY, pupilRadius, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Dark slack zombie mouth below eyes
+        if (dirY > -0.25) {
+          ctx.fillStyle = '#2d1216';
+          ctx.beginPath();
+          ctx.ellipse(
+            eyeBaseX,
+            eyeBaseY + 4.4 * visualScale,
+            3.4 * visualScale,
+            2.0 * visualScale,
+            0,
+            0,
+            Math.PI * 2
+          );
+          ctx.fill();
+        }
       }
     }
 
@@ -10240,10 +10461,12 @@
       }
 
       // Extra white web lines binding the zombie's head & anchoring to the ground web
-      ctx.moveTo(-headRadius * 0.95, headY - headRadius * 0.15);
-      ctx.lineTo(headRadius * 0.95, headY + headRadius * 0.25);
-      ctx.moveTo(headRadius * 0.95, headY - headRadius * 0.2);
-      ctx.lineTo(-headRadius * 0.95, headY + headRadius * 0.2);
+      if (hasHead) {
+        ctx.moveTo(-headRadius * 0.95, headY - headRadius * 0.15);
+        ctx.lineTo(headRadius * 0.95, headY + headRadius * 0.25);
+        ctx.moveTo(headRadius * 0.95, headY - headRadius * 0.2);
+        ctx.lineTo(-headRadius * 0.95, headY + headRadius * 0.2);
+      }
 
       // Anchor strands from cocoon down to the ground web mat
       ctx.moveTo(-wrapW * 0.88, -bodyHeight * 0.45);
@@ -10264,6 +10487,8 @@
       const bx = sx - barW / 2;
       const by = isDown
         ? sy - e.radius * 0.95 - 12
+        : !hasHead
+        ? sy - bodyHeight - 12
         : sy - bodyHeight - e.radius * 1.15 - 10;
 
       ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
@@ -10325,7 +10550,7 @@
     ctx.globalAlpha = alpha * 0.72;
 
     // 1. Ghostly ethereal aura ring
-    const auraR = g.radius * (1.25 + Math.sin(progress * 10) * 0.12);
+    const auraR = g.radius * (g.limb ? 0.75 : 1.25 + Math.sin(progress * 10) * 0.12);
     ctx.fillStyle = 'rgba(167, 243, 208, 0.18)';
     ctx.strokeStyle = 'rgba(110, 231, 183, 0.65)';
     ctx.lineWidth = 1.8;
@@ -10333,6 +10558,76 @@
     ctx.ellipse(0, 2, auraR, auraR * TILT_Y, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
+
+    if (g.limb === 'head') {
+      const headRadius = g.radius * 0.62;
+      ctx.fillStyle = 'rgba(236, 253, 245, 0.92)';
+      ctx.strokeStyle = '#064e3b';
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.arc(0, 0, headRadius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Glowing spectral eyes
+      const eyeDist = 4.2 * visualScale;
+      ctx.fillStyle = '#6ee7b7';
+      ctx.beginPath();
+      ctx.arc(-eyeDist, -1, 2.4 * visualScale, 0, Math.PI * 2);
+      ctx.arc(eyeDist, -1, 2.4 * visualScale, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Trailing wisp
+      ctx.fillStyle = 'rgba(167, 243, 208, 0.35)';
+      ctx.beginPath();
+      ctx.moveTo(-headRadius * 0.5, headRadius * 0.5);
+      ctx.quadraticCurveTo(0, headRadius * 1.5, headRadius * 0.5, headRadius * 0.5);
+      ctx.fill();
+
+      ctx.restore();
+      return;
+    }
+
+    if (g.limb === 'left_arm' || g.limb === 'right_arm') {
+      const armLen = g.radius * 1.1;
+      const side = g.limb === 'right_arm' ? 1 : -1;
+      ctx.strokeStyle = 'rgba(209, 250, 229, 0.9)';
+      ctx.lineWidth = 5.2 * visualScale;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-side * 4, -4);
+      ctx.lineTo(side * armLen, 6);
+      ctx.stroke();
+
+      // Claw hand
+      ctx.fillStyle = '#6ee7b7';
+      ctx.beginPath();
+      ctx.arc(side * armLen, 6, 3.2 * visualScale, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+      return;
+    }
+
+    if (g.limb === 'left_leg' || g.limb === 'right_leg') {
+      const legLen = g.radius * 1.0;
+      ctx.strokeStyle = 'rgba(209, 250, 229, 0.9)';
+      ctx.lineWidth = 5.8 * visualScale;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(0, -legLen * 0.5);
+      ctx.lineTo(0, legLen * 0.5);
+      ctx.stroke();
+
+      // Ghost boot/foot
+      ctx.fillStyle = '#6ee7b7';
+      ctx.beginPath();
+      ctx.ellipse(3, legLen * 0.5, 4.5 * visualScale, 3.0 * visualScale, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.restore();
+      return;
+    }
 
     // 2. Trailing spectral wisps
     const wispWave = Math.sin(progress * 18);
@@ -10751,6 +11046,7 @@
         MAX_SOUNDS_PER_WINDOW_BY_TIER,
         SOUND_RATE_WINDOW_MS,
         MINIMAP_UPDATE_INTERVAL,
+        ALL_LIMBS,
       },
       warrior,
       hammer,
@@ -10873,6 +11169,8 @@
       triggerCheat,
       handleCheatKeyDown,
       defeatEnemy,
+      checkEnemyLimbLoss,
+      ALL_LIMBS,
       spawnEnemy,
       createExtraHammer,
       MALE_TITLES,

@@ -108,6 +108,7 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.CLOTHESLINE_DURATION, 2.0);
     assert.equal(srv.CLOTHESLINE_TRIGGER_DIST, 42);
     assert.equal(srv.CLOTHESLINE_BEAM_DAMAGE, 140);
+    assert.deepEqual(srv.ALL_LIMBS, ['left_arm', 'right_arm', 'left_leg', 'right_leg', 'head']);
   });
 
   it('defines rare powerup drop probabilities', () => {
@@ -1396,5 +1397,83 @@ describe('Whirlwind / Momentum Spin-Up and The Clothesline (Tandem Wire)', () =>
     assert.equal(payload.clotheslines[0].x1, 2000);
     assert.equal(payload.clotheslines[0].x2, 2200);
     assert.equal(payload.players[0].hammers[0].isWhirlwind, false);
+  });
+
+  it('handles zombie limb loss at 50% and 75% HP loss, hopping locomotion, and headless circling', () => {
+    // 1. Initial state: 0 limbs lost
+    const enemy = addTestEnemy(2000, 2000, 200);
+    assert.deepEqual(enemy.lostLimbs, [], 'Zombie starts with 0 lost limbs (all 5 intact)');
+
+    // 2. Damage < 50%: no limbs lost
+    enemy.hp = 120; // 40% lost
+    srv.checkEnemyLimbLoss(enemy, 0, 0);
+    assert.equal(enemy.lostLimbs.length, 0, 'No limbs lost before 50% damage');
+
+    // 3. Damage >= 50%: loses 1 random limb
+    enemy.hp = 100; // 50% lost
+    srv.setState({ pendingEvents: [] });
+    srv.checkEnemyLimbLoss(enemy, 100, 50);
+    assert.equal(enemy.lostLimbs.length, 1, 'Zombie loses 1 limb at 50% HP loss');
+    assert.ok(srv.ALL_LIMBS.includes(enemy.lostLimbs[0]), 'Lost limb must be one of ALL_LIMBS');
+    const firstLost = enemy.lostLimbs[0];
+
+    const ev1 = srv.getState().pendingEvents.find((e) => e.type === 'limb_loss');
+    assert.ok(ev1, 'Should emit limb_loss event');
+    assert.equal(ev1.limb, firstLost);
+    assert.equal(ev1.enemyId, enemy.id);
+
+    // 4. Damage >= 75%: loses 2nd random limb
+    enemy.hp = 40; // 80% lost (<= 25% remaining)
+    srv.setState({ pendingEvents: [] });
+    srv.checkEnemyLimbLoss(enemy, 50, -50);
+    assert.equal(enemy.lostLimbs.length, 2, 'Zombie loses 2 limbs at 75% HP loss');
+    const secondLost = enemy.lostLimbs[1];
+    assert.notEqual(firstLost, secondLost, 'Second lost limb must be distinct from first');
+    assert.ok(srv.ALL_LIMBS.includes(secondLost));
+
+    const ev2 = srv.getState().pendingEvents.find((e) => e.type === 'limb_loss');
+    assert.ok(ev2, 'Should emit second limb_loss event');
+    assert.equal(ev2.limb, secondLost);
+
+    // 5. Serialized enemy includes lostLimbs array
+    const statePayload = srv.buildGameStatePayload();
+    const serializedEnemy = statePayload.enemies.find((e) => e.id === enemy.id);
+    assert.ok(serializedEnemy);
+    assert.deepEqual(serializedEnemy.lostLimbs, [firstLost, secondLost]);
+
+    // 6. Physics test: Headless zombie wanders in circles rather than chasing player
+    const p = addTestPlayer('p1', 2500, 2000); // player to the east
+    const headlessZombie = addTestEnemy(2000, 2000, 100);
+    headlessZombie.lostLimbs = ['head'];
+    headlessZombie.angle = 0;
+    headlessZombie.wanderAngle = Math.PI / 2; // facing South
+    headlessZombie.vx = 0;
+    headlessZombie.vy = 0;
+    srv.stepWorldPhysics(0.1);
+
+    // Headless zombie turns according to wanderAngle rather than heading toward player at (2500, 2000)
+    assert.ok(headlessZombie.vy > 0, 'Headless zombie should move along wanderAngle (South)');
+    assert.ok(headlessZombie.wanderAngle > Math.PI / 2, 'wanderAngle should advance continuously in circles');
+
+    // 7. Physics test: Slower pace for 1 leg vs 2 legs lost
+    const zNormal = addTestEnemy(2000, 2000, 100);
+    zNormal.lostLimbs = [];
+    const zOneLeg = addTestEnemy(2000, 2000, 100);
+    zOneLeg.lostLimbs = ['left_leg'];
+    const zNoLegs = addTestEnemy(2000, 2000, 100);
+    zNoLegs.lostLimbs = ['left_leg', 'right_leg'];
+
+    zNormal.vx = 0; zNormal.vy = 0;
+    zOneLeg.vx = 0; zOneLeg.vy = 0;
+    zNoLegs.vx = 0; zNoLegs.vy = 0;
+
+    srv.stepWorldPhysics(0.1);
+
+    const speedNormal = Math.hypot(zNormal.vx, zNormal.vy);
+    const speedOneLeg = Math.hypot(zOneLeg.vx, zOneLeg.vy);
+    const speedNoLegs = Math.hypot(zNoLegs.vx, zNoLegs.vy);
+
+    assert.ok(speedOneLeg < speedNormal, '1 leg lost should move slower than normal');
+    assert.ok(speedNoLegs < speedOneLeg, '2 legs lost should hop at a slower pace than 1 leg');
   });
 });

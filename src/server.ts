@@ -144,6 +144,9 @@ const CLOTHESLINE_DURATION = 2.0;
 const CLOTHESLINE_TRIGGER_DIST = 42;
 const CLOTHESLINE_BEAM_DAMAGE = 140;
 
+const ALL_LIMBS = ['left_arm', 'right_arm', 'left_leg', 'right_leg', 'head'] as const;
+type LimbType = (typeof ALL_LIMBS)[number];
+
 const ZOMBIE_ATTACK_VARIATIONS = ['normal', 'heavy', 'fast'] as const;
 type ZombieAttackVariationKey = (typeof ZOMBIE_ATTACK_VARIATIONS)[number];
 const HURT_SOUNDS = ZOMBIE_ATTACK_VARIATIONS;
@@ -798,6 +801,7 @@ function spawnEnemy(awayFromPlayers = false) {
     mass: scaledMass,
     hp: scaledMaxHp,
     maxHp: scaledMaxHp,
+    lostLimbs: [] as string[],
     moveForce: scaledMoveForce,
     traction: archetype.traction,
     contactDamage: Math.round(archetype.contactDamage * Math.pow(sizeScale, 0.5)),
@@ -1111,6 +1115,42 @@ function defeatEnemy(
   }
 }
 
+function checkEnemyLimbLoss(e: any, hitVx: number = 0, hitVy: number = 0) {
+  if (!e) return;
+  if (!e.lostLimbs) e.lostLimbs = [];
+  if (e.hp <= 0) return;
+
+  const hpRatio = e.hp / e.maxHp;
+  let targetCount = 0;
+  if (hpRatio <= 0.25) {
+    targetCount = 2;
+  } else if (hpRatio <= 0.50) {
+    targetCount = 1;
+  }
+
+  const availableLimbs = ALL_LIMBS.filter((l) => !e.lostLimbs.includes(l));
+  while (e.lostLimbs.length < targetCount && availableLimbs.length > 0) {
+    const pickIdx = Math.floor(Math.random() * availableLimbs.length);
+    const severedLimb = availableLimbs.splice(pickIdx, 1)[0];
+    e.lostLimbs.push(severedLimb);
+
+    const flingAng = Math.random() * Math.PI * 2;
+    const flingSpeed = 40 + Math.random() * 60;
+    pendingEvents.push({
+      type: 'limb_loss',
+      enemyId: e.id,
+      limb: severedLimb,
+      x: Math.round(e.x),
+      y: Math.round(e.y),
+      radius: e.radius,
+      color: e.skinColor,
+      vx: Math.round(hitVx * 0.8 + Math.cos(flingAng) * flingSpeed),
+      vy: Math.round(hitVy * 0.8 + Math.sin(flingAng) * flingSpeed),
+      angle: +e.angle.toFixed(2),
+    });
+  }
+}
+
 function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer, options: any = {}) {
   const blastRadius =
     options && typeof options.radius === 'number' ? options.radius : EXPLOSION_RADIUS;
@@ -1146,6 +1186,11 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer, options: any
       target.hp -= blastDamage;
       target.hurtFlash = 0.32;
       target.lastBlastKiller = sourcePlayer || null;
+      checkEnemyLimbLoss(
+        target,
+        (blastImpulse / target.mass) * bnx * 0.5,
+        (blastImpulse / target.mass) * bny * 0.5
+      );
 
       if (isFlamingBlast) {
         igniteEnemy(target, sourcePlayer);
@@ -1218,6 +1263,11 @@ function triggerWhirlwindGust(gx, gy, sourcePlayer, sourceHammer, options: any =
       target.hp -= gustDamage;
       target.hurtFlash = 0.28;
       target.lastBlastKiller = sourcePlayer || null;
+      checkEnemyLimbLoss(
+        target,
+        (gustImpulse / target.mass) * bnx * 0.5,
+        (gustImpulse / target.mass) * bny * 0.5
+      );
 
       if (isFlaming) {
         if (igniteEnemy(target, sourcePlayer)) {
@@ -1313,6 +1363,7 @@ function checkAndStepClotheslines(dt: number) {
           e.hp -= CLOTHESLINE_BEAM_DAMAGE;
           e.hitCooldown = 0.12;
           e.hurtFlash = 0.28;
+          checkEnemyLimbLoss(e, 0, 0);
           const killer = p1 || p2 || null;
           if (killer && CLOTHESLINE_BEAM_DAMAGE > killer.maxDamageBlow) {
             killer.maxDamageBlow = CLOTHESLINE_BEAM_DAMAGE;
@@ -2377,6 +2428,7 @@ function stepWorldPhysics(dt) {
       const stepBurn = Math.min(dt, e.burnTimer);
       e.burnTimer -= stepBurn;
       e.hp -= ZOMBIE_BURN_DPS * stepBurn;
+      checkEnemyLimbLoss(e, 0, 0);
       e.burnTickAccum = (e.burnTickAccum || 0) + stepBurn;
 
       if (e.burnTickAccum >= 1.0) {
@@ -2436,6 +2488,12 @@ function stepWorldPhysics(dt) {
     if (isFeared) {
       speedMult = Math.max(speedMult, FEAR_SPEED_MULT);
     }
+    const lostLegsCount = (e.lostLimbs || []).filter((l: string) => l === 'left_leg' || l === 'right_leg').length;
+    if (lostLegsCount === 1) {
+      speedMult *= 0.75;
+    } else if (lostLegsCount >= 2) {
+      speedMult *= 0.45;
+    }
 
     // Find closest alive player using squared distance first
     let closestPlayer = null;
@@ -2476,6 +2534,25 @@ function stepWorldPhysics(dt) {
       // Stand in one place and dance!
       e.vx = 0;
       e.vy = 0;
+    } else if (Array.isArray(e.lostLimbs) && e.lostLimbs.includes('head')) {
+      // A zombie that has lost its head should wander in circles rather than following a warrior
+      e.wanderAngle = (typeof e.wanderAngle === 'number' ? e.wanderAngle : e.angle || 0) + dt * 2.0;
+      let dirX = Math.cos(e.wanderAngle);
+      let dirY = Math.sin(e.wanderAngle);
+      const wallMargin = e.radius + 60;
+      if ((e.x < wallMargin && dirX < 0) || (e.x > WORLD_WIDTH - wallMargin && dirX > 0)) {
+        e.wanderAngle = Math.PI - e.wanderAngle;
+        dirX = Math.cos(e.wanderAngle);
+        dirY = Math.sin(e.wanderAngle);
+      }
+      if ((e.y < wallMargin && dirY < 0) || (e.y > WORLD_HEIGHT - wallMargin && dirY > 0)) {
+        e.wanderAngle = -e.wanderAngle;
+        dirX = Math.cos(e.wanderAngle);
+        dirY = Math.sin(e.wanderAngle);
+      }
+      e.angle = Math.atan2(dirY, dirX);
+      e.vx += dirX * e.moveForce * speedMult * dt;
+      e.vy += dirY * e.moveForce * speedMult * dt;
     } else if (closestPlayer && closestDist > 0.001) {
       if (isFeared) {
         const refPlayer =
@@ -2663,6 +2740,7 @@ function stepWorldPhysics(dt) {
                 if (e.hitCooldown <= 0 && impulse > 8) {
                   const damage = Math.max(1, Math.round(impulse * DAMAGE_PER_IMPULSE));
                   e.hp -= damage;
+                  checkEnemyLimbLoss(e, strikeHvx, strikeHvy);
                   e.hitCooldown = 0.09;
                   e.hurtFlash = 0.18;
 
@@ -2699,6 +2777,7 @@ function stepWorldPhysics(dt) {
               // Ensure a zombie newly ignited by the Flaming Hammer survives the initial hit to run on fire
               if (justIgnited && !detonatedBomb && e.hp <= 0) {
                 e.hp = Math.max(18, Math.round(e.maxHp * 0.3));
+                checkEnemyLimbLoss(e, 0, 0);
               }
 
               if (e.hp <= 0) {
@@ -2783,6 +2862,7 @@ function stepWorldPhysics(dt) {
                   Math.round(hammerEquivImpulse * DAMAGE_PER_IMPULSE * CHAIN_DAMAGE_FACTOR)
                 );
                 e.hp -= chainDamage;
+                checkEnemyLimbLoss(e, cnx * hammerEquivImpulse * 0.2, cny * hammerEquivImpulse * 0.2);
                 e.chainHitCooldown = 0.09;
                 e.hurtFlash = 0.14;
 
@@ -3884,6 +3964,7 @@ function buildGameStatePayload() {
     maxHp: e.maxHp,
     skinColor: e.skinColor,
     coatColor: e.coatColor,
+    lostLimbs: e.lostLimbs ? [...e.lostLimbs] : [],
     hurtFlash: +e.hurtFlash.toFixed(2),
     burnTimer: +(e.burnTimer || 0).toFixed(2),
     fireproofTimer: +(e.fireproofTimer || 0).toFixed(2),
@@ -4048,6 +4129,7 @@ module.exports = {
   CLOTHESLINE_DURATION,
   CLOTHESLINE_TRIGGER_DIST,
   CLOTHESLINE_BEAM_DAMAGE,
+  ALL_LIMBS,
   checkTimeGap,
   getLastEmptyTime,
   setLastEmptyTime,
@@ -4128,6 +4210,7 @@ module.exports = {
   serializePickups,
   buildGameStatePayload,
   defeatEnemy,
+  checkEnemyLimbLoss,
   triggerHammerExplosion,
   triggerWhirlwindGust,
   updateHammerWhirlwind,
