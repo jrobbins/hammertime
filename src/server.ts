@@ -4327,8 +4327,24 @@ function renderStatsDashboardHtml() {
       }
     }
 
+    let lastStatsActivity = Date.now();
+    ['mousemove', 'mousedown', 'keydown', 'touchstart', 'focus'].forEach((ev) => {
+      window.addEventListener(
+        ev,
+        () => {
+          const wasIdle = Date.now() - lastStatsActivity > 120000;
+          lastStatsActivity = Date.now();
+          if (wasIdle) fetchAndUpdateStats();
+        },
+        { passive: true }
+      );
+    });
+
     fetchAndUpdateStats();
-    setInterval(fetchAndUpdateStats, 1000);
+    setInterval(() => {
+      if (document.hidden || Date.now() - lastStatsActivity > 120000) return;
+      fetchAndUpdateStats();
+    }, 1000);
   </script>
 </body>
 </html>
@@ -4482,8 +4498,9 @@ server.on('upgrade', (req, socket) => {
 
         if (typeof msg.mouseWorldX === 'number' && typeof msg.mouseWorldY === 'number') {
           if (
-            msg.mouseWorldX !== player.input.mouseWorldX ||
-            msg.mouseWorldY !== player.input.mouseWorldY
+            msg.active !== false &&
+            (msg.mouseWorldX !== player.input.mouseWorldX ||
+              msg.mouseWorldY !== player.input.mouseWorldY)
           ) {
             player.lastActivityTime = Date.now();
           }
@@ -4515,6 +4532,13 @@ server.on('upgrade', (req, socket) => {
 // Initialize world and load persisted leaderboard
 loadLeaderboardFromFile();
 if (leaderboardFilePath && !fs.existsSync(leaderboardFilePath)) {
+  if (
+    DEFAULT_LEADERBOARD_FILE &&
+    leaderboardFilePath !== DEFAULT_LEADERBOARD_FILE &&
+    fs.existsSync(DEFAULT_LEADERBOARD_FILE)
+  ) {
+    loadLeaderboardFromFile(DEFAULT_LEADERBOARD_FILE);
+  }
   saveLeaderboardToFile();
 }
 initStoneColumns();
@@ -4629,8 +4653,37 @@ function buildGameStatePayload() {
 let lastTick = performance.now();
 let broadcastAccum = 0;
 
+function gracefulShutdown(callback?: () => void) {
+  try {
+    saveLeaderboardToFile();
+  } catch (_err) {
+    // Ignore error
+  }
+  for (const p of players.values()) {
+    if (p.ws && !p.ws.destroyed && typeof p.ws.destroy === 'function') {
+      try {
+        p.ws.destroy();
+      } catch (_err) {
+        // Ignore socket destroy error
+      }
+    }
+  }
+  if (server && typeof (server as any).closeAllConnections === 'function') {
+    try {
+      (server as any).closeAllConnections();
+    } catch (_err) {
+      // Ignore error
+    }
+  }
+  if (server && server.listening) {
+    server.close(callback);
+  } else if (callback) {
+    callback();
+  }
+}
+
 if (require.main === module) {
-  setInterval(() => {
+  const tickInterval = setInterval(() => {
     const now = performance.now();
     const rawDt = (now - lastTick) / 1000;
     const nowWall = Date.now();
@@ -4662,6 +4715,20 @@ if (require.main === module) {
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`HammerTime multiplayer server listening on http://0.0.0.0:${PORT}`);
   });
+
+  const handleSignal = (signal: string) => {
+    console.log(`Received ${signal}. Shutting down gracefully...`);
+    clearInterval(tickInterval);
+    gracefulShutdown(() => {
+      process.exit(0);
+    });
+    setTimeout(() => {
+      process.exit(0);
+    }, 5000).unref();
+  };
+
+  process.on('SIGTERM', () => handleSignal('SIGTERM'));
+  process.on('SIGINT', () => handleSignal('SIGINT'));
 }
 
 module.exports = {
@@ -4892,4 +4959,5 @@ module.exports = {
   countHumanPlayers,
   countBotWarriors,
   getRandomBotName,
+  gracefulShutdown,
 };

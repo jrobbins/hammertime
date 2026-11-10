@@ -1137,6 +1137,43 @@ describe('Player Nicknames & Top 10 Enemies Killed Leaderboard', () => {
       }
     }
   });
+
+  it('flushes leaderboard to disk and closes open sockets on gracefulShutdown during scale-to-zero SIGTERM', () => {
+    const tmpFile = path.join(__dirname, `test-shutdown-lb-${Date.now()}.json`);
+    srv.setLeaderboardFilePath(tmpFile);
+    try {
+      srv.clearLeaderboard();
+      srv.recordLeaderboardKillScore('ScaleToZeroKnight', 77);
+
+      let socketDestroyed = false;
+      const p = addTestPlayer('p1', 2100, 2100);
+      p.ws = {
+        destroyed: false,
+        destroy() {
+          this.destroyed = true;
+          socketDestroyed = true;
+        },
+      };
+
+      let callbackCalled = false;
+      srv.gracefulShutdown(() => {
+        callbackCalled = true;
+      });
+
+      assert.equal(callbackCalled, true);
+      assert.equal(socketDestroyed, true);
+      assert.equal(fs.existsSync(tmpFile), true);
+      const data = JSON.parse(fs.readFileSync(tmpFile, 'utf8'));
+      assert.equal(data.entries.length, 1);
+      assert.equal(data.entries[0].name, 'ScaleToZeroKnight');
+      assert.equal(data.entries[0].kills, 77);
+    } finally {
+      srv.setLeaderboardFilePath(null);
+      if (fs.existsSync(tmpFile)) {
+        fs.unlinkSync(tmpFile);
+      }
+    }
+  });
 });
 
 describe('Server Stats Telemetry & /stats Dashboard', () => {
@@ -1171,6 +1208,7 @@ describe('Server Stats Telemetry & /stats Dashboard', () => {
     assert.ok(html.includes('chart-players'));
     assert.ok(html.includes('chart-rps'));
     assert.ok(html.includes('chart-latency'));
+    assert.ok(html.includes('document.hidden'));
   });
 });
 
