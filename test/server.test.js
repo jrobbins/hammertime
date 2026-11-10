@@ -1471,6 +1471,10 @@ describe('Whirlwind / Momentum Spin-Up and Overdrive', () => {
     }
 
     // Verify group cohesion in stepWorldPhysics:
+    // Keep only p1 in players (remove bot warrior spawned at 30 kills so p1 is the sole target)
+    for (const [pid, pl] of srv.players.entries()) {
+      if (pl.isBot) srv.players.delete(pid);
+    }
     // Place one mob member separated away from the group centroid
     const straggler = armored[0];
     straggler.x = 1000;

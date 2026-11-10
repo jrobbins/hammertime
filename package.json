@@ -7,8 +7,8 @@
     "dev": "./node_modules/.bin/tsc && node --watch dist/server.js",
     "start": "node dist/server.js",
     "test": "./node_modules/.bin/tsc && node test/run.js",
-    "deploy": "gcloud run deploy hammertime --project hammertime-io --source . --region us-central1 --allow-unauthenticated --execution-environment gen2 --min-instances 0 --max-instances 1 --concurrency 80 --timeout 3600 --add-volume name=leaderboard-vol,type=cloud-storage,bucket=hammertime-data --add-volume-mount volume=leaderboard-vol,mount-path=/data --set-env-vars LEADERBOARD_FILE=/data/leaderboard.json",
-    "deploy:appengine": "gcloud app deploy app.yaml --project hammertime-io"
+    "deploy": "gcloud run deploy hammertime --project hammertime-io --source . --region us-east1 --allow-unauthenticated --execution-environment gen2 --min-instances 0 --max-instances 1 --concurrency 80 --timeout 3600 --add-volume name=leaderboard-vol,type=cloud-storage,bucket=hammertime-data --add-volume-mount volume=leaderboard-vol,mount-path=/data --set-env-vars LEADERBOARD_FILE=/data/leaderboard.json",
+    "deploy:appengine": "./node_modules/.bin/tsc && gcloud app deploy app.yaml --project hammertime-io"
   },
   "private": true,
   "devDependencies": {

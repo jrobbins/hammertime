@@ -1,14 +1,38 @@
-runtime: nodejs
-env: flex
+runtime: nodejs22
 
-# Use only a single instance, so that this local-memory-only chat app will work
-# consistently with multiple users. To work across multiple instances, an
-# extra-instance messaging system or data store would be needed.
-manual_scaling:
-  instances: 1
+# Serve static frontend assets at https://hammertime-io.appspot.com with zero
+# App Engine instances running ($0 compute cost). The browser client connects
+# its WebSocket to the scale-to-zero Cloud Run backend.
+handlers:
+  - url: /
+    static_files: index.html
+    upload: index.html
+    secure: always
+    http_headers:
+      Cache-Control: no-store, no-cache, must-revalidate
 
-network:
-  session_affinity: true
+  - url: /index.html
+    static_files: index.html
+    upload: index.html
+    secure: always
+    http_headers:
+      Cache-Control: no-store, no-cache, must-revalidate
 
-runtime_config:
-  operating_system: ubuntu24
+  - url: /style.css
+    static_files: style.css
+    upload: style.css
+    secure: always
+    http_headers:
+      Cache-Control: no-store, no-cache, must-revalidate
+
+  - url: /dist/(.*\.(js|map))
+    static_files: dist/\1
+    upload: dist/.*\.(js|map)
+    secure: always
+    http_headers:
+      Cache-Control: no-store, no-cache, must-revalidate
+
+  - url: /(.*\.mp3)
+    static_files: \1
+    upload: .*\.mp3
+    secure: always

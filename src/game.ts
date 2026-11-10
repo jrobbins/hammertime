@@ -2666,6 +2666,25 @@
     return true;
   }
 
+  const CLOUD_RUN_HOST = 'hammertime-415310313744.us-east1.run.app';
+
+  function getMultiplayerWsUrl(hostOverride?: string, protocolOverride?: string) {
+    if (win.HAMMERTIME_WS_URL) {
+      return win.HAMMERTIME_WS_URL;
+    }
+    const host =
+      hostOverride !== undefined ? hostOverride : (window.location && window.location.host) || '';
+    const protocol =
+      protocolOverride !== undefined
+        ? protocolOverride
+        : (window.location && window.location.protocol) || 'http:';
+    if (host.endsWith('.appspot.com')) {
+      return `wss://${CLOUD_RUN_HOST}`;
+    }
+    const proto = protocol === 'https:' ? 'wss:' : 'ws:';
+    return `${proto}//${host}`;
+  }
+
   function connectMultiplayer() {
     if (!hasEnteredGame && !isConnecting) return;
     const WebSocketClass = win.WebSocket || (typeof WebSocket !== 'undefined' ? WebSocket : null);
@@ -2681,9 +2700,9 @@
     if (ws && ws.readyState === WebSocketClass.CONNECTING) {
       return;
     }
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = getMultiplayerWsUrl();
     try {
-      ws = new WebSocketClass(`${proto}//${window.location.host}`);
+      ws = new WebSocketClass(wsUrl);
     } catch (_err) {
       completeEnterGame();
       return;
@@ -12594,6 +12613,8 @@
       updateTouchWheelTarget,
       resetTouchWheel,
       connectMultiplayer,
+      CLOUD_RUN_HOST,
+      getMultiplayerWsUrl,
       lerpAngle,
       getCookie,
       setCookie,

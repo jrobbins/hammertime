@@ -3083,4 +3083,25 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     ]);
     assert.ok(mockOscillators.length >= 2, 'claim_motorcycle event should trigger motorcycle mount claim sound');
   });
+
+  it('routes WebSocket connections from *.appspot.com to the Cloud Run backend', () => {
+    const api = loadClientGame().api;
+    assert.equal(api.CLOUD_RUN_HOST, 'hammertime-415310313744.us-east1.run.app');
+    assert.equal(
+      api.getMultiplayerWsUrl('hammertime-io.appspot.com', 'https:'),
+      'wss://hammertime-415310313744.us-east1.run.app'
+    );
+    assert.equal(
+      api.getMultiplayerWsUrl('hammertime-io.uc.r.appspot.com', 'https:'),
+      'wss://hammertime-415310313744.us-east1.run.app'
+    );
+    assert.equal(
+      api.getMultiplayerWsUrl('localhost:8080', 'http:'),
+      'ws://localhost:8080'
+    );
+    assert.equal(
+      api.getMultiplayerWsUrl('hammertime-415310313744.us-east1.run.app', 'https:'),
+      'wss://hammertime-415310313744.us-east1.run.app'
+    );
+  });
 });
