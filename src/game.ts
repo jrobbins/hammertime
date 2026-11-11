@@ -2837,10 +2837,10 @@
                 warrior.angle = p.angle || 0;
                 warrior.walkCycle = p.walkCycle || 0;
               } else {
-                warrior.x += (p.x - warrior.x) * 0.28;
-                warrior.y += (p.y - warrior.y) * 0.28;
-                warrior.vx = warrior.vx * 0.72 + (p.vx || 0) * 0.28;
-                warrior.vy = warrior.vy * 0.72 + (p.vy || 0) * 0.28;
+                warrior.x += (p.x - warrior.x) * 0.12;
+                warrior.y += (p.y - warrior.y) * 0.12;
+                warrior.vx = warrior.vx * 0.88 + (p.vx || 0) * 0.12;
+                warrior.vy = warrior.vy * 0.88 + (p.vy || 0) * 0.12;
               }
 
               warrior.radius = p.radius || 20;
@@ -2941,11 +2941,11 @@
                     lh.vy = sh.vy || 0;
                     lh.angle = sh.angle || 0;
                   } else {
-                    lh.x += (sh.x - lh.x) * 0.35;
-                    lh.y += (sh.y - lh.y) * 0.35;
-                    lh.vx = lh.vx * 0.5 + (sh.vx || 0) * 0.5;
-                    lh.vy = lh.vy * 0.5 + (sh.vy || 0) * 0.5;
-                    lh.angle = lerpAngle(lh.angle || 0, sh.angle || 0, 0.35);
+                    lh.x += (sh.x - lh.x) * 0.12;
+                    lh.y += (sh.y - lh.y) * 0.12;
+                    lh.vx = lh.vx * 0.85 + (sh.vx || 0) * 0.15;
+                    lh.vy = lh.vy * 0.85 + (sh.vy || 0) * 0.15;
+                    lh.angle = lerpAngle(lh.angle || 0, sh.angle || 0, 0.15);
                   }
                   lh.radius = sh.radius || 17;
                   lh.mass = sh.mass || INITIAL_HAMMER_MASS;
@@ -2985,8 +2985,8 @@
                   } else {
                     for (let c = 0; c < sh.chainNodes.length; c++) {
                       const cn = lh.chainNodes[c];
-                      cn.x += (sh.chainNodes[c].x - cn.x) * 0.35;
-                      cn.y += (sh.chainNodes[c].y - cn.y) * 0.35;
+                      cn.x += (sh.chainNodes[c].x - cn.x) * 0.12;
+                      cn.y += (sh.chainNodes[c].y - cn.y) * 0.12;
                       cn.prevX = cn.x;
                       cn.prevY = cn.y;
                     }
@@ -3038,9 +3038,9 @@
                 prevRp.targetX = p.x;
                 prevRp.targetY = p.y;
                 prevRp.targetAngle = p.angle || 0;
-                prevRp.x += (p.x - prevRp.x) * 0.35;
-                prevRp.y += (p.y - prevRp.y) * 0.35;
-                prevRp.angle = lerpAngle(prevRp.angle || 0, p.angle || 0, 0.35);
+                prevRp.x += (p.x - prevRp.x) * 0.15;
+                prevRp.y += (p.y - prevRp.y) * 0.15;
+                prevRp.angle = lerpAngle(prevRp.angle || 0, p.angle || 0, 0.15);
 
                 if (!Array.isArray(prevRp.hammers)) {
                   prevRp.hammers = [];
@@ -3076,9 +3076,9 @@
                     rh.targetX = sh.x;
                     rh.targetY = sh.y;
                     rh.targetAngle = sh.angle || 0;
-                    rh.x += (sh.x - rh.x) * 0.35;
-                    rh.y += (sh.y - rh.y) * 0.35;
-                    rh.angle = lerpAngle(rh.angle || 0, sh.angle || 0, 0.35);
+                    rh.x += (sh.x - rh.x) * 0.15;
+                    rh.y += (sh.y - rh.y) * 0.15;
+                    rh.angle = lerpAngle(rh.angle || 0, sh.angle || 0, 0.15);
 
                     if (Array.isArray(sh.chainNodes)) {
                       if (
@@ -3096,8 +3096,8 @@
                           const rn = rh.chainNodes[c];
                           rn.targetX = sh.chainNodes[c].x;
                           rn.targetY = sh.chainNodes[c].y;
-                          rn.x += (sh.chainNodes[c].x - rn.x) * 0.35;
-                          rn.y += (sh.chainNodes[c].y - rn.y) * 0.35;
+                          rn.x += (sh.chainNodes[c].x - rn.x) * 0.15;
+                          rn.y += (sh.chainNodes[c].y - rn.y) * 0.15;
                         }
                       }
                     }
@@ -3189,9 +3189,9 @@
               prevE.targetX = inc.x;
               prevE.targetY = inc.y;
               prevE.targetAngle = inc.angle || 0;
-              prevE.x += (inc.x - prevE.x) * 0.35;
-              prevE.y += (inc.y - prevE.y) * 0.35;
-              prevE.angle = lerpAngle(prevE.angle || 0, inc.angle || 0, 0.35);
+              prevE.x += (inc.x - prevE.x) * 0.15;
+              prevE.y += (inc.y - prevE.y) * 0.15;
+              prevE.angle = lerpAngle(prevE.angle || 0, inc.angle || 0, 0.15);
               if (typeof prevE.walkPhase !== 'number') {
                 prevE.walkPhase = inc.walkPhase || 0;
               }
@@ -3263,20 +3263,39 @@
     });
   }
 
-  function sendInputToServer() {
+  const INPUT_SEND_INTERVAL_MS = 33; // ~30 Hz max upstream input rate
+  let lastInputSentTime = -1000;
+  let lastSentMouseWorldX = NaN;
+  let lastSentMouseWorldY = NaN;
+
+  function sendInputToServer(force = false) {
     const openState = win.WebSocket ? win.WebSocket.OPEN : 1;
-    if (!hasEnteredGame || !isMultiplayer || !ws || ws.readyState !== openState) return;
+    if (!hasEnteredGame || !isMultiplayer || !ws || ws.readyState !== openState) return false;
+    const now = performance.now();
+    const mouseWorldX = +(camera.x + mouse.screenX).toFixed(1);
+    const mouseWorldY = +(camera.y + mouse.screenY / TILT_Y).toFixed(1);
+    const movedDist = Math.hypot(mouseWorldX - lastSentMouseWorldX, mouseWorldY - lastSentMouseWorldY);
+    if (!force && now - lastInputSentTime < INPUT_SEND_INTERVAL_MS) {
+      return false;
+    }
+    if (!force && !hasRecentInput && movedDist < 0.5 && now - lastInputSentTime < 250) {
+      return false;
+    }
     const active = hasRecentInput;
     hasRecentInput = false;
+    lastInputSentTime = now;
+    lastSentMouseWorldX = mouseWorldX;
+    lastSentMouseWorldY = mouseWorldY;
     ws.send(
       JSON.stringify({
         type: 'input',
         nickname: warrior.hasCustomNickname ? warrior.name : undefined,
         active,
-        mouseWorldX: +(camera.x + mouse.screenX).toFixed(1),
-        mouseWorldY: +(camera.y + mouse.screenY / TILT_Y).toFixed(1),
+        mouseWorldX,
+        mouseWorldY,
       })
     );
+    return true;
   }
 
   function initChainNodes() {
@@ -5193,6 +5212,24 @@
           stepLocalWarriorAndHammers(subDt, true);
           if (hitStopTimer > 0) {
             break;
+          }
+        }
+        const localReconBlend = 1 - Math.exp(-5 * frameDt);
+        if (warrior.hasServerTarget && typeof warrior.serverX === 'number' && typeof warrior.serverY === 'number') {
+          const wPad = (warrior.radius || 20) + 24;
+          warrior.serverX = clamp(warrior.serverX + (warrior.serverVx || 0) * frameDt, wPad, WORLD_WIDTH - wPad);
+          warrior.serverY = clamp(warrior.serverY + (warrior.serverVy || 0) * frameDt, wPad, WORLD_HEIGHT - wPad);
+          warrior.x += (warrior.serverX - warrior.x) * localReconBlend;
+          warrior.y += (warrior.serverY - warrior.y) * localReconBlend;
+        }
+        for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
+          const lh = warrior.hammers[hIdx];
+          if (lh && lh.hasServerTarget && typeof lh.serverX === 'number' && typeof lh.serverY === 'number') {
+            const hPad = (lh.radius || 17) + 16;
+            lh.serverX = clamp(lh.serverX + (lh.serverVx || 0) * frameDt, hPad, WORLD_WIDTH - hPad);
+            lh.serverY = clamp(lh.serverY + (lh.serverVy || 0) * frameDt, hPad, WORLD_HEIGHT - hPad);
+            lh.x += (lh.serverX - lh.x) * localReconBlend;
+            lh.y += (lh.serverY - lh.y) * localReconBlend;
           }
         }
       }
@@ -12613,6 +12650,8 @@
       updateTouchWheelTarget,
       resetTouchWheel,
       connectMultiplayer,
+      sendInputToServer,
+      INPUT_SEND_INTERVAL_MS,
       CLOUD_RUN_HOST,
       getMultiplayerWsUrl,
       lerpAngle,

@@ -3103,5 +3103,6 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       api.getMultiplayerWsUrl('hammertime-415310313744.us-east1.run.app', 'https:'),
       'wss://hammertime-415310313744.us-east1.run.app'
     );
+    assert.equal(api.INPUT_SEND_INTERVAL_MS, 33);
   });
 });

@@ -1167,8 +1167,28 @@ describe('Player Nicknames & Top 10 Enemies Killed Leaderboard', () => {
       assert.equal(data.entries.length, 1);
       assert.equal(data.entries[0].name, 'ScaleToZeroKnight');
       assert.equal(data.entries[0].kills, 77);
+      assert.equal(srv.LEADERBOARD_SAVE_DEBOUNCE_MS, 10000);
     } finally {
       srv.setLeaderboardFilePath(null);
+      if (fs.existsSync(tmpFile)) {
+        fs.unlinkSync(tmpFile);
+      }
+    }
+  });
+
+  it('persists leaderboard asynchronously via saveLeaderboardToFileAsync without blocking physics loop', async () => {
+    const tmpFile = path.join(os.tmpdir(), `hammertime-async-lb-${process.pid}-${Date.now()}.json`);
+    try {
+      srv.clearLeaderboard();
+      srv.recordLeaderboardKillScore('AsyncPaladin', 91);
+      const ok = await srv.saveLeaderboardToFileAsync(tmpFile);
+      assert.equal(ok, true);
+      assert.equal(fs.existsSync(tmpFile), true);
+      const parsed = JSON.parse(fs.readFileSync(tmpFile, 'utf8'));
+      assert.equal(parsed.entries.length, 1);
+      assert.equal(parsed.entries[0].name, 'AsyncPaladin');
+      assert.equal(parsed.entries[0].kills, 91);
+    } finally {
       if (fs.existsSync(tmpFile)) {
         fs.unlinkSync(tmpFile);
       }

@@ -698,7 +698,19 @@ function getLeaderboardFilePath() {
   return leaderboardFilePath;
 }
 
+const LEADERBOARD_SAVE_DEBOUNCE_MS = 10000;
+let leaderboardSaveTimer: ReturnType<typeof setTimeout> | null = null;
+let leaderboardSaveInFlight = false;
+let leaderboardDirty = false;
+let hasMergedDiskForPath: string | null = null;
+
 function setLeaderboardFilePath(filePath) {
+  if (leaderboardSaveTimer !== null) {
+    clearTimeout(leaderboardSaveTimer);
+    leaderboardSaveTimer = null;
+  }
+  leaderboardDirty = false;
+  hasMergedDiskForPath = null;
   leaderboardFilePath =
     filePath === undefined
       ? process.env.LEADERBOARD_FILE !== undefined
@@ -758,43 +770,82 @@ function mergeLeaderboardListIntoMap(list, targetMap = leaderboardRecords) {
   }
 }
 
+function buildLeaderboardPayloadJson() {
+  const sorted = sortLeaderboardEntries(Array.from(leaderboardRecords.values()));
+  const payload = {
+    updatedAt: new Date().toISOString(),
+    entries: sorted.map((entry, idx) => ({
+      rank: idx + 1,
+      name: entry.name,
+      kills: entry.kills,
+      color: entry.color || '#f6e05e',
+      updatedAt: entry.updatedAt || Date.now(),
+    })),
+  };
+  return JSON.stringify(payload, null, 2) + '\n';
+}
+
+async function saveLeaderboardToFileAsync(filePath = leaderboardFilePath) {
+  if (!filePath) return false;
+  if (leaderboardSaveInFlight) {
+    leaderboardDirty = true;
+    return false;
+  }
+  leaderboardSaveInFlight = true;
+  leaderboardDirty = false;
+  try {
+    const json = buildLeaderboardPayloadJson();
+    const dir = path.dirname(filePath);
+    await fs.promises.mkdir(dir, { recursive: true });
+    await fs.promises.writeFile(filePath, json, 'utf8');
+    hasMergedDiskForPath = filePath;
+    return true;
+  } catch (_err) {
+    return false;
+  } finally {
+    leaderboardSaveInFlight = false;
+    if (leaderboardDirty && require.main === module) {
+      scheduleLeaderboardSave();
+    }
+  }
+}
+
+function scheduleLeaderboardSave() {
+  if (!leaderboardFilePath) return;
+  if (require.main !== module) {
+    saveLeaderboardToFile();
+    return;
+  }
+  leaderboardDirty = true;
+  if (leaderboardSaveTimer !== null) return;
+  leaderboardSaveTimer = setTimeout(() => {
+    leaderboardSaveTimer = null;
+    if (leaderboardDirty) {
+      saveLeaderboardToFileAsync(leaderboardFilePath);
+    }
+  }, LEADERBOARD_SAVE_DEBOUNCE_MS);
+  if (typeof leaderboardSaveTimer.unref === 'function') {
+    leaderboardSaveTimer.unref();
+  }
+}
+
 function saveLeaderboardToFile(filePath = leaderboardFilePath, options: any = {}) {
   if (!filePath) return false;
   try {
-    if (!options || !options.overwrite) {
+    if ((!options || !options.overwrite) && hasMergedDiskForPath !== filePath) {
       const diskEntries = readLeaderboardEntriesFromDisk(filePath);
       if (diskEntries.length > 0) {
         mergeLeaderboardListIntoMap(diskEntries, leaderboardRecords);
       }
+      hasMergedDiskForPath = filePath;
     }
-    const sorted = sortLeaderboardEntries(Array.from(leaderboardRecords.values()));
-    const payload = {
-      updatedAt: new Date().toISOString(),
-      entries: sorted.map((entry, idx) => ({
-        rank: idx + 1,
-        name: entry.name,
-        kills: entry.kills,
-        color: entry.color || '#f6e05e',
-        updatedAt: entry.updatedAt || Date.now(),
-      })),
-    };
-    const json = JSON.stringify(payload, null, 2) + '\n';
+    const json = buildLeaderboardPayloadJson();
     const dir = path.dirname(filePath);
     if (!fs.existsSync(dir)) {
       fs.mkdirSync(dir, { recursive: true });
     }
-    const tmpPath = `${filePath}.${process.pid}.tmp`;
-    fs.writeFileSync(tmpPath, json, 'utf8');
-    try {
-      fs.renameSync(tmpPath, filePath);
-    } catch (_renameErr) {
-      fs.writeFileSync(filePath, json, 'utf8');
-      try {
-        fs.unlinkSync(tmpPath);
-      } catch (_unlinkErr) {
-        // Ignore cleanup error
-      }
-    }
+    fs.writeFileSync(filePath, json, 'utf8');
+    leaderboardDirty = false;
     return true;
   } catch (_err) {
     return false;
@@ -810,6 +861,7 @@ function loadLeaderboardFromFile(filePath = leaderboardFilePath) {
     const list = readLeaderboardEntriesFromDisk(filePath);
     leaderboardRecords.clear();
     mergeLeaderboardListIntoMap(list, leaderboardRecords);
+    hasMergedDiskForPath = filePath;
   } catch (_err) {
     // Ignore missing or malformed file and keep current in-memory records
   }
@@ -838,7 +890,7 @@ function recordLeaderboardKillScore(name, killsCount, color = '#f6e05e') {
       changed = true;
     }
     if (changed) {
-      saveLeaderboardToFile();
+      scheduleLeaderboardSave();
     }
     return existing;
   }
@@ -849,7 +901,7 @@ function recordLeaderboardKillScore(name, killsCount, color = '#f6e05e') {
     updatedAt: Date.now(),
   };
   leaderboardRecords.set(key, entry);
-  saveLeaderboardToFile();
+  scheduleLeaderboardSave();
   return entry;
 }
 
@@ -877,7 +929,7 @@ function setPlayerNickname(p, rawNickname) {
   p.hasCustomNickname = true;
   updateLeaderboardForPlayer(p);
   if (removedOld) {
-    saveLeaderboardToFile();
+    scheduleLeaderboardSave();
   }
   return cleanName;
 }
@@ -4654,6 +4706,10 @@ let lastTick = performance.now();
 let broadcastAccum = 0;
 
 function gracefulShutdown(callback?: () => void) {
+  if (leaderboardSaveTimer !== null) {
+    clearTimeout(leaderboardSaveTimer);
+    leaderboardSaveTimer = null;
+  }
   try {
     saveLeaderboardToFile();
   } catch (_err) {
@@ -4913,6 +4969,9 @@ module.exports = {
   getTopLeaderboard,
   clearLeaderboard,
   saveLeaderboardToFile,
+  saveLeaderboardToFileAsync,
+  scheduleLeaderboardSave,
+  LEADERBOARD_SAVE_DEBOUNCE_MS,
   loadLeaderboardFromFile,
   resetPlayerForNewRound,
   createPlayer,
