@@ -136,10 +136,13 @@ const WHIRLWIND_CHARGE_DURATION = 6.0;
 const WHIRLWIND_LEVEL_DURATION = 4.0;
 const WHIRLWIND_MAX_LEVEL = 5;
 const WHIRLWIND_REACH_MULT = 1.15;
-const WHIRLWIND_LEVEL_DAMAGES = [0, 40, 100, 180, 280, 400] as const;
+const WHIRLWIND_LEVEL_DAMAGES = [0, 80, 200, 360, 560, 800] as const;
 const WHIRLWIND_LEVEL_RADII = [0, 140, 180, 220, 260, 300] as const;
 const WHIRLWIND_GUST_RADIUS = 140;
-const WHIRLWIND_GUST_DAMAGE = 40;
+const WHIRLWIND_GUST_DAMAGE = 80;
+
+const STARTING_POWERUP_COUNTS = [4, 6, 8, 10, 12, 16] as const;
+const STARTING_POWERUP_RING_RADIUS = 110;
 
 const ARMORED_MOB_FIRST_MILESTONE = 50;
 const ARMORED_MOB_INTERVAL = 50;
@@ -1043,6 +1046,9 @@ function createPlayer(id, ws) {
     lastActivityTime: Date.now(),
   };
   resetPlayerForNewRound(p);
+  if (ws && !p.isBot) {
+    spawnStartingPowerupsForPlayer(p);
+  }
   return p;
 }
 
@@ -1302,6 +1308,168 @@ function spawnCheatPowerups() {
   return spawned;
 }
 
+function rollRandomPickupType() {
+  const pool = PICKUP_TYPES;
+  const rareRoll = Math.random();
+  if (rareRoll < RARE_BULLDOZER_DROP_CHANCE) {
+    return 'bulldozer';
+  } else if (rareRoll < RARE_BULLDOZER_DROP_CHANCE + RARE_ELEPHANT_DROP_CHANCE) {
+    return 'elephant';
+  } else if (
+    rareRoll <
+    RARE_BULLDOZER_DROP_CHANCE + RARE_ELEPHANT_DROP_CHANCE + RARE_HORSE_DROP_CHANCE
+  ) {
+    return 'horse';
+  } else if (
+    rareRoll <
+    RARE_BULLDOZER_DROP_CHANCE +
+      RARE_ELEPHANT_DROP_CHANCE +
+      RARE_HORSE_DROP_CHANCE +
+      RARE_TORTOISE_DROP_CHANCE
+  ) {
+    return 'tortoise';
+  } else if (
+    rareRoll <
+    RARE_BULLDOZER_DROP_CHANCE +
+      RARE_ELEPHANT_DROP_CHANCE +
+      RARE_HORSE_DROP_CHANCE +
+      RARE_TORTOISE_DROP_CHANCE +
+      RARE_EARTHQUAKE_DROP_CHANCE
+  ) {
+    return 'earthquake';
+  } else if (
+    rareRoll <
+    RARE_BULLDOZER_DROP_CHANCE +
+      RARE_ELEPHANT_DROP_CHANCE +
+      RARE_HORSE_DROP_CHANCE +
+      RARE_TORTOISE_DROP_CHANCE +
+      RARE_EARTHQUAKE_DROP_CHANCE +
+      RARE_FEAR_DROP_CHANCE
+  ) {
+    return 'fear';
+  } else if (
+    rareRoll <
+    RARE_BULLDOZER_DROP_CHANCE +
+      RARE_ELEPHANT_DROP_CHANCE +
+      RARE_HORSE_DROP_CHANCE +
+      RARE_TORTOISE_DROP_CHANCE +
+      RARE_EARTHQUAKE_DROP_CHANCE +
+      RARE_FEAR_DROP_CHANCE +
+      RARE_DISCO_DROP_CHANCE
+  ) {
+    return 'disco';
+  } else if (
+    rareRoll <
+    RARE_BULLDOZER_DROP_CHANCE +
+      RARE_ELEPHANT_DROP_CHANCE +
+      RARE_HORSE_DROP_CHANCE +
+      RARE_TORTOISE_DROP_CHANCE +
+      RARE_EARTHQUAKE_DROP_CHANCE +
+      RARE_FEAR_DROP_CHANCE +
+      RARE_DISCO_DROP_CHANCE +
+      RARE_JACKOLANTERN_DROP_CHANCE
+  ) {
+    return 'jackolantern';
+  } else if (
+    rareRoll <
+    RARE_BULLDOZER_DROP_CHANCE +
+      RARE_ELEPHANT_DROP_CHANCE +
+      RARE_HORSE_DROP_CHANCE +
+      RARE_TORTOISE_DROP_CHANCE +
+      RARE_EARTHQUAKE_DROP_CHANCE +
+      RARE_FEAR_DROP_CHANCE +
+      RARE_DISCO_DROP_CHANCE +
+      RARE_JACKOLANTERN_DROP_CHANCE +
+      RARE_SPIDER_DROP_CHANCE
+  ) {
+    return 'spider';
+  } else if (
+    rareRoll <
+    RARE_BULLDOZER_DROP_CHANCE +
+      RARE_ELEPHANT_DROP_CHANCE +
+      RARE_HORSE_DROP_CHANCE +
+      RARE_TORTOISE_DROP_CHANCE +
+      RARE_EARTHQUAKE_DROP_CHANCE +
+      RARE_FEAR_DROP_CHANCE +
+      RARE_DISCO_DROP_CHANCE +
+      RARE_JACKOLANTERN_DROP_CHANCE +
+      RARE_SPIDER_DROP_CHANCE +
+      RARE_HAMMER_DROP_CHANCE
+  ) {
+    return 'hammer';
+  } else if (
+    rareRoll <
+    RARE_BULLDOZER_DROP_CHANCE +
+      RARE_ELEPHANT_DROP_CHANCE +
+      RARE_HORSE_DROP_CHANCE +
+      RARE_TORTOISE_DROP_CHANCE +
+      RARE_EARTHQUAKE_DROP_CHANCE +
+      RARE_FEAR_DROP_CHANCE +
+      RARE_DISCO_DROP_CHANCE +
+      RARE_JACKOLANTERN_DROP_CHANCE +
+      RARE_SPIDER_DROP_CHANCE +
+      RARE_HAMMER_DROP_CHANCE +
+      RARE_THOR_DROP_CHANCE
+  ) {
+    return 'thor';
+  }
+  return pool[Math.floor(Math.random() * pool.length)];
+}
+
+function getMonsterStrength(): number {
+  const timeMinutes = Math.max(0, elapsedGameTime / 60);
+  const timeHpScale = 1 + timeMinutes * 0.95 + Math.pow(timeMinutes, 1.35) * 0.25;
+  if (enemies.length === 0) return timeHpScale;
+  let totalMaxHp = 0;
+  for (let i = 0; i < enemies.length; i++) {
+    totalMaxHp += enemies[i].maxHp || enemies[i].hp || 75;
+  }
+  const avgEnemyHpScale = totalMaxHp / enemies.length / 85;
+  return Math.max(timeHpScale, avgEnemyHpScale);
+}
+
+function getStartingPowerupCount(strengthOverride?: number): number {
+  const strength =
+    typeof strengthOverride === 'number' && Number.isFinite(strengthOverride)
+      ? strengthOverride
+      : getMonsterStrength();
+  if (strength < 1.65) return 4;
+  if (strength < 2.6) return 6;
+  if (strength < 3.8) return 8;
+  if (strength < 5.2) return 10;
+  if (strength < 6.8) return 12;
+  return 16;
+}
+
+function spawnStartingPowerupsForPlayer(player: any, countOverride?: number) {
+  if (!player) return [];
+  const rawCount =
+    typeof countOverride === 'number' ? countOverride : getStartingPowerupCount();
+  const count = (STARTING_POWERUP_COUNTS as readonly number[]).includes(rawCount)
+    ? rawCount
+    : getStartingPowerupCount(rawCount);
+  const cx = typeof player.x === 'number' ? player.x : WORLD_WIDTH / 2;
+  const cy = typeof player.y === 'number' ? player.y : WORLD_HEIGHT / 2;
+  const radius = STARTING_POWERUP_RING_RADIUS;
+  const spawned: Array<{ id: number; x: number; y: number; type: string }> = [];
+
+  for (let i = 0; i < count; i++) {
+    const angle = (i / count) * 2 * Math.PI;
+    const x = Math.max(40, Math.min(WORLD_WIDTH - 40, Math.round(cx + Math.cos(angle) * radius)));
+    const y = Math.max(40, Math.min(WORLD_HEIGHT - 40, Math.round(cy + Math.sin(angle) * radius)));
+    const pickup = {
+      id: nextPickupId++,
+      x,
+      y,
+      type: rollRandomPickupType(),
+    };
+    addPickupToWorld(pickup);
+    spawned.push(pickup);
+  }
+
+  return spawned;
+}
+
 function spawnMotorcycleWreck(x: number, y: number, angle: number, radius = MOTORCYCLE_WRECK_RADIUS): LaidDownMotorcycle {
   const wreck: LaidDownMotorcycle = {
     id: nextMotorcycleWreckId++,
@@ -1361,113 +1529,7 @@ function defeatEnemy(
       }
     }
   }
-  const pool = PICKUP_TYPES;
-  const rareRoll = Math.random();
-  let pickupType;
-  if (rareRoll < RARE_BULLDOZER_DROP_CHANCE) {
-    pickupType = 'bulldozer';
-  } else if (rareRoll < RARE_BULLDOZER_DROP_CHANCE + RARE_ELEPHANT_DROP_CHANCE) {
-    pickupType = 'elephant';
-  } else if (
-    rareRoll <
-    RARE_BULLDOZER_DROP_CHANCE + RARE_ELEPHANT_DROP_CHANCE + RARE_HORSE_DROP_CHANCE
-  ) {
-    pickupType = 'horse';
-  } else if (
-    rareRoll <
-    RARE_BULLDOZER_DROP_CHANCE +
-      RARE_ELEPHANT_DROP_CHANCE +
-      RARE_HORSE_DROP_CHANCE +
-      RARE_TORTOISE_DROP_CHANCE
-  ) {
-    pickupType = 'tortoise';
-  } else if (
-    rareRoll <
-    RARE_BULLDOZER_DROP_CHANCE +
-      RARE_ELEPHANT_DROP_CHANCE +
-      RARE_HORSE_DROP_CHANCE +
-      RARE_TORTOISE_DROP_CHANCE +
-      RARE_EARTHQUAKE_DROP_CHANCE
-  ) {
-    pickupType = 'earthquake';
-  } else if (
-    rareRoll <
-    RARE_BULLDOZER_DROP_CHANCE +
-      RARE_ELEPHANT_DROP_CHANCE +
-      RARE_HORSE_DROP_CHANCE +
-      RARE_TORTOISE_DROP_CHANCE +
-      RARE_EARTHQUAKE_DROP_CHANCE +
-      RARE_FEAR_DROP_CHANCE
-  ) {
-    pickupType = 'fear';
-  } else if (
-    rareRoll <
-    RARE_BULLDOZER_DROP_CHANCE +
-      RARE_ELEPHANT_DROP_CHANCE +
-      RARE_HORSE_DROP_CHANCE +
-      RARE_TORTOISE_DROP_CHANCE +
-      RARE_EARTHQUAKE_DROP_CHANCE +
-      RARE_FEAR_DROP_CHANCE +
-      RARE_DISCO_DROP_CHANCE
-  ) {
-    pickupType = 'disco';
-  } else if (
-    rareRoll <
-    RARE_BULLDOZER_DROP_CHANCE +
-      RARE_ELEPHANT_DROP_CHANCE +
-      RARE_HORSE_DROP_CHANCE +
-      RARE_TORTOISE_DROP_CHANCE +
-      RARE_EARTHQUAKE_DROP_CHANCE +
-      RARE_FEAR_DROP_CHANCE +
-      RARE_DISCO_DROP_CHANCE +
-      RARE_JACKOLANTERN_DROP_CHANCE
-  ) {
-    pickupType = 'jackolantern';
-  } else if (
-    rareRoll <
-    RARE_BULLDOZER_DROP_CHANCE +
-      RARE_ELEPHANT_DROP_CHANCE +
-      RARE_HORSE_DROP_CHANCE +
-      RARE_TORTOISE_DROP_CHANCE +
-      RARE_EARTHQUAKE_DROP_CHANCE +
-      RARE_FEAR_DROP_CHANCE +
-      RARE_DISCO_DROP_CHANCE +
-      RARE_JACKOLANTERN_DROP_CHANCE +
-      RARE_SPIDER_DROP_CHANCE
-  ) {
-    pickupType = 'spider';
-  } else if (
-    rareRoll <
-    RARE_BULLDOZER_DROP_CHANCE +
-      RARE_ELEPHANT_DROP_CHANCE +
-      RARE_HORSE_DROP_CHANCE +
-      RARE_TORTOISE_DROP_CHANCE +
-      RARE_EARTHQUAKE_DROP_CHANCE +
-      RARE_FEAR_DROP_CHANCE +
-      RARE_DISCO_DROP_CHANCE +
-      RARE_JACKOLANTERN_DROP_CHANCE +
-      RARE_SPIDER_DROP_CHANCE +
-      RARE_HAMMER_DROP_CHANCE
-  ) {
-    pickupType = 'hammer';
-  } else if (
-    rareRoll <
-    RARE_BULLDOZER_DROP_CHANCE +
-      RARE_ELEPHANT_DROP_CHANCE +
-      RARE_HORSE_DROP_CHANCE +
-      RARE_TORTOISE_DROP_CHANCE +
-      RARE_EARTHQUAKE_DROP_CHANCE +
-      RARE_FEAR_DROP_CHANCE +
-      RARE_DISCO_DROP_CHANCE +
-      RARE_JACKOLANTERN_DROP_CHANCE +
-      RARE_SPIDER_DROP_CHANCE +
-      RARE_HAMMER_DROP_CHANCE +
-      RARE_THOR_DROP_CHANCE
-  ) {
-    pickupType = 'thor';
-  } else {
-    pickupType = pool[Math.floor(Math.random() * pool.length)];
-  }
+  const pickupType = rollRandomPickupType();
   addPickupToWorld({
     id: nextPickupId++,
     x: e.x,
@@ -1605,7 +1667,7 @@ function triggerWhirlwindGust(gx, gy, sourcePlayer, sourceHammer, options: any =
     Math.max(1, sourceHammer && sourceHammer.whirlwindLevel ? sourceHammer.whirlwindLevel : 1)
   );
   const gustRadius = WHIRLWIND_LEVEL_RADII[level] || 140;
-  const gustMaxDamage = WHIRLWIND_LEVEL_DAMAGES[level] || 40;
+  const gustMaxDamage = WHIRLWIND_LEVEL_DAMAGES[level] || 80;
 
   const isFlaming =
     !!(options && options.isFlaming) ||
@@ -4880,6 +4942,8 @@ module.exports = {
   WHIRLWIND_LEVEL_RADII,
   WHIRLWIND_GUST_RADIUS,
   WHIRLWIND_GUST_DAMAGE,
+  STARTING_POWERUP_COUNTS,
+  STARTING_POWERUP_RING_RADIUS,
   ARMORED_MOB_FIRST_MILESTONE,
   ARMORED_MOB_INTERVAL,
   ARMORED_MOB_BASE_SIZE,
@@ -4988,6 +5052,10 @@ module.exports = {
   getTopKillerName,
   triggerCoopVictory,
   addPickupToWorld,
+  rollRandomPickupType,
+  getMonsterStrength,
+  getStartingPowerupCount,
+  spawnStartingPowerupsForPlayer,
   spawnCheatPowerups,
   serializePickups,
   buildGameStatePayload,

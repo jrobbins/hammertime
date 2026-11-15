@@ -341,6 +341,8 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.WHIRLWIND_MAX_LEVEL, srv.WHIRLWIND_MAX_LEVEL);
     assert.deepEqual([...c.WHIRLWIND_LEVEL_DAMAGES], [...srv.WHIRLWIND_LEVEL_DAMAGES]);
     assert.deepEqual([...c.WHIRLWIND_LEVEL_RADII], [...srv.WHIRLWIND_LEVEL_RADII]);
+    assert.deepEqual([...c.STARTING_POWERUP_COUNTS], [...srv.STARTING_POWERUP_COUNTS]);
+    assert.equal(c.STARTING_POWERUP_RING_RADIUS, srv.STARTING_POWERUP_RING_RADIUS);
     assert.equal(c.HIT_STOP_DURATION, srv.HIT_STOP_DURATION);
     assert.equal(c.HIT_STOP_DAMAGE_THRESHOLD, srv.HIT_STOP_DAMAGE_THRESHOLD);
     assert.equal(c.HIT_STOP_BIG_SHAKE_THRESHOLD, srv.HIT_STOP_BIG_SHAKE_THRESHOLD);
@@ -2456,9 +2458,9 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     const e = api.enemies[0];
     e.x = h.x;
     e.y = h.y;
-    e.hp = 250;
+    e.hp = 500;
     api.triggerWhirlwindGust(h.x, h.y, w, h);
-    assert.equal(e.hp, 250 - api.constants.WHIRLWIND_LEVEL_DAMAGES[3], 'Enemy at center of gust should take full level 3 gust damage (180)');
+    assert.equal(e.hp, 500 - api.constants.WHIRLWIND_LEVEL_DAMAGES[3], 'Enemy at center of gust should take full level 3 gust damage (360)');
 
     // Test that hammer impact with flame and whirlwind sets all affected enemies on fire and resets whirlwindLevel to 0
     h.x = w.x + 30;
@@ -2469,13 +2471,13 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     h.flameTimer = 5;
     h.whirlwindLevel = 2;
     h.isWhirlwind = true;
-    h.spinTimer = 7.0;
+    h.spinTimer = 11.0;
 
     e.x = h.x + 20;
     e.y = h.y;
     e.vx = 0;
     e.vy = 0;
-    e.hp = 200;
+    e.hp = 500;
     e.hitCooldown = 0;
     e.burnTimer = 0;
     e.fireproofTimer = 0;
@@ -2487,7 +2489,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     eBystander.y = h.y;
     eBystander.vx = 0;
     eBystander.vy = 0;
-    eBystander.hp = 100;
+    eBystander.hp = 500;
     eBystander.burnTimer = 0;
     eBystander.fireproofTimer = 0;
 
@@ -3104,5 +3106,28 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       'wss://hammertime-415310313744.us-east1.run.app'
     );
     assert.equal(api.INPUT_SEND_INTERVAL_MS, 33);
+  });
+
+  it('spawns 4, 6, 8, 10, 12, or 16 powerups in a circle around the player starting point based on monster strength', () => {
+    const api = loadClientGame().api;
+    assert.equal(api.getStartingPowerupCount(1.0), 4);
+    assert.equal(api.getStartingPowerupCount(2.0), 6);
+    assert.equal(api.getStartingPowerupCount(3.0), 8);
+    assert.equal(api.getStartingPowerupCount(4.5), 10);
+    assert.equal(api.getStartingPowerupCount(6.0), 12);
+    assert.equal(api.getStartingPowerupCount(7.5), 16);
+
+    api.blackCircles.length = 0;
+    api.warrior.x = 1800;
+    api.warrior.y = 2200;
+    const spawned = api.spawnStartingPowerupsForPlayer(api.warrior, 10);
+    assert.equal(spawned.length, 10);
+    assert.equal(api.blackCircles.length, 10);
+    for (let i = 0; i < spawned.length; i++) {
+      const pk = spawned[i];
+      assert.ok(api.constants.ALL_POWERUP_TYPES.includes(pk.type));
+      const dist = Math.hypot(pk.x - 1800, pk.y - 2200);
+      assert.ok(Math.abs(dist - api.constants.STARTING_POWERUP_RING_RADIUS) <= 2);
+    }
   });
 });

@@ -100,11 +100,13 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.WHIRLWIND_CHARGE_DURATION, 6.0);
     assert.equal(srv.WHIRLWIND_REACH_MULT, 1.15);
     assert.equal(srv.WHIRLWIND_GUST_RADIUS, 140);
-    assert.equal(srv.WHIRLWIND_GUST_DAMAGE, 40);
+    assert.equal(srv.WHIRLWIND_GUST_DAMAGE, 80);
     assert.equal(srv.WHIRLWIND_LEVEL_DURATION, 4.0);
     assert.equal(srv.WHIRLWIND_MAX_LEVEL, 5);
-    assert.deepEqual(srv.WHIRLWIND_LEVEL_DAMAGES, [0, 40, 100, 180, 280, 400]);
+    assert.deepEqual(srv.WHIRLWIND_LEVEL_DAMAGES, [0, 80, 200, 360, 560, 800]);
     assert.deepEqual(srv.WHIRLWIND_LEVEL_RADII, [0, 140, 180, 220, 260, 300]);
+    assert.deepEqual(srv.STARTING_POWERUP_COUNTS, [4, 6, 8, 10, 12, 16]);
+    assert.equal(srv.STARTING_POWERUP_RING_RADIUS, 110);
     assert.equal(srv.ARMORED_MOB_FIRST_MILESTONE, 50);
     assert.equal(srv.ARMORED_MOB_INTERVAL, 50);
     assert.equal(srv.ARMORED_MOB_BASE_SIZE, 6);
@@ -1365,7 +1367,7 @@ describe('Whirlwind / Momentum Spin-Up and Overdrive', () => {
     h.spinTimer = 22.0;
 
     // Direct target zombie and nearby bystander zombie within 220px gust radius (level 3 radius)
-    const eNearby = addTestEnemy(2050, 2000, 200);
+    const eNearby = addTestEnemy(2050, 2000, 500);
 
     srv.setState({ pendingEvents: [] });
     // Trigger whirlwind gust at hammer location for level 3
@@ -1381,7 +1383,7 @@ describe('Whirlwind / Momentum Spin-Up and Overdrive', () => {
     assert.ok(whirlwindText, 'Should emit WHIRLWIND Lv.3! floating text');
 
     // Nearby bystander enemy within gust radius should have taken gust damage and impulse
-    assert.ok(eNearby.hp < 200, 'Nearby enemy should take gust damage at level 3');
+    assert.ok(eNearby.hp < 500, 'Nearby enemy should take gust damage at level 3');
     assert.ok(eNearby.vx > 0, 'Nearby enemy should be pushed away by gust impulse');
 
     // Test that when the hammer hits an enemy in stepWorldPhysics, whirlwindLevel drops back to 0
@@ -1390,7 +1392,7 @@ describe('Whirlwind / Momentum Spin-Up and Overdrive', () => {
     h.vx = 500;
     h.vy = 0;
     srv.updatePlayerBroadphaseBounds(p);
-    const targetEnemy = addTestEnemy(h.x + 5, h.y, 250);
+    const targetEnemy = addTestEnemy(h.x + 5, h.y, 500);
     h.whirlwindLevel = 4;
     h.isWhirlwind = true;
     h.spinTimer = 32.0;
@@ -2035,5 +2037,57 @@ describe('Robot Warriors (Server-Controlled Bots) & Mode Cycling', () => {
     srv.stepWorldPhysics(0.016);
     assert.equal(srv.blackCircles.length, 0, 'Bot should have collected the pickup');
     assert.equal(bot.speedMultiplier, 1.05);
+  });
+
+  it('places 4, 6, 8, 10, 12, or 16 random powerups in a circle around a joining player based on monster strength', () => {
+    resetTestWorld();
+
+    // 1. Verify getStartingPowerupCount scales across 4, 6, 8, 10, 12, 16 as elapsedGameTime / monster strength increases
+    srv.setState({ elapsedGameTime: 0 });
+    assert.equal(srv.getStartingPowerupCount(), 4, 'At game start (0 min), joining player receives 4 powerups');
+
+    srv.setState({ elapsedGameTime: 60 }); // 1 min
+    assert.equal(srv.getStartingPowerupCount(), 6, 'At 1 minute, joining player receives 6 powerups');
+
+    srv.setState({ elapsedGameTime: 120 }); // 2 min
+    assert.equal(srv.getStartingPowerupCount(), 8, 'At 2 minutes, joining player receives 8 powerups');
+
+    srv.setState({ elapsedGameTime: 180 }); // 3 min
+    assert.equal(srv.getStartingPowerupCount(), 10, 'At 3 minutes, joining player receives 10 powerups');
+
+    srv.setState({ elapsedGameTime: 240 }); // 4 min
+    assert.equal(srv.getStartingPowerupCount(), 12, 'At 4 minutes, joining player receives 12 powerups');
+
+    srv.setState({ elapsedGameTime: 300 }); // 5+ min
+    assert.equal(srv.getStartingPowerupCount(), 16, 'At 5+ minutes, joining player receives 16 powerups');
+
+    // 2. Also scales if active enemies on the field have high maxHp even when elapsedGameTime is 0
+    srv.setState({ elapsedGameTime: 0 });
+    srv.enemies.length = 0;
+    addTestEnemy(1000, 1000, 650); // strength ~ 650 / 85 = 7.65 >= 6.8
+    assert.equal(srv.getStartingPowerupCount(), 16, 'Strong active monsters yield 16 starting powerups');
+
+    // 3. When a human player joins with a socket connection, createPlayer places the circle around their starting point
+    resetTestWorld();
+    srv.setState({ elapsedGameTime: 120 }); // expects 8 powerups
+    const mockSocket = { write() {}, destroyed: false };
+    const joiningPlayer = srv.createPlayer('joiner_1', mockSocket);
+    assert.equal(srv.blackCircles.length, 8, 'Should place 8 powerups in blackCircles when player joins at 2 min');
+
+    for (let i = 0; i < srv.blackCircles.length; i++) {
+      const pk = srv.blackCircles[i];
+      assert.ok(srv.ALL_POWERUP_TYPES.includes(pk.type), `Valid powerup type: ${pk.type}`);
+      const expectedAngle = (i / 8) * Math.PI * 2;
+      const expectedX = Math.max(
+        40,
+        Math.min(srv.WORLD_WIDTH - 40, Math.round(joiningPlayer.x + Math.cos(expectedAngle) * srv.STARTING_POWERUP_RING_RADIUS))
+      );
+      const expectedY = Math.max(
+        40,
+        Math.min(srv.WORLD_HEIGHT - 40, Math.round(joiningPlayer.y + Math.sin(expectedAngle) * srv.STARTING_POWERUP_RING_RADIUS))
+      );
+      assert.equal(pk.x, expectedX);
+      assert.equal(pk.y, expectedY);
+    }
   });
 });
