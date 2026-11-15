@@ -3376,10 +3376,13 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
 
     const bossHand = Array.from(api.activeBossHands.values())[0];
     assert.equal(bossHand.palm.bossPartType, 'palm');
-    assert.equal(bossHand.palm.radius, 165, 'Client boss palm radius should be 3x (165)');
+    assert.equal(bossHand.palm.radius, 231, 'Client boss palm radius should be 40% bigger (231 = 165 * 1.4)');
     assert.equal(api.constants.BOSS_SEGMENT_RADIUS, 72, 'Client boss segment radius should be 3x (72)');
+    assert.equal(api.constants.BOSS_SEGMENT_BASE_HP, 900, 'Client boss segment base HP should be 3x (900)');
+    assert.equal(api.constants.BOSS_DEFEAT_SEGMENT_THRESHOLD, 14, 'Client boss defeat segment threshold should be 14');
     assert.equal(api.constants.BOSS_SPEED_MULT, 1.2, 'Client boss speed mult should be 2x (1.2)');
     assert.equal(bossHand.segments.length, 14, 'Hand should have 14 finger/thumb segments');
+    assert.ok(bossHand.segments[0].maxHp >= 900, 'Client segment maxHp should be >= 900');
 
     // Verify third finger ring segment (digitIndex === 3, segmentIndex === 1)
     const ringSeg = bossHand.segments.find((s) => s.digitIndex === 3 && s.segmentIndex === 1);
@@ -3429,23 +3432,24 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       api.drawEnemy(digit2Tip);
     });
 
-    // Clear pickups before defeating segments: verify finger segments do not leave powerups, and defeating 8 leaves 24 powerups
+    // Clear pickups before defeating segments: verify finger segments do not leave powerups, and defeating all 14 leaves 24 powerups
     api.blackCircles.length = 0;
-    for (let i = 0; i < 7; i++) {
+    for (let i = 0; i < 13; i++) {
       const seg = bossHand.segments[i];
       const idx = api.enemies.indexOf(seg);
       if (idx !== -1) {
         api.defeatEnemy(idx);
       }
     }
+    assert.equal(bossHand.defeatedTriggered, false, 'Defeating 13 segments should not yet trigger boss defeated');
     assert.equal(api.blackCircles.length, 0, 'Defeating finger segments individually should not leave powerups');
 
-    // Defeat the 8th segment -> triggers 3s blink and leaves 24 powerups!
-    const seg8Idx = api.enemies.indexOf(bossHand.segments[7]);
-    if (seg8Idx !== -1) {
-      api.defeatEnemy(seg8Idx);
+    // Defeat the 14th segment -> triggers 3s blink and leaves 24 powerups!
+    const seg14Idx = api.enemies.indexOf(bossHand.segments[13]);
+    if (seg14Idx !== -1) {
+      api.defeatEnemy(seg14Idx);
     }
-    assert.equal(bossHand.defeatedTriggered, true, 'Defeating 8 segments triggers boss defeated sequence');
+    assert.equal(bossHand.defeatedTriggered, true, 'Defeating all 14 segments triggers boss defeated sequence');
     assert.equal(bossHand.blinkTimer, 3.0);
     assert.equal(api.blackCircles.length, 24, 'Defeating the boss hand should leave 24 powerups');
     assert.doesNotThrow(() => {

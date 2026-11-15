@@ -187,11 +187,11 @@
   // --- Boss-Monster Mode (Giant Floating Hand) Constants & State ---
   const BOSS_KILL_INTERVAL = 200;
   const BOSS_QUAKE_DELAY = 5.0;
-  const BOSS_DEFEAT_SEGMENT_THRESHOLD = 8;
+  const BOSS_DEFEAT_SEGMENT_THRESHOLD = 14;
   const BOSS_BLINK_DURATION = 3.0;
-  const BOSS_PALM_RADIUS = 165;
+  const BOSS_PALM_RADIUS = 231;
   const BOSS_SEGMENT_RADIUS = 72;
-  const BOSS_SEGMENT_BASE_HP = 300;
+  const BOSS_SEGMENT_BASE_HP = 900;
   const BOSS_SPEED_MULT = 1.2;
   const BOSS_DETACHED_SPEED_MULT = 1.25;
   const BOSS_DETACH_HP_RATIO = 0.25;
@@ -4764,7 +4764,7 @@
 
     const strength = getMonsterStrength();
     const baseMoveForce = Math.round(210 * BOSS_SPEED_MULT * Math.pow(strength, 0.25));
-    const segMaxHp = Math.max(120, Math.round(BOSS_SEGMENT_BASE_HP * Math.pow(strength, 0.35)));
+    const segMaxHp = Math.max(360, Math.round(BOSS_SEGMENT_BASE_HP * Math.pow(strength, 0.35)));
     const initialAngle = Math.atan2(warrior.y - y, warrior.x - x);
 
     const palm: any = {

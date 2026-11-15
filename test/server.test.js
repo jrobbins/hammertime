@@ -2253,10 +2253,13 @@ describe('Boss-Monster Mode (Giant Floating Hand every 200 kills)', () => {
     const bossHand = srv.spawnBossHand(1100, 2000);
     assert.ok(bossHand, 'spawnBossHand should return bossHand instance');
     assert.equal(bossHand.palm.bossPartType, 'palm');
-    assert.equal(bossHand.palm.radius, 165, 'Palm should be 3x as large (radius 165 = 3 * 55)');
+    assert.equal(bossHand.palm.radius, 231, 'Palm should be 40% bigger than 165 (radius 231 = 165 * 1.4)');
     assert.equal(srv.BOSS_SEGMENT_RADIUS, 72, 'Finger segment radius should be 3x as large (72 = 3 * 24)');
+    assert.equal(srv.BOSS_SEGMENT_BASE_HP, 900, 'Segments should have 3x as many base hitpoints (900 = 3 * 300)');
+    assert.equal(srv.BOSS_DEFEAT_SEGMENT_THRESHOLD, 14, 'Warriors must destroy all 14 segments to defeat the hand');
     assert.equal(srv.BOSS_SPEED_MULT, 1.2, 'Boss hand should move 2x as fast (1.2 = 2 * 0.6)');
     assert.equal(bossHand.segments.length, 14, '4 fingers * 3 + 1 thumb * 2 = 14 segments');
+    assert.equal(bossHand.segments[0].maxHp, 900, 'Segment should start with 900 HP at base monster strength');
 
     const thumbSegs = bossHand.segments.filter((s) => s.isThumb);
     const fingerSegs = bossHand.segments.filter((s) => !s.isThumb);
@@ -2443,7 +2446,7 @@ describe('Boss-Monster Mode (Giant Floating Hand every 200 kills)', () => {
     assert.ok(detachedSeg.webTimer > 0, 'Spider hammer should web a detached segment');
   });
 
-  it('triggers boss-defeated event when 8 segments are defeated, blinks remaining parts for 3s, triggers earthquake, and removes all remaining parts', () => {
+  it('triggers boss-defeated event when all 14 segments are defeated, blinks remaining palm for 3s, triggers earthquake, and removes remaining parts', () => {
     resetTestWorld();
     const p = addTestPlayer('boss_finisher', 2000, 2000);
 
@@ -2452,31 +2455,31 @@ describe('Boss-Monster Mode (Giant Floating Hand every 200 kills)', () => {
     srv.blackCircles.length = 0;
     srv.setState({ bossStartQuakeTimer: 0, earthquakeTimer: 0, pendingEvents: [] });
 
-    // Defeat 7 segments: boss should NOT be defeated yet, and finger segments should NOT leave powerups
-    for (let i = 0; i < 7; i++) {
+    // Defeat 13 segments: boss should NOT be defeated yet, and finger segments should NOT leave powerups
+    for (let i = 0; i < 13; i++) {
       const seg = bossHand.segments[i];
       srv.defeatEnemy(srv.enemies.indexOf(seg), p);
     }
-    assert.equal(bossHand.defeatedSegments, 7);
-    assert.equal(bossHand.defeatedTriggered, false, 'Boss should not be defeated at 7 segments');
+    assert.equal(bossHand.defeatedSegments, 13);
+    assert.equal(bossHand.defeatedTriggered, false, 'Boss should not be defeated at 13 segments');
     assert.equal(srv.blackCircles.length, 0, 'Defeating individual finger segments should not drop powerups');
 
-    // Defeat the 8th segment -> triggers boss-defeated and drops 24 powerups!
-    const seg8 = bossHand.segments[7];
-    srv.defeatEnemy(srv.enemies.indexOf(seg8), p);
-    assert.equal(bossHand.defeatedSegments, 8);
-    assert.equal(bossHand.defeatedTriggered, true, 'Boss should trigger defeat at 8 defeated segments');
-    assert.equal(bossHand.blinkTimer, 3.0, 'Remaining parts should blink for 3 seconds');
+    // Defeat the 14th segment -> triggers boss-defeated and drops 24 powerups!
+    const seg14 = bossHand.segments[13];
+    srv.defeatEnemy(srv.enemies.indexOf(seg14), p);
+    assert.equal(bossHand.defeatedSegments, 14);
+    assert.equal(bossHand.defeatedTriggered, true, 'Boss should trigger defeat when all 14 segments are defeated');
+    assert.equal(bossHand.blinkTimer, 3.0, 'Remaining palm should blink for 3 seconds');
     assert.equal(srv.blackCircles.length, 24, 'Defeating the boss hand should leave 24 powerups');
 
     const defeatEv = srv.getState().pendingEvents.find((ev) => ev.type === 'boss_defeated');
-    assert.ok(defeatEv, 'Should emit boss_defeated event when 8 segments are defeated');
+    assert.ok(defeatEv, 'Should emit boss_defeated event when all 14 segments are defeated');
 
-    // All remaining parts should have bossBlinkTimer = 3.0
+    // Remaining palm should have bossBlinkTimer = 3.0
     const remainingParts = srv.enemies.filter((e) => e.bossId === bossHand.bossId);
-    assert.equal(remainingParts.length, 1 + 6, '1 palm + 6 remaining segments should still be in enemies during blink');
+    assert.equal(remainingParts.length, 1, 'Palm should still be in enemies during blink');
     for (const part of remainingParts) {
-      assert.equal(part.bossBlinkTimer, 3.0, 'Each remaining boss part should have 3s blink timer');
+      assert.equal(part.bossBlinkTimer, 3.0, 'Remaining boss palm should have 3s blink timer');
     }
 
     // Step 2.5s: still blinking, not yet removed, no earthquake yet
@@ -2484,8 +2487,8 @@ describe('Boss-Monster Mode (Giant Floating Hand every 200 kills)', () => {
     assert.equal(srv.getState().earthquakeTimer, 0, 'Earthquake should not fire before 3s blink finishes');
     assert.equal(
       srv.enemies.filter((e) => e.bossId === bossHand.bossId).length,
-      7,
-      'Remaining parts should still be visible at 2.5s'
+      1,
+      'Remaining palm should still be visible at 2.5s'
     );
 
     // Step another 0.6s (total 3.1s): earthquake triggers and all remaining parts disappear!
