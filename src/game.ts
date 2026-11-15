@@ -112,13 +112,13 @@
   const RARE_THOR_DROP_CHANCE = 0.005;
 
   const ZOMBIE_WEB_DURATION = 30.0;
-  const SPIDER_HAMMER_DURATION = 60.0;
+  const SPIDER_HAMMER_DURATION = 30.0;
   const THOR_HAMMER_DURATION = 60.0;
   const THOR_EXPLOSION_RADIUS = EXPLOSION_RADIUS * 0.5;
   const THOR_BLAST_DAMAGE_MULT = 0.5;
 
-  const JACKOLANTERN_HAMMER_DURATION = 60.0;
-  const DISCO_HAMMER_DURATION = 60.0;
+  const JACKOLANTERN_HAMMER_DURATION = 30.0;
+  const DISCO_HAMMER_DURATION = 30.0;
   const ZOMBIE_DANCE_DURATION = 30.0;
   const ZOMBIE_DANCE_IMMUNE_DURATION = 45.0;
 
@@ -127,18 +127,21 @@
   const BULLDOZER_TRACTION_MULT = 10.0;
   const BULLDOZER_SCALE = 1.4;
   const BULLDOZER_RADIUS = Math.round(34 * BULLDOZER_SCALE); // 48 (40% larger)
+  const BULLDOZER_DAMAGE = 300;
+  const BULLDOZER_TRACK_DURATION = 20.0;
 
   const HORSE_RADIUS = 35;
   const TORTOISE_RADIUS = 36;
   const ELEPHANT_RADIUS = 45;
+  const ELEPHANT_DAMAGE = 40;
   const MOTORCYCLE_MOUNT_RADIUS = 30;
-  const MOTORCYCLE_TURN_RATE = 1.2;
+  const MOTORCYCLE_TURN_RATE = +(1.2 / 0.7).toFixed(4);
   const MOTORCYCLE_WRECK_DURATION = 5.0;
   const MOTORCYCLE_WRECK_SCALE = 1.2;
   const MOTORCYCLE_WRECK_RADIUS = Math.round(21 * MOTORCYCLE_WRECK_SCALE);
   const GHOST_DURATION = 0.65;
 
-  const EARTHQUAKE_DURATION = 5.0;
+  const EARTHQUAKE_DURATION = 4.0;
   const ZOMBIE_KNOCKDOWN_RECOVERY = 5.0;
 
   const FEAR_DURATION = 20.0;
@@ -1751,6 +1754,13 @@
   const shockwaves = [];
   const enemyGhosts = [];
   const laidDownMotorcycles: LaidDownMotorcycle[] = [];
+  const bulldozerTracks: Array<{
+    x: number;
+    y: number;
+    angle: number;
+    timer: number;
+    duration: number;
+  }> = [];
   const activeClotheslines = [];
   const clotheslineCooldowns = new Map();
 
@@ -2805,8 +2815,11 @@
         earthquakeTimer = 0;
         localKnockdownTimer = 0;
         warrior.bulldozerTimer = 0;
+        (warrior as any).lastTrackX = undefined;
+        (warrior as any).lastTrackY = undefined;
         warrior.hasServerTarget = false;
         enemyGhosts.length = 0;
+        bulldozerTracks.length = 0;
         for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
           warrior.hammers[hIdx].hasServerTarget = false;
           if (warrior.hammers[hIdx].trail) warrior.hammers[hIdx].trail.length = 0;
@@ -3434,6 +3447,8 @@
               prevE.maxHp = inc.maxHp;
               prevE.skinColor = inc.skinColor;
               prevE.coatColor = inc.coatColor;
+              if (inc.shirtColor) prevE.shirtColor = inc.shirtColor;
+              prevE.mobId = inc.mobId || null;
               prevE.hurtFlash = inc.hurtFlash || 0;
               prevE.burnTimer = inc.burnTimer || 0;
               prevE.fireproofTimer = inc.fireproofTimer || 0;
@@ -3441,15 +3456,31 @@
               prevE.danceTimer = inc.danceTimer || 0;
               prevE.danceImmuneTimer = inc.danceImmuneTimer || 0;
               prevE.webTimer = inc.webTimer || 0;
-              prevE.knockdownTimer = inc.knockdownTimer || 0;
-              prevE.vx = inc.vx || 0;
-              prevE.vy = inc.vy || 0;
-              prevE.targetX = inc.x;
-              prevE.targetY = inc.y;
-              prevE.targetAngle = inc.angle || 0;
-              prevE.x += (inc.x - prevE.x) * 0.15;
-              prevE.y += (inc.y - prevE.y) * 0.15;
-              prevE.angle = lerpAngle(prevE.angle || 0, inc.angle || 0, 0.15);
+              const incKnockdown = Math.max(
+                inc.knockdownTimer || 0,
+                earthquakeTimer > 0
+                  ? ZOMBIE_KNOCKDOWN_RECOVERY
+                  : localKnockdownTimer > 0
+                  ? localKnockdownTimer
+                  : 0
+              );
+              prevE.knockdownTimer = incKnockdown;
+              if (incKnockdown > 0) {
+                prevE.vx = 0;
+                prevE.vy = 0;
+                prevE.targetX = prevE.x;
+                prevE.targetY = prevE.y;
+                prevE.targetAngle = prevE.angle || 0;
+              } else {
+                prevE.vx = inc.vx || 0;
+                prevE.vy = inc.vy || 0;
+                prevE.targetX = inc.x;
+                prevE.targetY = inc.y;
+                prevE.targetAngle = inc.angle || 0;
+                prevE.x += (inc.x - prevE.x) * 0.15;
+                prevE.y += (inc.y - prevE.y) * 0.15;
+                prevE.angle = lerpAngle(prevE.angle || 0, inc.angle || 0, 0.15);
+              }
               if (typeof prevE.walkPhase !== 'number') {
                 prevE.walkPhase = inc.walkPhase || 0;
               }
@@ -3474,8 +3505,19 @@
               }
               enemies.push(prevE);
             } else {
+              const newKnockdown = Math.max(
+                inc.knockdownTimer || 0,
+                earthquakeTimer > 0
+                  ? ZOMBIE_KNOCKDOWN_RECOVERY
+                  : localKnockdownTimer > 0
+                  ? localKnockdownTimer
+                  : 0
+              );
               enemies.push({
                 ...inc,
+                vx: newKnockdown > 0 ? 0 : inc.vx || 0,
+                vy: newKnockdown > 0 ? 0 : inc.vy || 0,
+                knockdownTimer: newKnockdown,
                 lostLimbs: inc.lostLimbs ? [...inc.lostLimbs] : [],
                 targetX: inc.x,
                 targetY: inc.y,
@@ -3966,6 +4008,110 @@
     }
   }
 
+  function recordBulldozerTracksForPlayer(w: any = warrior) {
+    if (!w || !w.alive || (w.bulldozerTimer || 0) <= 0) {
+      if (w) {
+        w.lastTrackX = undefined;
+        w.lastTrackY = undefined;
+      }
+      return;
+    }
+    if (typeof w.lastTrackX !== 'number' || typeof w.lastTrackY !== 'number') {
+      w.lastTrackX = w.x;
+      w.lastTrackY = w.y;
+      bulldozerTracks.push({
+        x: w.x,
+        y: w.y,
+        angle: w.angle || 0,
+        timer: BULLDOZER_TRACK_DURATION,
+        duration: BULLDOZER_TRACK_DURATION,
+      });
+      return;
+    }
+    const dx = w.x - w.lastTrackX;
+    const dy = w.y - w.lastTrackY;
+    const dist = Math.hypot(dx, dy);
+    if (dist >= 12) {
+      const trackAngle = dist > 0.5 ? Math.atan2(dy, dx) : w.angle || 0;
+      w.lastTrackX = w.x;
+      w.lastTrackY = w.y;
+      bulldozerTracks.push({
+        x: w.x,
+        y: w.y,
+        angle: trackAngle,
+        timer: BULLDOZER_TRACK_DURATION,
+        duration: BULLDOZER_TRACK_DURATION,
+      });
+    }
+  }
+
+  function updateBulldozerTracks(dt: number) {
+    for (let i = bulldozerTracks.length - 1; i >= 0; i--) {
+      const t = bulldozerTracks[i];
+      t.timer -= dt;
+      if (t.timer <= 0) {
+        bulldozerTracks.splice(i, 1);
+      }
+    }
+    recordBulldozerTracksForPlayer(warrior);
+    for (let i = 0; i < remotePlayers.length; i++) {
+      recordBulldozerTracksForPlayer(remotePlayers[i]);
+    }
+  }
+
+  function drawBulldozerTracks(
+    viewLeft = -Infinity,
+    viewRight = Infinity,
+    viewTop = -Infinity,
+    viewBottom = Infinity
+  ) {
+    if (bulldozerTracks.length === 0) return;
+    const trackOffset = 19 * BULLDOZER_SCALE;
+    const trackLen = 22;
+    const trackWidth = 11 * BULLDOZER_SCALE;
+    for (let i = 0; i < bulldozerTracks.length; i++) {
+      const t = bulldozerTracks[i];
+      if (
+        t.x + 60 < viewLeft ||
+        t.x - 60 > viewRight ||
+        t.y + 60 < viewTop ||
+        t.y - 60 > viewBottom
+      ) {
+        continue;
+      }
+      const duration = t.duration || BULLDOZER_TRACK_DURATION;
+      const lifeRatio = Math.max(0, Math.min(1, t.timer / duration));
+      const alpha =
+        lifeRatio < 0.3
+          ? (lifeRatio / 0.3) * 0.58
+          : 0.58 * (0.75 + 0.25 * lifeRatio);
+      if (alpha <= 0.01) continue;
+
+      ctx.save();
+      ctx.translate(t.x, t.y);
+      ctx.rotate(t.angle || 0);
+
+      // Twin flattened grass / dark earth caterpillar tread imprints
+      ctx.fillStyle = `rgba(36, 28, 18, ${alpha.toFixed(3)})`;
+      ctx.fillRect(-trackLen * 0.5, -trackOffset - trackWidth * 0.5, trackLen, trackWidth);
+      ctx.fillRect(-trackLen * 0.5, trackOffset - trackWidth * 0.5, trackLen, trackWidth);
+
+      // Grouser cleat indent bars across each tread mark
+      ctx.strokeStyle = `rgba(20, 15, 9, ${Math.min(0.85, alpha * 1.25).toFixed(3)})`;
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      for (let gx = -7; gx <= 7; gx += 7) {
+        ctx.moveTo(gx, -trackOffset - trackWidth * 0.45);
+        ctx.lineTo(gx, -trackOffset + trackWidth * 0.45);
+        ctx.moveTo(gx, trackOffset - trackWidth * 0.45);
+        ctx.lineTo(gx, trackOffset + trackWidth * 0.45);
+      }
+      ctx.stroke();
+
+      ctx.restore();
+    }
+  }
+
   function defeatEnemy(
     index: number,
     killerHammer: any = null,
@@ -4077,8 +4223,15 @@
         const bnx = bDist > 0.001 ? bdx / bDist : Math.cos(Math.random() * Math.PI * 2);
         const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
 
-        target.vx += (blastImpulse / target.mass) * bnx;
-        target.vy += (blastImpulse / target.mass) * bny;
+        const targetKnockedDown =
+          earthquakeTimer > 0 || localKnockdownTimer > 0 || (target.knockdownTimer || 0) > 0;
+        if (targetKnockedDown) {
+          target.vx = 0;
+          target.vy = 0;
+        } else {
+          target.vx += (blastImpulse / target.mass) * bnx;
+          target.vy += (blastImpulse / target.mass) * bny;
+        }
         target.hp -= blastDamage;
         target.hurtFlash = 0.32;
         checkEnemyLimbLoss(
@@ -4087,8 +4240,20 @@
           (blastImpulse / target.mass) * bny * 0.5
         );
 
-        if ((sourceHammer && sourceHammer.flameTimer > 0) || hammer.flameTimer > 0) {
-          igniteEnemy(target);
+        const isJackBlast =
+          (sourceHammer && (sourceHammer.jackolanternTimer || 0) > 0) ||
+          (hammer.jackolanternTimer || 0) > 0;
+        if (
+          isJackBlast ||
+          (sourceHammer && sourceHammer.flameTimer > 0) ||
+          hammer.flameTimer > 0
+        ) {
+          if (isJackBlast) {
+            target.fireproofTimer = 0;
+          }
+          if (!igniteEnemy(target) && isJackBlast) {
+            target.burnTimer = ZOMBIE_BURN_DURATION;
+          }
         }
 
         if (blastDamage > maxDamageBlow) {
@@ -4283,7 +4448,12 @@
       danceTimer: 0,
       danceImmuneTimer: 0,
       webTimer: 0,
-      knockdownTimer: earthquakeTimer > 0 ? ZOMBIE_KNOCKDOWN_RECOVERY : 0,
+      knockdownTimer:
+        earthquakeTimer > 0
+          ? ZOMBIE_KNOCKDOWN_RECOVERY
+          : localKnockdownTimer > 0
+          ? localKnockdownTimer
+          : 0,
       walkPhase: Math.random() * Math.PI * 2,
     });
   }
@@ -4538,8 +4708,12 @@
     const gustRadius = WHIRLWIND_LEVEL_RADII[level] || 140;
     const gustMaxDamage = WHIRLWIND_LEVEL_DAMAGES[level] || 80;
 
+    const isJackGust =
+      (sourceHammer && (sourceHammer.jackolanternTimer || 0) > 0) ||
+      (hammer && (hammer.jackolanternTimer || 0) > 0);
     const isFlaming =
       !!(options && options.isFlaming) ||
+      isJackGust ||
       (sourceHammer && ((sourceHammer.flameCharges > 0) || (sourceHammer.flameTimer > 0))) ||
       (hammer && ((hammer.flameCharges > 0) || (hammer.flameTimer > 0)));
 
@@ -4569,8 +4743,15 @@
         const bnx = bDist > 0.001 ? bdx / bDist : Math.cos(Math.random() * Math.PI * 2);
         const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
 
-        target.vx += (gustImpulse / target.mass) * bnx;
-        target.vy += (gustImpulse / target.mass) * bny;
+        const targetKnockedDown =
+          earthquakeTimer > 0 || localKnockdownTimer > 0 || (target.knockdownTimer || 0) > 0;
+        if (targetKnockedDown) {
+          target.vx = 0;
+          target.vy = 0;
+        } else {
+          target.vx += (gustImpulse / target.mass) * bnx;
+          target.vy += (gustImpulse / target.mass) * bny;
+        }
         target.hp -= gustDamage;
         target.hurtFlash = 0.28;
         checkEnemyLimbLoss(
@@ -4580,10 +4761,15 @@
         );
 
         if (isFlaming) {
+          if (isJackGust) {
+            target.fireproofTimer = 0;
+          }
           if (igniteEnemy(target)) {
             if (target.hp <= 0) {
               target.hp = Math.max(18, Math.round(target.maxHp * 0.3));
             }
+          } else if (isJackGust) {
+            target.burnTimer = ZOMBIE_BURN_DURATION;
           }
         }
 
@@ -4798,6 +4984,8 @@
     warrior.mountHp = 0;
     warrior.mountMaxHp = 0;
     warrior.bulldozerTimer = 0;
+    (warrior as any).lastTrackX = undefined;
+    (warrior as any).lastTrackY = undefined;
     warrior.chainLinks = INITIAL_CHAIN_LINKS;
     warrior.strideCharge = 0;
     warrior.hurtFlash = 0;
@@ -4845,6 +5033,7 @@
 
     enemies.length = 0;
     enemyGhosts.length = 0;
+    bulldozerTracks.length = 0;
     blackCircles.length = 0;
     particles.length = 0;
     floatingTexts.length = 0;
@@ -5506,6 +5695,9 @@
       }
     }
 
+    if (!isPrediction) {
+      recordBulldozerTracksForPlayer(warrior);
+    }
     warrior.chainLinks = warrior.hammers[0].chainLinks;
     updateWarriorBroadphaseBounds(warrior);
     return isBulldozer;
@@ -5638,26 +5830,39 @@
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i];
       if (!e) continue;
+      if (earthquakeTimer > 0) {
+        e.knockdownTimer = Math.max(e.knockdownTimer || 0, ZOMBIE_KNOCKDOWN_RECOVERY);
+      } else if (e.knockdownTimer > 0) {
+        e.knockdownTimer = Math.max(0, e.knockdownTimer - frameDt);
+      }
+      const isKnockedDown =
+        earthquakeTimer > 0 || localKnockdownTimer > 0 || (e.knockdownTimer || 0) > 0;
       const isStationary =
         (e.danceTimer || 0) > 0 ||
         (e.webTimer || 0) > 0 ||
-        earthquakeTimer > 0 ||
-        (e.knockdownTimer || 0) > 0;
-      const evx = isStationary ? 0 : e.vx || 0;
-      const evy = isStationary ? 0 : e.vy || 0;
-      const ePad = (e.radius || 19) + 12;
-      const eBaseTx = typeof e.targetX === 'number' ? e.targetX : e.x;
-      const eBaseTy = typeof e.targetY === 'number' ? e.targetY : e.y;
-      e.targetX = clamp(eBaseTx + evx * frameDt, ePad, WORLD_WIDTH - ePad);
-      e.targetY = clamp(eBaseTy + evy * frameDt, ePad, WORLD_HEIGHT - ePad);
-      e.x += (e.targetX - e.x) * interpBlend;
-      e.y += (e.targetY - e.y) * interpBlend;
-      if (typeof e.targetAngle === 'number') {
-        e.angle = lerpAngle(e.angle || 0, e.targetAngle, interpBlend);
-      }
-      const eSpeed = Math.hypot(evx, evy);
-      if (!isStationary && eSpeed > 5) {
-        e.walkPhase = (e.walkPhase || 0) + eSpeed * frameDt * 0.11;
+        isKnockedDown;
+      if (isKnockedDown) {
+        e.vx = 0;
+        e.vy = 0;
+        e.targetX = e.x;
+        e.targetY = e.y;
+      } else {
+        const evx = isStationary ? 0 : e.vx || 0;
+        const evy = isStationary ? 0 : e.vy || 0;
+        const ePad = (e.radius || 19) + 12;
+        const eBaseTx = typeof e.targetX === 'number' ? e.targetX : e.x;
+        const eBaseTy = typeof e.targetY === 'number' ? e.targetY : e.y;
+        e.targetX = clamp(eBaseTx + evx * frameDt, ePad, WORLD_WIDTH - ePad);
+        e.targetY = clamp(eBaseTy + evy * frameDt, ePad, WORLD_HEIGHT - ePad);
+        e.x += (e.targetX - e.x) * interpBlend;
+        e.y += (e.targetY - e.y) * interpBlend;
+        if (typeof e.targetAngle === 'number') {
+          e.angle = lerpAngle(e.angle || 0, e.targetAngle, interpBlend);
+        }
+        const eSpeed = Math.hypot(evx, evy);
+        if (!isStationary && eSpeed > 5) {
+          e.walkPhase = (e.walkPhase || 0) + eSpeed * frameDt * 0.11;
+        }
       }
       if (e.hurtFlash > 0) {
         e.hurtFlash = Math.max(0, e.hurtFlash - frameDt);
@@ -5711,7 +5916,12 @@
       } else if (e.knockdownTimer > 0) {
         e.knockdownTimer = Math.max(0, e.knockdownTimer - dt);
       }
-      const isKnockedDown = earthquakeTimer > 0 || (e.knockdownTimer || 0) > 0;
+      const isKnockedDown =
+        earthquakeTimer > 0 || localKnockdownTimer > 0 || (e.knockdownTimer || 0) > 0;
+      if (isKnockedDown) {
+        e.vx = 0;
+        e.vy = 0;
+      }
 
       // Flaming zombie burn damage over time (10s burning -> 5s fire-proof)
       if (e.burnTimer > 0) {
@@ -5786,14 +5996,8 @@
       const toWarriorY = warrior.y - e.y;
       const distToWarrior = Math.sqrt(toWarriorX * toWarriorX + toWarriorY * toWarriorY);
       if (isKnockedDown) {
-        if (e.hitCooldown <= 0 && e.chainHitCooldown <= 0) {
-          e.vx = 0;
-          e.vy = 0;
-        } else {
-          const kdDamp = Math.exp(-e.traction * 5.0 * dt);
-          e.vx *= kdDamp;
-          e.vy *= kdDamp;
-        }
+        e.vx = 0;
+        e.vy = 0;
       } else if (isWebbed) {
         if (e.hitCooldown <= 0 && e.chainHitCooldown <= 0) {
           e.vx = 0;
@@ -5914,6 +6118,8 @@
         continue;
       }
 
+      const kdX = e.x;
+      const kdY = e.y;
       let enemyDefeated = false;
       for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
         const h = warrior.hammers[hIdx];
@@ -5949,9 +6155,19 @@
               e.x += nx * overlap * ((1 / e.mass) / totalInvMass);
               e.y += ny * overlap * ((1 / e.mass) / totalInvMass);
 
-              let hadFlame = (h.flameCharges > 0) || ((h.flameTimer || 0) > 0);
+              const isJackOLantern = (h.jackolanternTimer || 0) > 0;
+              let hadFlame = isJackOLantern || (h.flameCharges > 0) || ((h.flameTimer || 0) > 0);
               let justIgnited = false;
-              if (h.flameCharges > 0 && e.burnTimer <= 0 && e.fireproofTimer <= 0) {
+              if (isJackOLantern) {
+                e.fireproofTimer = 0;
+                if (e.burnTimer <= 0) {
+                  if (igniteEnemy(e)) {
+                    justIgnited = true;
+                  }
+                } else {
+                  e.burnTimer = ZOMBIE_BURN_DURATION;
+                }
+              } else if (h.flameCharges > 0 && e.burnTimer <= 0 && e.fireproofTimer <= 0) {
                 if (igniteEnemy(e)) {
                   justIgnited = true;
                   h.flameCharges -= 1;
@@ -6230,24 +6446,113 @@
       if (wDistSq < minWarriorEnemyDist * minWarriorEnemyDist && wDistSq > 1e-8) {
         const wDist = Math.sqrt(wDistSq);
         if (isBulldozer) {
-          // While a bulldozer, the player takes no damage and instantly kills any zombie they touch
-          const crushDmg = Math.max(1, Math.ceil(e.hp));
-          if (crushDmg > maxDamageBlow) {
-            maxDamageBlow = crushDmg;
+          // While a bulldozer, the player takes no damage, deals 300 damage, and pushes the enemy back
+          // (2x damage and 2x pushback) so that the advancing bulldozer will soon hit the enemy again
+          const enx = -wdx / wDist;
+          const eny = -wdy / wDist;
+          const pushSpeed = Math.max(110, Math.hypot(warrior.vx || 0, warrior.vy || 0) * 0.85 + 95) * 2;
+          e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, warrior.x + enx * (minWarriorEnemyDist + 10)));
+          e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, warrior.y + eny * (minWarriorEnemyDist + 10)));
+          e.vx = enx * pushSpeed;
+          e.vy = eny * pushSpeed;
+          e.hitCooldown = Math.max(e.hitCooldown || 0, 0.12);
+
+          if (e.contactCooldown <= 0) {
+            const crushDmg = BULLDOZER_DAMAGE;
+            e.hp -= crushDmg;
+            e.contactCooldown = 0.18;
+            e.hurtFlash = 0.22;
+            checkEnemyLimbLoss(e, enx * pushSpeed, eny * pushSpeed);
+
+            if (crushDmg > maxDamageBlow) {
+              maxDamageBlow = crushDmg;
+            }
+            if (crushDmg >= HIT_STOP_DAMAGE_THRESHOLD) {
+              triggerHitStop(HIT_STOP_DURATION, enx, eny, crushDmg);
+            }
+            playImpactSound(crushDmg, false);
+            addFloatingText(e.x, e.y - e.radius - 10, `-${crushDmg}`, '#ecc94b', 1.2);
+            addParticles(e.x, e.y, '#ecc94b', 10, 40, 180, 3.2);
+            if (e.hp <= 0) {
+              defeatEnemy(i);
+            }
           }
-          if (crushDmg >= HIT_STOP_DAMAGE_THRESHOLD) {
-            triggerHitStop(HIT_STOP_DURATION, warrior.vx, warrior.vy, crushDmg);
-          }
-          playImpactSound(85, false);
-          addFloatingText(e.x, e.y - e.radius - 10, 'CRUSHED!', '#ecc94b', 1.2);
-          addParticles(e.x, e.y, '#ecc94b', 10, 40, 180, 3.2);
-          defeatEnemy(i);
           continue;
         }
 
         const wnx = wdx / wDist;
         const wny = wdy / wDist;
         const wOverlap = minWarriorEnemyDist - wDist;
+        const isElephant = warrior.mountType === 'elephant' && (warrior.mountHp || 0) > 0;
+
+        if (isElephant) {
+          const enx = -wnx;
+          const eny = -wny;
+          const elephantPushSpeed = Math.max(180, Math.hypot(warrior.vx || 0, warrior.vy || 0) * 1.1 + 150);
+          e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, warrior.x + enx * (minWarriorEnemyDist + 6)));
+          e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, warrior.y + eny * (minWarriorEnemyDist + 6)));
+          e.vx = enx * elephantPushSpeed;
+          e.vy = eny * elephantPushSpeed;
+          warrior.vx += wnx * e.contactPush * dt * 3.0;
+          warrior.vy += wny * e.contactPush * dt * 3.0;
+
+          if (e.contactCooldown <= 0) {
+            if (!isKnockedDown && !isDancing && !isWebbed) {
+              warrior.mountHp = Math.max(0, warrior.mountHp - e.contactDamage);
+              if (warrior.mountHp <= 0) {
+                const lostMountType = warrior.mountType;
+                warrior.mountType = null;
+                warrior.mountHp = 0;
+                warrior.mountMaxHp = 0;
+                warrior.radius = 20;
+                playMountLostSound(lostMountType);
+                addFloatingText(
+                  warrior.x,
+                  warrior.y - warrior.radius - 26,
+                  'ELEPHANT LOST!',
+                  '#feb2b2',
+                  1.2
+                );
+              }
+              warrior.hurtFlash = 0.25;
+              playPlayerHurtSound();
+              camera.shake = Math.min(8, camera.shake + 3.5);
+              addFloatingText(
+                warrior.x,
+                warrior.y - warrior.radius - 10,
+                `-${e.contactDamage}`,
+                '#fc8181',
+                1.05
+              );
+              addParticles(
+                warrior.x - wnx * warrior.radius,
+                warrior.y - wny * warrior.radius,
+                '#fc8181',
+                6,
+                40,
+                130,
+                3
+              );
+            }
+
+            const trampleDmg = ELEPHANT_DAMAGE;
+            e.hp -= trampleDmg;
+            e.contactCooldown = 0.55;
+            e.hurtFlash = 0.22;
+            checkEnemyLimbLoss(e, enx * elephantPushSpeed, eny * elephantPushSpeed);
+
+            if (trampleDmg > maxDamageBlow) {
+              maxDamageBlow = trampleDmg;
+            }
+            playImpactSound(trampleDmg, false);
+            addFloatingText(e.x, e.y - e.radius - 10, `-${trampleDmg}`, '#fbd38d', 1.15);
+            addParticles(e.x, e.y, '#fbd38d', 8, 35, 150, 2.8);
+            if (e.hp <= 0) {
+              defeatEnemy(i);
+            }
+          }
+          continue;
+        }
 
         // Separate overlap (if zombie is dancing in place, webbed, or knocked down, keep the zombie stationary)
         if (isDancing || isKnockedDown || isWebbed) {
@@ -6326,6 +6631,12 @@
           }
         }
       }
+      if (isKnockedDown && !enemyDefeated) {
+        e.x = kdX;
+        e.y = kdY;
+        e.vx = 0;
+        e.vy = 0;
+      }
     }
 
     // Sweep any additional enemies defeated by bomb blast splash damage
@@ -6378,11 +6689,13 @@
             (a.danceTimer || 0) > 0 ||
             (a.webTimer || 0) > 0 ||
             earthquakeTimer > 0 ||
+            localKnockdownTimer > 0 ||
             (a.knockdownTimer || 0) > 0;
           const bStationary =
             (b.danceTimer || 0) > 0 ||
             (b.webTimer || 0) > 0 ||
             earthquakeTimer > 0 ||
+            localKnockdownTimer > 0 ||
             (b.knockdownTimer || 0) > 0;
           if (aStationary && bStationary) {
             // Both fallen or dancing in place: do not slide them around
@@ -6507,7 +6820,7 @@
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            'EARTHQUAKE! (5s QUAKE + 5s ZOMBIE KNOCKDOWN)',
+            'EARTHQUAKE! (4s QUAKE + 5s ZOMBIE KNOCKDOWN)',
             '#ecc94b',
             1.2
           );
@@ -6555,7 +6868,7 @@
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            'DISCO BALL HAMMER! (60s DANCE FEVER)',
+            'DISCO BALL HAMMER! (30s DANCE FEVER)',
             '#f687b3',
             1.2
           );
@@ -6571,7 +6884,7 @@
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            'JACK-O-LANTERN HAMMER! (60s)',
+            'JACK-O-LANTERN HAMMER! (30s)',
             '#ed8936',
             1.2
           );
@@ -6588,7 +6901,7 @@
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            'SPIDER HAMMER! (60s, WEBS ZOMBIES FOR 30s)',
+            'SPIDER HAMMER! (30s, WEBS ZOMBIES FOR 30s)',
             '#e2e8f0',
             1.2
           );
@@ -6765,6 +7078,7 @@
       }
     }
 
+    recordBulldozerTracksForPlayer(warrior);
     updateWarriorBroadphaseBounds(warrior);
   }
 
@@ -7056,9 +7370,10 @@
       }
     }
 
-    // Update enemy ghosts
+    // Update enemy ghosts, laid-down motorcycles, and bulldozer grass tracks
     updateGhosts(dt);
     updateLaidDownMotorcycles(dt);
+    updateBulldozerTracks(dt);
 
     // Warrior Mount locomotion sound
     const isMounted =
@@ -7481,6 +7796,9 @@
       ctx.arc(f.x, f.y, f.r * 1.15, 0, Math.PI * 2);
       ctx.fill();
     }
+
+    // 3b. Bulldozer tracks in the grass (fade out after 20s)
+    drawBulldozerTracks(viewLeft, viewRight, viewTop, viewBottom);
 
     // 4. Shockwaves & Blast / Lightning Animations on the ground plane (automatically foreshortened into 2.5D ellipses)
     for (let i = 0; i < shockwaves.length; i++) {
@@ -11072,6 +11390,7 @@
     const isDown =
       (e.knockdownTimer || 0) > 0 || earthquakeTimer > 0 || localKnockdownTimer > 0;
     const isMotorcycleZombie = e.variant === 'motorcycle';
+    const isArmoredZombie = e.variant === 'armored' || Boolean(e.mobId);
     const isBurning = (e.burnTimer || 0) > 0;
     const isFireproof = !isBurning && (e.fireproofTimer || 0) > 0;
     const isFeared = (e.fearTimer || 0) > 0;
@@ -11254,19 +11573,52 @@
       ctx.fill();
       ctx.stroke();
 
-      // Torn shirt / ribcage patch on horizontal torso
-      ctx.fillStyle = shirtCol;
-      ctx.beginPath();
-      ctx.ellipse(
-        fallSign * e.radius * 0.08,
-        -torsoH * 0.15,
-        torsoW * 0.28,
-        torsoH * 0.3,
-        0,
-        0,
-        Math.PI * 2
-      );
-      ctx.fill();
+      // Torn shirt / ribcage patch on horizontal torso (or Steel Breastplate if armored)
+      if (isArmoredZombie) {
+        const armorPlateCol = e.hurtFlash > 0 ? '#ffffff' : '#a0aec0';
+        const armorTrimCol = e.hurtFlash > 0 ? '#e2e8f0' : '#2d3748';
+        ctx.fillStyle = armorPlateCol;
+        ctx.strokeStyle = armorTrimCol;
+        ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        ctx.roundRect(
+          -torsoW * 0.42,
+          -torsoH * 0.62,
+          torsoW * 0.84,
+          torsoH * 0.94,
+          torsoH * 0.35
+        );
+        ctx.fill();
+        ctx.stroke();
+
+        // Steel pauldron on fallen shoulder
+        ctx.fillStyle = e.hurtFlash > 0 ? '#ffffff' : '#cbd5e0';
+        ctx.beginPath();
+        ctx.ellipse(
+          fallSign * torsoW * 0.32,
+          -torsoH * 0.15,
+          5.5 * visualScale,
+          torsoH * 0.52,
+          0,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = shirtCol;
+        ctx.beginPath();
+        ctx.ellipse(
+          fallSign * e.radius * 0.08,
+          -torsoH * 0.15,
+          torsoW * 0.28,
+          torsoH * 0.3,
+          0,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+      }
 
       // Front sprawled zombie arm splayed across the grass (if not severed)
       if (hasRightArm) {
@@ -11304,6 +11656,23 @@
         ctx.arc(headX, headY, headRadius, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
+
+        if (isArmoredZombie) {
+          ctx.fillStyle = e.hurtFlash > 0 ? '#ffffff' : '#a0aec0';
+          ctx.strokeStyle = '#2d3748';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.arc(
+            headX,
+            headY,
+            headRadius * 1.06,
+            fallSign > 0 ? -Math.PI * 0.85 : Math.PI * 0.15,
+            fallSign > 0 ? Math.PI * 0.85 : Math.PI * 1.85
+          );
+          ctx.closePath();
+          ctx.fill();
+          ctx.stroke();
+        }
 
         // Dizzy / Knocked-Out X-Eyes on the fallen zombie head
         ctx.strokeStyle = '#141a12';
@@ -11770,7 +12139,7 @@
       ctx.fill();
     } else {
       const step = isDown || isWebbed ? 0 : Math.sin(e.walkPhase) * 4.5 * visualScale;
-      ctx.fillStyle = '#1a202c';
+      ctx.fillStyle = isArmoredZombie ? '#718096' : '#1a202c';
       ctx.beginPath();
       if (hasLeftLeg) {
         ctx.ellipse(
@@ -11795,6 +12164,11 @@
         );
       }
       ctx.fill();
+      if (isArmoredZombie && (hasLeftLeg || hasRightLeg)) {
+        ctx.strokeStyle = '#2d3748';
+        ctx.lineWidth = 1.4;
+        ctx.stroke();
+      }
 
       // Pant leg stumps if legs are severed
       if (!hasLeftLeg || !hasRightLeg) {
@@ -11860,7 +12234,7 @@
         handY = shoulderY + dirY * reachLen * TILT_Y - 2 * visualScale;
       }
 
-      // Tattered sleeve upper arm + rotting green forearm
+      // Tattered sleeve upper arm + rotting green forearm (or steel vambrace & pauldron when armored)
       ctx.strokeStyle = '#161e14';
       ctx.lineWidth = 6.8 * visualScale;
       ctx.lineCap = 'round';
@@ -11869,16 +12243,24 @@
       ctx.lineTo(handX, handY);
       ctx.stroke();
 
-      ctx.strokeStyle = skinCol;
+      ctx.strokeStyle = isArmoredZombie
+        ? e.hurtFlash > 0
+          ? '#ffffff'
+          : '#a0aec0'
+        : skinCol;
       ctx.lineWidth = 4.6 * visualScale;
       ctx.beginPath();
       ctx.moveTo(shoulderX, shoulderY);
       ctx.lineTo(handX, handY);
       ctx.stroke();
 
-      // Tattered sleeve cuff near shoulder
-      ctx.strokeStyle = coatCol;
-      ctx.lineWidth = 5.6 * visualScale;
+      // Tattered sleeve cuff near shoulder (or steel pauldron plate when armored)
+      ctx.strokeStyle = isArmoredZombie
+        ? e.hurtFlash > 0
+          ? '#e2e8f0'
+          : '#cbd5e0'
+        : coatCol;
+      ctx.lineWidth = (isArmoredZombie ? 6.4 : 5.6) * visualScale;
       ctx.beginPath();
       ctx.moveTo(shoulderX, shoulderY);
       ctx.lineTo(
@@ -11887,8 +12269,36 @@
       );
       ctx.stroke();
 
-      // Bony claw hand
-      ctx.fillStyle = skinCol;
+      if (isArmoredZombie) {
+        //Layered steel shoulder pauldron & rivet
+        ctx.fillStyle = e.hurtFlash > 0 ? '#ffffff' : '#cbd5e0';
+        ctx.strokeStyle = '#2d3748';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.ellipse(
+          shoulderX,
+          shoulderY,
+          5.6 * visualScale,
+          4.2 * visualScale,
+          0,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#e2e8f0';
+        ctx.beginPath();
+        ctx.arc(shoulderX, shoulderY - 0.8 * visualScale, 1.3 * visualScale, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Bony claw hand (or steel gauntlet when armored)
+      ctx.fillStyle = isArmoredZombie
+        ? e.hurtFlash > 0
+          ? '#ffffff'
+          : '#718096'
+        : skinCol;
       ctx.strokeStyle = '#161e14';
       ctx.lineWidth = 1.3;
       ctx.beginPath();
@@ -11904,7 +12314,7 @@
       drawZombieArm(-1);
     }
 
-    // 3. Hunched 3D Zombie Torso in Tattered Rags
+    // 3. Hunched 3D Zombie Torso in Tattered Rags (or Forged Steel Cuirass & Pauldrons when armored)
     ctx.fillStyle = coatCol;
     ctx.strokeStyle = '#141814';
     ctx.lineWidth = 2.2;
@@ -11919,34 +12329,129 @@
     ctx.fill();
     ctx.stroke();
 
-    // Torn shirt / exposed ribcage patch on chest
-    ctx.fillStyle = shirtCol;
-    ctx.beginPath();
-    ctx.ellipse(
-      lurch * 0.25 + dirX * e.radius * 0.18,
-      -bodyHeight * 0.55 - bob,
-      e.radius * 0.52,
-      bodyHeight * 0.32,
-      0,
-      0,
-      Math.PI * 2
-    );
-    ctx.fill();
+    if (isArmoredZombie) {
+      const plateFill = e.hurtFlash > 0 ? '#ffffff' : '#a0aec0';
+      const plateShine = e.hurtFlash > 0 ? '#ffffff' : '#cbd5e0';
+      const plateTrim = e.hurtFlash > 0 ? '#cbd5e0' : '#2d3748';
+      const torsoX = lurch * 0.25;
+      const plateW = e.radius * 1.62;
+      const plateH = bodyHeight * 0.82;
+      const plateTopY = -bodyHeight * 0.94 - bob;
 
-    // Hunched rotting shoulders / torn collar
-    ctx.fillStyle = coatCol;
-    ctx.beginPath();
-    ctx.ellipse(
-      lurch * 0.3,
-      -bodyHeight * 0.78 - bob,
-      e.radius * 0.92,
-      e.radius * 0.44,
-      0,
-      0,
-      Math.PI * 2
-    );
-    ctx.fill();
-    ctx.stroke();
+      // Forged Steel Breastplate / Cuirass
+      ctx.fillStyle = plateFill;
+      ctx.strokeStyle = plateTrim;
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      ctx.roundRect(
+        torsoX - plateW * 0.5,
+        plateTopY,
+        plateW,
+        plateH,
+        e.radius * 0.42
+      );
+      ctx.fill();
+      ctx.stroke();
+
+      // Upper chest steel specular highlight plate
+      ctx.fillStyle = plateShine;
+      ctx.beginPath();
+      ctx.ellipse(
+        torsoX + dirX * e.radius * 0.14,
+        -bodyHeight * 0.62 - bob,
+        e.radius * 0.56,
+        bodyHeight * 0.26,
+        0,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+
+      // Armored steel gorget / shoulder guard across collar
+      ctx.fillStyle = plateShine;
+      ctx.strokeStyle = plateTrim;
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.ellipse(
+        lurch * 0.3,
+        -bodyHeight * 0.82 - bob,
+        e.radius * 0.98,
+        e.radius * 0.46,
+        0,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+      ctx.stroke();
+
+      // Center breastplate keel line & waist belt with brass buckle
+      ctx.strokeStyle = plateTrim;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(torsoX + dirX * e.radius * 0.12, plateTopY + 3 * visualScale);
+      ctx.lineTo(torsoX + dirX * e.radius * 0.12, plateTopY + plateH - 2 * visualScale);
+      ctx.stroke();
+
+      // Waist tasset belt & buckle
+      const beltY = plateTopY + plateH - 3.5 * visualScale;
+      ctx.strokeStyle = '#1a202c';
+      ctx.lineWidth = 3.0 * visualScale;
+      ctx.beginPath();
+      ctx.moveTo(torsoX - plateW * 0.46, beltY);
+      ctx.lineTo(torsoX + plateW * 0.46, beltY);
+      ctx.stroke();
+
+      ctx.fillStyle = '#ecc94b';
+      ctx.fillRect(
+        torsoX + dirX * e.radius * 0.12 - 2.4 * visualScale,
+        beltY - 2.0 * visualScale,
+        4.8 * visualScale,
+        4.0 * visualScale
+      );
+
+      // Corner steel rivets on cuirass
+      ctx.fillStyle = '#e2e8f0';
+      for (const rSign of [-1, 1]) {
+        ctx.beginPath();
+        ctx.arc(
+          torsoX + rSign * e.radius * 0.52,
+          -bodyHeight * 0.55 - bob,
+          1.4 * visualScale,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+      }
+    } else {
+      // Torn shirt / exposed ribcage patch on chest
+      ctx.fillStyle = shirtCol;
+      ctx.beginPath();
+      ctx.ellipse(
+        lurch * 0.25 + dirX * e.radius * 0.18,
+        -bodyHeight * 0.55 - bob,
+        e.radius * 0.52,
+        bodyHeight * 0.32,
+        0,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+
+      // Hunched rotting shoulders / torn collar
+      ctx.fillStyle = coatCol;
+      ctx.beginPath();
+      ctx.ellipse(
+        lurch * 0.3,
+        -bodyHeight * 0.78 - bob,
+        e.radius * 0.92,
+        e.radius * 0.44,
+        0,
+        0,
+        Math.PI * 2
+      );
+      ctx.fill();
+      ctx.stroke();
+    }
 
     // Draw front outstretched zombie arm
     if (rightY < 0) {
@@ -11980,13 +12485,77 @@
       ctx.fill();
       ctx.stroke();
 
-      // Cranial suture / zombie scar on top-side of head
-      ctx.strokeStyle = 'rgba(45, 22, 28, 0.65)';
-      ctx.lineWidth = 1.5 * visualScale;
-      ctx.beginPath();
-      ctx.moveTo(headX - headRadius * 0.45, headY - headRadius * 0.45);
-      ctx.lineTo(headX + headRadius * 0.15, headY - headRadius * 0.2);
-      ctx.stroke();
+      if (isArmoredZombie) {
+        // Forged Steel Medieval Helmet (Barbute / Bascinet) over zombie head
+        const helmMain = e.hurtFlash > 0 ? '#ffffff' : '#a0aec0';
+        const helmShine = e.hurtFlash > 0 ? '#ffffff' : '#cbd5e0';
+        const helmBand = e.hurtFlash > 0 ? '#e2e8f0' : '#718096';
+        const helmTrim = '#1a202c';
+
+        // Steel helmet dome covering crown and sides
+        ctx.fillStyle = helmMain;
+        ctx.strokeStyle = helmTrim;
+        ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        ctx.arc(headX, headY - headRadius * 0.06, headRadius * 1.08, Math.PI * 0.92, Math.PI * 2.08);
+        ctx.lineTo(headX + headRadius * 1.05, headY + headRadius * 0.38);
+        ctx.quadraticCurveTo(
+          headX,
+          headY + headRadius * 0.18,
+          headX - headRadius * 1.05,
+          headY + headRadius * 0.38
+        );
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Specular steel crown highlight & crest ridge
+        ctx.fillStyle = helmShine;
+        ctx.beginPath();
+        ctx.ellipse(
+          headX - headRadius * 0.18,
+          headY - headRadius * 0.48,
+          headRadius * 0.46,
+          headRadius * 0.25,
+          -0.25,
+          0,
+          Math.PI * 2
+        );
+        ctx.fill();
+
+        // Steel brow band & cheekplates
+        ctx.strokeStyle = helmBand;
+        ctx.lineWidth = 2.4 * visualScale;
+        ctx.beginPath();
+        ctx.moveTo(headX - headRadius * 1.02, headY + headRadius * 0.05);
+        ctx.quadraticCurveTo(
+          headX + dirX * headRadius * 0.25,
+          headY - headRadius * 0.12,
+          headX + headRadius * 1.02,
+          headY + headRadius * 0.05
+        );
+        ctx.stroke();
+
+        // Nasal bar & rivets when facing camera
+        if (dirY > -0.75) {
+          const visorX = headX + dirX * headRadius * 0.52;
+          const visorY = headY + dirY * headRadius * 0.32 * TILT_Y;
+          ctx.strokeStyle = helmShine;
+          ctx.lineWidth = 2.1 * visualScale;
+          ctx.beginPath();
+          ctx.moveTo(visorX, headY - headRadius * 0.35);
+          ctx.lineTo(visorX, visorY + 2.2 * visualScale);
+          ctx.stroke();
+        }
+      } else {
+        // Cranial suture / zombie scar on top-side of head
+        ctx.strokeStyle = 'rgba(45, 22, 28, 0.65)';
+        ctx.lineWidth = 1.5 * visualScale;
+        ctx.beginPath();
+        ctx.moveTo(headX - headRadius * 0.45, headY - headRadius * 0.45);
+        ctx.lineTo(headX + headRadius * 0.15, headY - headRadius * 0.2);
+        ctx.stroke();
+      }
 
       // Sunken dark eye sockets, glowing undead eyes & gaping jaw when facing camera
       if (dirY > -0.75) {
@@ -12844,9 +13413,12 @@
         BULLDOZER_TRACTION_MULT,
         BULLDOZER_SCALE,
         BULLDOZER_RADIUS,
+        BULLDOZER_DAMAGE,
+        BULLDOZER_TRACK_DURATION,
         HORSE_RADIUS,
         TORTOISE_RADIUS,
         ELEPHANT_RADIUS,
+        ELEPHANT_DAMAGE,
         MOTORCYCLE_MOUNT_RADIUS,
         MOTORCYCLE_TURN_RATE,
         MOTORCYCLE_WRECK_DURATION,
@@ -12911,6 +13483,7 @@
       shockwaves,
       enemyGhosts,
       laidDownMotorcycles,
+      bulldozerTracks,
       activeClotheslines,
       remotePlayers,
       localLeaderboardRecords,
@@ -13033,6 +13606,9 @@
       updateGhosts,
       drawLaidDownMotorcycle,
       updateLaidDownMotorcycles,
+      recordBulldozerTracksForPlayer,
+      updateBulldozerTracks,
+      drawBulldozerTracks,
       playMountClaimSound,
       playMountGainSound,
       playMountLostSound,

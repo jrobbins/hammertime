@@ -90,13 +90,13 @@ const RARE_SPIDER_DROP_CHANCE = 0.005;
 const RARE_THOR_DROP_CHANCE = 0.005;
 
 const ZOMBIE_WEB_DURATION = 30.0;
-const SPIDER_HAMMER_DURATION = 60.0;
+const SPIDER_HAMMER_DURATION = 30.0;
 const THOR_HAMMER_DURATION = 60.0;
 const THOR_EXPLOSION_RADIUS = EXPLOSION_RADIUS * 0.5;
 const THOR_BLAST_DAMAGE_MULT = 0.5;
 
-const JACKOLANTERN_HAMMER_DURATION = 60.0;
-const DISCO_HAMMER_DURATION = 60.0;
+const JACKOLANTERN_HAMMER_DURATION = 30.0;
+const DISCO_HAMMER_DURATION = 30.0;
 const ZOMBIE_DANCE_DURATION = 30.0;
 const ZOMBIE_DANCE_IMMUNE_DURATION = 45.0;
 
@@ -105,13 +105,16 @@ const BULLDOZER_SPEED_MULT = 0.5;
 const BULLDOZER_TRACTION_MULT = 10.0;
 const BULLDOZER_SCALE = 1.4;
 const BULLDOZER_RADIUS = Math.round(34 * BULLDOZER_SCALE); // 48 (40% larger)
+const BULLDOZER_DAMAGE = 300;
+const BULLDOZER_TRACK_DURATION = 20.0;
 
 const HORSE_RADIUS = 35;
 const TORTOISE_RADIUS = 36;
 const ELEPHANT_RADIUS = 45;
+const ELEPHANT_DAMAGE = 40;
 const GHOST_DURATION = 0.65;
 
-const EARTHQUAKE_DURATION = 5.0;
+const EARTHQUAKE_DURATION = 4.0;
 const ZOMBIE_KNOCKDOWN_RECOVERY = 5.0;
 
 const FEAR_DURATION = 20.0;
@@ -153,7 +156,7 @@ const ARMORED_MOB_HP_MULT = 4.0;
 
 const MOTORCYCLE_SPAWN_INTERVAL = 20;
 const MOTORCYCLE_SPEED_MULT = 5.0;
-const MOTORCYCLE_TURN_RATE = 1.2;
+const MOTORCYCLE_TURN_RATE = +(1.2 / 0.7).toFixed(4);
 const MOTORCYCLE_WRECK_DURATION = 5.0;
 const MOTORCYCLE_WRECK_SCALE = 1.2;
 const MOTORCYCLE_WRECK_RADIUS = Math.round(21 * MOTORCYCLE_WRECK_SCALE); // 25
@@ -480,7 +483,8 @@ let nextEnemyId = 1;
 let nextPickupId = 1;
 let elapsedGameTime = 0;
 let spawnTimer = 0;
-let earthquakeTimer = 0; // > 0 during a 5s earthquake
+let earthquakeTimer = 0; // > 0 during a 4s earthquake
+let earthquakeKnockdownTimer = 0; // > 0 during quake + knockdown recovery
 let roundRestartTimer = 0; // Counts down when round ends (victory or defeat)
 let roundState = 'playing'; // 'playing' | 'victory' | 'defeat'
 let teamKills = 0;
@@ -1198,7 +1202,12 @@ function spawnEnemy(awayFromPlayers = false) {
     danceTimer: 0,
     danceImmuneTimer: 0,
     webTimer: 0,
-    knockdownTimer: earthquakeTimer > 0 ? ZOMBIE_KNOCKDOWN_RECOVERY : 0,
+    knockdownTimer:
+      earthquakeTimer > 0
+        ? ZOMBIE_KNOCKDOWN_RECOVERY
+        : earthquakeKnockdownTimer > 0
+        ? earthquakeKnockdownTimer
+        : 0,
     walkPhase: Math.random() * Math.PI * 2,
   });
 }
@@ -1220,7 +1229,8 @@ function taintEnemyWithFear(e, sourcePlayer, duration = FEAR_DURATION) {
   if ((e.fearTimer || 0) > 0 && duration <= e.fearTimer) return false;
   e.fearTimer = duration;
   e.fearSource = sourcePlayer || null;
-  const isKnockedDown = earthquakeTimer > 0 || (e.knockdownTimer || 0) > 0;
+  const isKnockedDown =
+    earthquakeTimer > 0 || earthquakeKnockdownTimer > 0 || (e.knockdownTimer || 0) > 0;
   if (sourcePlayer && !isKnockedDown) {
     const dx = e.x - sourcePlayer.x;
     const dy = e.y - sourcePlayer.y;
@@ -1646,7 +1656,11 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer, options: any
     isThor,
   });
 
+  const isJackBlast =
+    (sourceHammer && (sourceHammer.jackolanternTimer || 0) > 0) ||
+    (sourcePlayer && sourcePlayer.hammer && (sourcePlayer.hammer.jackolanternTimer || 0) > 0);
   const isFlamingBlast =
+    isJackBlast ||
     (sourceHammer && sourceHammer.flameTimer > 0) ||
     (sourcePlayer && sourcePlayer.hammer && sourcePlayer.hammer.flameTimer > 0);
 
@@ -1662,8 +1676,15 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer, options: any
       const bnx = bDist > 0.001 ? bdx / bDist : Math.cos(Math.random() * Math.PI * 2);
       const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
 
-      target.vx += (blastImpulse / target.mass) * bnx;
-      target.vy += (blastImpulse / target.mass) * bny;
+      const targetKnockedDown =
+        earthquakeTimer > 0 || earthquakeKnockdownTimer > 0 || (target.knockdownTimer || 0) > 0;
+      if (targetKnockedDown) {
+        target.vx = 0;
+        target.vy = 0;
+      } else {
+        target.vx += (blastImpulse / target.mass) * bnx;
+        target.vy += (blastImpulse / target.mass) * bny;
+      }
       target.hp -= blastDamage;
       target.hurtFlash = 0.32;
       target.lastBlastKiller = sourcePlayer || null;
@@ -1675,7 +1696,13 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer, options: any
       );
 
       if (isFlamingBlast) {
-        igniteEnemy(target, sourcePlayer);
+        if (isJackBlast) {
+          target.fireproofTimer = 0;
+        }
+        if (!igniteEnemy(target, sourcePlayer) && isJackBlast) {
+          target.burnTimer = ZOMBIE_BURN_DURATION;
+          target.burnOwner = sourcePlayer || target.burnOwner || null;
+        }
       }
 
       if (sourcePlayer && blastDamage > sourcePlayer.maxDamageBlow) {
@@ -1702,8 +1729,12 @@ function triggerWhirlwindGust(gx, gy, sourcePlayer, sourceHammer, options: any =
   const gustRadius = WHIRLWIND_LEVEL_RADII[level] || 140;
   const gustMaxDamage = WHIRLWIND_LEVEL_DAMAGES[level] || 80;
 
+  const isJackGust =
+    (sourceHammer && (sourceHammer.jackolanternTimer || 0) > 0) ||
+    (sourcePlayer && sourcePlayer.hammer && (sourcePlayer.hammer.jackolanternTimer || 0) > 0);
   const isFlaming =
     !!(options && options.isFlaming) ||
+    isJackGust ||
     (sourceHammer && ((sourceHammer.flameCharges > 0) || (sourceHammer.flameTimer > 0))) ||
     (sourcePlayer && sourcePlayer.hammer && ((sourcePlayer.hammer.flameCharges > 0) || (sourcePlayer.hammer.flameTimer > 0)));
 
@@ -1740,8 +1771,15 @@ function triggerWhirlwindGust(gx, gy, sourcePlayer, sourceHammer, options: any =
       const bnx = bDist > 0.001 ? bdx / bDist : Math.cos(Math.random() * Math.PI * 2);
       const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
 
-      target.vx += (gustImpulse / target.mass) * bnx;
-      target.vy += (gustImpulse / target.mass) * bny;
+      const targetKnockedDown =
+        earthquakeTimer > 0 || earthquakeKnockdownTimer > 0 || (target.knockdownTimer || 0) > 0;
+      if (targetKnockedDown) {
+        target.vx = 0;
+        target.vy = 0;
+      } else {
+        target.vx += (gustImpulse / target.mass) * bnx;
+        target.vy += (gustImpulse / target.mass) * bny;
+      }
       target.hp -= gustDamage;
       target.hurtFlash = 0.28;
       target.lastBlastKiller = sourcePlayer || null;
@@ -1753,10 +1791,16 @@ function triggerWhirlwindGust(gx, gy, sourcePlayer, sourceHammer, options: any =
       );
 
       if (isFlaming) {
+        if (isJackGust) {
+          target.fireproofTimer = 0;
+        }
         if (igniteEnemy(target, sourcePlayer)) {
           if (target.hp <= 0) {
             target.hp = Math.max(18, Math.round(target.maxHp * 0.3));
           }
+        } else if (isJackGust) {
+          target.burnTimer = ZOMBIE_BURN_DURATION;
+          target.burnOwner = sourcePlayer || target.burnOwner || null;
         }
       }
 
@@ -1889,7 +1933,12 @@ function spawnArmoredMob(mobSize: number): any[] {
       danceTimer: 0,
       danceImmuneTimer: 0,
       webTimer: 0,
-      knockdownTimer: 0,
+      knockdownTimer:
+        earthquakeTimer > 0
+          ? ZOMBIE_KNOCKDOWN_RECOVERY
+          : earthquakeKnockdownTimer > 0
+          ? earthquakeKnockdownTimer
+          : 0,
       lostLimbs: [],
     };
     enemies.push(enemy);
@@ -1991,7 +2040,12 @@ function spawnMotorcycleZombie(): any {
     danceTimer: 0,
     danceImmuneTimer: 0,
     webTimer: 0,
-    knockdownTimer: earthquakeTimer > 0 ? ZOMBIE_KNOCKDOWN_RECOVERY : 0,
+    knockdownTimer:
+      earthquakeTimer > 0
+        ? ZOMBIE_KNOCKDOWN_RECOVERY
+        : earthquakeKnockdownTimer > 0
+        ? earthquakeKnockdownTimer
+        : 0,
     lostLimbs: [] as string[],
   };
   enemies.push(enemy);
@@ -2056,6 +2110,7 @@ function resetGameWorld() {
   elapsedGameTime = 0;
   spawnTimer = 0;
   earthquakeTimer = 0;
+  earthquakeKnockdownTimer = 0;
   roundRestartTimer = 0;
   activePhysicsSubsteps = PHYSICS_SUBSTEPS;
   activeChainRelaxIters = CHAIN_RELAX_ITERS;
@@ -2807,6 +2862,7 @@ function stepPlayerPhysics(p, dt) {
         color = '#e2e8f0';
       } else if (pType === 'earthquake') {
         earthquakeTimer = EARTHQUAKE_DURATION;
+        earthquakeKnockdownTimer = EARTHQUAKE_DURATION + ZOMBIE_KNOCKDOWN_RECOVERY;
         for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
           enemies[eIdx].knockdownTimer = ZOMBIE_KNOCKDOWN_RECOVERY;
           enemies[eIdx].vx = 0;
@@ -2817,7 +2873,7 @@ function stepPlayerPhysics(p, dt) {
           x: Math.round(p.x),
           y: Math.round(p.y),
         });
-        label = 'EARTHQUAKE! (5s QUAKE + 5s ZOMBIE KNOCKDOWN)';
+        label = 'EARTHQUAKE! (4s QUAKE + 5s ZOMBIE KNOCKDOWN)';
         color = '#ecc94b';
       } else if (pType === 'fear') {
         let taintedCount = 0;
@@ -2855,7 +2911,7 @@ function stepPlayerPhysics(p, dt) {
           x: Math.round(p.x),
           y: Math.round(p.y),
         });
-        label = 'DISCO BALL HAMMER! (60s DANCE FEVER)';
+        label = 'DISCO BALL HAMMER! (30s DANCE FEVER)';
         color = '#f687b3';
       } else if (pType === 'jackolantern') {
         const nonJack = p.hammers.filter((hm) => (hm.jackolanternTimer || 0) <= 0);
@@ -2867,7 +2923,7 @@ function stepPlayerPhysics(p, dt) {
           x: Math.round(p.x),
           y: Math.round(p.y),
         });
-        label = 'JACK-O-LANTERN HAMMER! (60s)';
+        label = 'JACK-O-LANTERN HAMMER! (30s)';
         color = '#ed8936';
       } else if (pType === 'spider') {
         const nonSpider = p.hammers.filter((hm) => !hm.isSpider && (hm.spiderTimer || 0) <= 0);
@@ -2880,7 +2936,7 @@ function stepPlayerPhysics(p, dt) {
           x: Math.round(p.x),
           y: Math.round(p.y),
         });
-        label = 'SPIDER HAMMER! (60s, WEBS ZOMBIES FOR 30s)';
+        label = 'SPIDER HAMMER! (30s, WEBS ZOMBIES FOR 30s)';
         color = '#e2e8f0';
       } else if (pType === 'thor') {
         const nonThor = p.hammers.filter((hm) => (hm.thorTimer || 0) <= 0);
@@ -3023,6 +3079,12 @@ function stepPlayerPhysics(p, dt) {
 function stepWorldPhysics(dt) {
   if (earthquakeTimer > 0) {
     earthquakeTimer = Math.max(0, earthquakeTimer - dt);
+    earthquakeKnockdownTimer = Math.max(
+      earthquakeKnockdownTimer,
+      earthquakeTimer + ZOMBIE_KNOCKDOWN_RECOVERY
+    );
+  } else if (earthquakeKnockdownTimer > 0) {
+    earthquakeKnockdownTimer = Math.max(0, earthquakeKnockdownTimer - dt);
   }
 
   for (let i = laidDownMotorcycles.length - 1; i >= 0; i--) {
@@ -3085,7 +3147,12 @@ function stepWorldPhysics(dt) {
     } else if (e.knockdownTimer > 0) {
       e.knockdownTimer = Math.max(0, e.knockdownTimer - dt);
     }
-    const isKnockedDown = earthquakeTimer > 0 || (e.knockdownTimer || 0) > 0;
+    const isKnockedDown =
+      earthquakeTimer > 0 || earthquakeKnockdownTimer > 0 || (e.knockdownTimer || 0) > 0;
+    if (isKnockedDown) {
+      e.vx = 0;
+      e.vy = 0;
+    }
 
     // Flaming zombie burn damage over time (5s burning -> 5s fire-proof)
     if (e.burnTimer > 0) {
@@ -3175,15 +3242,9 @@ function stepWorldPhysics(dt) {
     const closestDist = closestPlayer ? Math.sqrt(closestDistSq) : Infinity;
 
     if (isKnockedDown) {
-      // Fallen zombies remain motionless on the ground unless actively knocked back by a hammer/chain hit
-      if (e.hitCooldown <= 0 && e.chainHitCooldown <= 0) {
-        e.vx = 0;
-        e.vy = 0;
-      } else {
-        const kdDamp = Math.exp(-e.traction * 5.0 * dt);
-        e.vx *= kdDamp;
-        e.vy *= kdDamp;
-      }
+      // Fallen zombies remain completely motionless on the ground
+      e.vx = 0;
+      e.vy = 0;
     } else if (isWebbed) {
       // Wrapped in spider webbing: cannot move!
       if (e.hitCooldown <= 0 && e.chainHitCooldown <= 0) {
@@ -3355,6 +3416,8 @@ function stepWorldPhysics(dt) {
     }
 
     // Check collisions against every alive player's Maces, Chains, and Warrior body
+    const kdX = e.x;
+    const kdY = e.y;
     let enemyDefeated = false;
     for (let pIdx = 0; pIdx < alivePlayers.length; pIdx++) {
       const p = alivePlayers[pIdx];
@@ -3402,9 +3465,20 @@ function stepWorldPhysics(dt) {
               e.x += nx * overlap * ((1 / e.mass) / totalInvMass);
               e.y += ny * overlap * ((1 / e.mass) / totalInvMass);
 
-              let hadFlame = (h.flameCharges > 0) || ((h.flameTimer || 0) > 0);
+              const isJackOLantern = (h.jackolanternTimer || 0) > 0;
+              let hadFlame = isJackOLantern || (h.flameCharges > 0) || ((h.flameTimer || 0) > 0);
               let justIgnited = false;
-              if (h.flameCharges > 0 && e.burnTimer <= 0 && e.fireproofTimer <= 0) {
+              if (isJackOLantern) {
+                e.fireproofTimer = 0;
+                if (e.burnTimer <= 0) {
+                  if (igniteEnemy(e, p)) {
+                    justIgnited = true;
+                  }
+                } else {
+                  e.burnTimer = ZOMBIE_BURN_DURATION;
+                  e.burnOwner = p || e.burnOwner || null;
+                }
+              } else if (h.flameCharges > 0 && e.burnTimer <= 0 && e.fireproofTimer <= 0) {
                 if (igniteEnemy(e, p)) {
                   justIgnited = true;
                   h.flameCharges -= 1;
@@ -3682,27 +3756,125 @@ function stepWorldPhysics(dt) {
       if (wDistSq < minWarriorEnemyDist * minWarriorEnemyDist && wDistSq > 1e-8) {
         const wDist = Math.sqrt(wDistSq);
         if ((p.bulldozerTimer || 0) > 0) {
-          // While a bulldozer, the player takes no damage and instantly kills any zombie they touch
-          const crushDmg = Math.max(1, Math.ceil(e.hp));
-          if (crushDmg > p.maxDamageBlow) {
-            p.maxDamageBlow = crushDmg;
+          // While a bulldozer, the player takes no damage, deals 300 damage, and pushes the enemy back
+          // (2x damage and 2x pushback) so that the advancing bulldozer will soon hit the enemy again
+          const enx = -wdx / wDist;
+          const eny = -wdy / wDist;
+          const pushSpeed = Math.max(110, Math.hypot(p.vx || 0, p.vy || 0) * 0.85 + 95) * 2;
+          e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, p.x + enx * (minWarriorEnemyDist + 10)));
+          e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, p.y + eny * (minWarriorEnemyDist + 10)));
+          e.vx = enx * pushSpeed;
+          e.vy = eny * pushSpeed;
+          e.hitCooldown = Math.max(e.hitCooldown || 0, 0.12);
+
+          if (e.contactCooldown <= 0) {
+            const crushDmg = BULLDOZER_DAMAGE;
+            e.hp -= crushDmg;
+            e.contactCooldown = 0.18;
+            e.hurtFlash = 0.22;
+            checkMotorcycleDismount(e);
+            checkEnemyLimbLoss(e, enx * pushSpeed, eny * pushSpeed);
+
+            if (crushDmg > p.maxDamageBlow) {
+              p.maxDamageBlow = crushDmg;
+            }
+            pendingEvents.push({
+              type: 'impact',
+              x: Math.round(p.x + enx * p.radius),
+              y: Math.round(p.y + eny * p.radius),
+              enemyX: Math.round(e.x),
+              enemyY: Math.round(e.y - e.radius - 6),
+              damage: crushDmg,
+              isChain: false,
+              dirX: enx,
+              dirY: eny,
+            });
+            pendingEvents.push({
+              type: 'floating_text',
+              x: Math.round(e.x),
+              y: Math.round(e.y - e.radius - 10),
+              text: `-${crushDmg}`,
+              color: '#ecc94b',
+              scale: 1.2,
+            });
+            if (e.hp <= 0) {
+              defeatEnemy(i, p);
+              enemyDefeated = true;
+              break;
+            }
           }
-          pendingEvents.push({
-            type: 'floating_text',
-            x: Math.round(e.x),
-            y: Math.round(e.y - e.radius - 10),
-            text: 'CRUSHED!',
-            color: '#ecc94b',
-            scale: 1.2,
-          });
-          defeatEnemy(i, p);
-          enemyDefeated = true;
-          break;
+          continue;
         }
 
         const wnx = wdx / wDist;
         const wny = wdy / wDist;
         const wOverlap = minWarriorEnemyDist - wDist;
+        const isElephant = p.mountType === 'elephant' && (p.mountHp || 0) > 0;
+
+        if (isElephant) {
+          const enx = -wnx;
+          const eny = -wny;
+          const elephantPushSpeed = Math.max(180, Math.hypot(p.vx || 0, p.vy || 0) * 1.1 + 150);
+          e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, p.x + enx * (minWarriorEnemyDist + 6)));
+          e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, p.y + eny * (minWarriorEnemyDist + 6)));
+          e.vx = enx * elephantPushSpeed;
+          e.vy = eny * elephantPushSpeed;
+          p.vx += wnx * e.contactPush * dt * 3.0;
+          p.vy += wny * e.contactPush * dt * 3.0;
+
+          if (e.contactCooldown <= 0) {
+            if (!isKnockedDown && !isDancing && !isWebbed) {
+              applyDamageToPlayer(p, e.contactDamage);
+              pendingEvents.push({
+                type: 'player_hurt',
+                playerId: p.id,
+                x: Math.round(p.x - wnx * p.radius),
+                y: Math.round(p.y - wny * p.radius),
+                playerX: Math.round(p.x),
+                playerY: Math.round(p.y - p.radius - 10),
+                damage: e.contactDamage,
+                noise: getRandomHurtNoise(),
+                sound: getRandomHurtSound(),
+              });
+            }
+
+            const trampleDmg = ELEPHANT_DAMAGE;
+            e.hp -= trampleDmg;
+            e.contactCooldown = 0.55;
+            e.hurtFlash = 0.22;
+            checkMotorcycleDismount(e);
+            checkEnemyLimbLoss(e, enx * elephantPushSpeed, eny * elephantPushSpeed);
+
+            if (trampleDmg > p.maxDamageBlow) {
+              p.maxDamageBlow = trampleDmg;
+            }
+            pendingEvents.push({
+              type: 'impact',
+              x: Math.round(p.x + enx * p.radius),
+              y: Math.round(p.y + eny * p.radius),
+              enemyX: Math.round(e.x),
+              enemyY: Math.round(e.y - e.radius - 6),
+              damage: trampleDmg,
+              isChain: false,
+              dirX: enx,
+              dirY: eny,
+            });
+            pendingEvents.push({
+              type: 'floating_text',
+              x: Math.round(e.x),
+              y: Math.round(e.y - e.radius - 10),
+              text: `-${trampleDmg}`,
+              color: '#fbd38d',
+              scale: 1.15,
+            });
+            if (e.hp <= 0) {
+              defeatEnemy(i, p);
+              enemyDefeated = true;
+              break;
+            }
+          }
+          continue;
+        }
 
         if (isDancing || isKnockedDown || isWebbed) {
           p.x += wnx * wOverlap;
@@ -3739,6 +3911,12 @@ function stepWorldPhysics(dt) {
     }
 
     if (enemyDefeated) continue;
+    if (isKnockedDown) {
+      e.x = kdX;
+      e.y = kdY;
+      e.vx = 0;
+      e.vy = 0;
+    }
   }
 
   // Sweep any additional zombies defeated by bomb blast splash damage
@@ -3791,11 +3969,13 @@ function stepWorldPhysics(dt) {
           (a.danceTimer || 0) > 0 ||
           (a.webTimer || 0) > 0 ||
           earthquakeTimer > 0 ||
+          earthquakeKnockdownTimer > 0 ||
           (a.knockdownTimer || 0) > 0;
         const bStationary =
           (b.danceTimer || 0) > 0 ||
           (b.webTimer || 0) > 0 ||
           earthquakeTimer > 0 ||
+          earthquakeKnockdownTimer > 0 ||
           (b.knockdownTimer || 0) > 0;
         if (aStationary && bStationary) {
           // Both fallen or dancing in place: do not slide them around
@@ -4772,6 +4952,7 @@ function buildGameStatePayload() {
     maxHp: e.maxHp,
     skinColor: e.skinColor,
     coatColor: e.coatColor,
+    shirtColor: e.shirtColor,
     lostLimbs: e.lostLimbs ? [...e.lostLimbs] : [],
     hurtFlash: +e.hurtFlash.toFixed(2),
     burnTimer: +(e.burnTimer || 0).toFixed(2),
@@ -4946,9 +5127,12 @@ module.exports = {
   BULLDOZER_TRACTION_MULT,
   BULLDOZER_SCALE,
   BULLDOZER_RADIUS,
+  BULLDOZER_DAMAGE,
+  BULLDOZER_TRACK_DURATION,
   HORSE_RADIUS,
   TORTOISE_RADIUS,
   ELEPHANT_RADIUS,
+  ELEPHANT_DAMAGE,
   MOTORCYCLE_MOUNT_RADIUS,
   MOTORCYCLE_WRECK_SCALE,
   MOTORCYCLE_WRECK_RADIUS,
@@ -5020,6 +5204,7 @@ module.exports = {
     elapsedGameTime,
     spawnTimer,
     earthquakeTimer,
+    earthquakeKnockdownTimer,
     roundRestartTimer,
     roundState,
     teamKills,
@@ -5036,7 +5221,16 @@ module.exports = {
   setState: (patch) => {
     if ('elapsedGameTime' in patch) elapsedGameTime = patch.elapsedGameTime;
     if ('spawnTimer' in patch) spawnTimer = patch.spawnTimer;
-    if ('earthquakeTimer' in patch) earthquakeTimer = patch.earthquakeTimer;
+    if ('earthquakeTimer' in patch) {
+      earthquakeTimer = patch.earthquakeTimer;
+      if (!('earthquakeKnockdownTimer' in patch)) {
+        earthquakeKnockdownTimer =
+          patch.earthquakeTimer > 0 ? patch.earthquakeTimer + ZOMBIE_KNOCKDOWN_RECOVERY : 0;
+      }
+    }
+    if ('earthquakeKnockdownTimer' in patch) {
+      earthquakeKnockdownTimer = patch.earthquakeKnockdownTimer;
+    }
     if ('roundRestartTimer' in patch) roundRestartTimer = patch.roundRestartTimer;
     if ('roundState' in patch) roundState = patch.roundState;
     if ('teamKills' in patch) teamKills = patch.teamKills;

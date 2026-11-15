@@ -327,9 +327,17 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(c.BULLDOZER_SCALE, 1.4);
     assert.equal(c.BULLDOZER_RADIUS, srv.BULLDOZER_RADIUS);
     assert.equal(c.BULLDOZER_RADIUS, 48);
+    assert.equal(c.BULLDOZER_DAMAGE, srv.BULLDOZER_DAMAGE);
+    assert.equal(c.BULLDOZER_DAMAGE, 300);
+    assert.equal(c.BULLDOZER_TRACK_DURATION, srv.BULLDOZER_TRACK_DURATION);
+    assert.equal(c.BULLDOZER_TRACK_DURATION, 20.0);
     assert.equal(c.HORSE_RADIUS, srv.HORSE_RADIUS);
     assert.equal(c.TORTOISE_RADIUS, srv.TORTOISE_RADIUS);
     assert.equal(c.ELEPHANT_RADIUS, srv.ELEPHANT_RADIUS);
+    assert.equal(c.ELEPHANT_DAMAGE, srv.ELEPHANT_DAMAGE);
+    assert.equal(c.ELEPHANT_DAMAGE, 40);
+    assert.equal(c.EARTHQUAKE_DURATION, srv.EARTHQUAKE_DURATION);
+    assert.equal(c.EARTHQUAKE_DURATION, 4.0);
     assert.equal(c.TIME_GAP_RESET_SECONDS, srv.TIME_GAP_RESET_SECONDS);
     assert.equal(c.TIME_GAP_RESET_SECONDS, 30);
     assert.equal(c.WHIRLWIND_MIN_ANGULAR_SPEED, srv.WHIRLWIND_MIN_ANGULAR_SPEED);
@@ -423,16 +431,57 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(w.mountType, 'elephant');
     assert.equal(w.radius, 45);
 
+    // War Elephant deals 40 damage and pushes back enemies while also taking damage
+    w.mountHp = 250;
+    if (api.enemies.length === 0) {
+      api.spawnEnemy(false);
+    }
+    const eElephant = api.enemies[0];
+    eElephant.hp = 100;
+    eElephant.maxHp = 100;
+    eElephant.contactDamage = 6;
+    eElephant.contactCooldown = 0;
+    eElephant.knockdownTimer = 0;
+    eElephant.danceTimer = 0;
+    eElephant.webTimer = 0;
+    eElephant.x = w.x + 20;
+    eElephant.y = w.y;
+    w.hammers[0].x = w.x - 180;
+    w.hammers[0].y = w.y;
+    api.initHammerChainNodes(w.hammers[0]);
+    api.stepPhysics(0.016);
+    assert.equal(eElephant.hp, 60, 'Client elephant deals 40 damage to enemy on contact');
+    assert.equal(w.mountHp, 244, 'Client elephant itself also takes contact damage');
+    assert.ok(eElephant.x > w.x + w.radius + eElephant.radius, 'Client elephant pushes enemy back');
+    assert.ok(eElephant.vx > 0, 'Client enemy receives pushback velocity away from elephant');
+    eElephant.x = w.x + 600;
+
     // Earthquake, Fear, Disco, Jack-o'-Lantern
     for (const pType of ['earthquake', 'fear', 'disco', 'jackolantern']) {
       api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: pType });
       api.stepPhysics(0.016);
     }
-    assert.ok(api.getState().earthquakeTimer > 4.9);
-    assert.ok(w.hammers[0].discoTimer > 59.9 && w.hammers[0].discoTimer <= 60);
-    assert.ok(w.hammers[0].jackolanternTimer > 59.9 && w.hammers[0].jackolanternTimer <= 60);
+    assert.ok(api.getState().earthquakeTimer > 3.9 && api.getState().earthquakeTimer <= 4.0);
+    assert.ok(w.hammers[0].discoTimer > 29.9 && w.hammers[0].discoTimer <= 30);
+    assert.ok(w.hammers[0].jackolanternTimer > 29.9 && w.hammers[0].jackolanternTimer <= 30);
+
+    // Newly spawned enemy during earthquake / knockdown window is knocked down and never moves
+    api.spawnEnemy(true);
+    const eQuakeSpawned = api.enemies[api.enemies.length - 1];
+    assert.ok(eQuakeSpawned.knockdownTimer > 0, 'Client enemy spawned during earthquake is knocked down');
+    const qx = eQuakeSpawned.x;
+    const qy = eQuakeSpawned.y;
+    api.stepPhysics(0.1);
+    assert.equal(eQuakeSpawned.x, qx, 'Knocked-down enemy never moves in X');
+    assert.equal(eQuakeSpawned.y, qy, 'Knocked-down enemy never moves in Y');
+    assert.equal(eQuakeSpawned.vx, 0);
+    assert.equal(eQuakeSpawned.vy, 0);
+
     w.hammers[0].discoTimer = 0;
     api.setState({ earthquakeTimer: 0, localKnockdownTimer: 0 });
+    for (const en of api.enemies) {
+      en.knockdownTimer = 0;
+    }
 
     // Extra hammer pickup (capped at 2) + 60s expiration
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'hammer' });
@@ -471,7 +520,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'spider' });
     api.stepPhysics(0.016);
     assert.equal(w.hammers[0].isSpider, true);
-    assert.ok(w.hammers[0].spiderTimer > 59.9 && w.hammers[0].spiderTimer <= 60);
+    assert.ok(w.hammers[0].spiderTimer > 29.9 && w.hammers[0].spiderTimer <= 30);
 
     api.spawnEnemy(false);
     const e = api.enemies[0];
@@ -514,6 +563,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(w.hammers[0].thorTimer, 0);
 
     // Bulldozer pickup & same-tick pickup guard
+    api.bulldozerTracks.length = 0;
     w.speedMultiplier = 1.0;
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'speed' });
     api.blackCircles.push({ x: w.x, y: w.y, radius: 10, pulse: 0, type: 'bulldozer' });
@@ -521,6 +571,63 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.ok(w.bulldozerTimer > 19.9);
     assert.equal(w.radius, api.constants.BULLDOZER_RADIUS);
     assert.equal(w.speedMultiplier, 1.0);
+
+    // Bulldozer leaves tracks in the grass as it moves, lasting 20 seconds
+    assert.ok(api.bulldozerTracks.length >= 1, 'Bulldozer records initial track on grass');
+    assert.equal(api.bulldozerTracks[0].duration, 20.0);
+    w.x += 25;
+    api.updateBulldozerTracks(0.1);
+    assert.ok(api.bulldozerTracks.length >= 2, 'Moving bulldozer leaves additional grass tracks');
+    api.drawBulldozerTracks(-Infinity, Infinity, -Infinity, Infinity);
+
+    // Jack-o'-Lantern hammer always sets fire to enemies on hit
+    w.hammers[0].jackolanternTimer = 30.0;
+    w.hammers[0].flameCharges = 0;
+    w.hammers[0].flameTimer = 0;
+    e.hitCooldown = 0;
+    e.burnTimer = 0;
+    e.fireproofTimer = 3.0;
+    e.hp = 300;
+    e.maxHp = 300;
+    e.x = w.x + 120;
+    e.y = w.y;
+    w.hammers[0].x = e.x - 10;
+    w.hammers[0].y = e.y;
+    w.hammers[0].vx = 600;
+    w.hammers[0].vy = 0;
+    api.stepPhysics(0.016);
+    assert.equal(e.fireproofTimer, 0);
+    assert.ok(e.burnTimer > 9.9, 'Jack-o-lantern hammer always ignites hit enemies');
+    w.hammers[0].jackolanternTimer = 0;
+    e.burnTimer = 0;
+
+    // Bulldozer deals 300 damage and pushes enemy back (2x) instead of instant-killing
+    e.hp = 400;
+    e.maxHp = 400;
+    e.contactCooldown = 0;
+    e.x = w.x + 20;
+    e.y = w.y;
+    w.hammers[0].x = w.x - 180;
+    w.hammers[0].y = w.y;
+    api.stepPhysics(0.016);
+    assert.equal(api.enemies.includes(e), true, '400-HP enemy survives first 300-damage bulldozer hit');
+    assert.equal(e.hp, 100, 'Bulldozer deals 300 damage (doubled) on contact');
+    assert.ok(e.x > w.x + w.radius + e.radius, 'Bulldozer pushes enemy back');
+    assert.ok(e.vx > 200, 'Enemy receives doubled knockback velocity away from bulldozer');
+
+    // Second contact with bulldozer defeats the remaining 100-HP enemy
+    e.contactCooldown = 0;
+    e.x = w.x + 20;
+    e.y = w.y;
+    api.stepPhysics(0.016);
+    assert.equal(api.enemies.includes(e), false, 'Second bulldozer contact defeats the enemy');
+
+    // Bulldozer tracks expire after 20 seconds
+    w.bulldozerTimer = 0;
+    api.updateBulldozerTracks(20.1);
+    assert.equal(api.bulldozerTracks.length, 0, 'Bulldozer tracks disappear after 20 seconds');
+    w.bulldozerTimer = 18.0;
+    w.radius = api.constants.BULLDOZER_RADIUS;
 
     // Stone columns remain fixed in location when collided with by bulldozer
     const col = api.stoneColumns[0];
@@ -584,6 +691,7 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.equal(api.warrior.bulldozerTimer, api.constants.BULLDOZER_DURATION);
     assert.equal(api.warrior.radius, api.constants.BULLDOZER_RADIUS);
     assert.equal(api.getState().earthquakeTimer, api.constants.EARTHQUAKE_DURATION);
+    assert.equal(api.constants.EARTHQUAKE_DURATION, 4.0);
 
     // Update effects ticks down bulldozerTimer & earthquakeTimer in multiplayer
     api.updateEffects(0.5);
@@ -852,7 +960,8 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     const predDt = 0.05;
     api.stepLocalWarriorAndHammers(predDt, true);
 
-    const expectedPredTurnCap = api.constants.MOTORCYCLE_TURN_RATE * predDt; // 0.06 rad
+    assert.equal(api.constants.MOTORCYCLE_TURN_RATE, +(1.2 / 0.7).toFixed(4), 'Motorcycle turn rate reflects 30% smaller turn radius');
+    const expectedPredTurnCap = api.constants.MOTORCYCLE_TURN_RATE * predDt;
     assert.ok(
       Math.abs(api.warrior.angle) <= expectedPredTurnCap + 1e-4,
       `Client motorcycle warrior turns slowly (<= ${expectedPredTurnCap} rad), actual: ${api.warrior.angle}`
@@ -2500,15 +2609,16 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.ok(e.burnTimer > 0, 'Direct hit enemy should be burning');
     assert.ok(eBystander.burnTimer > 0, 'Bystander affected by flame whirlwind should be set on fire');
 
-    // Verify rendering armored zombie does not throw
+    // Verify rendering armored zombie draws steel plate armor & helmet (both upright and knocked down)
     const armoredEnemy = {
       id: 9999,
       variant: 'armored',
+      mobId: 'mob_1',
       x: w.x + 80,
       y: w.y,
       vx: 0,
       vy: 0,
-      angle: 0,
+      angle: Math.PI / 2,
       radius: 20,
       hp: 300,
       maxHp: 300,
@@ -2518,6 +2628,34 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       coatColor: '#3a4454',
       shirtColor: '#718096',
     };
+    const gameCanvas = elements.get('game-canvas');
+    const gameCtx = gameCanvas._ctx || gameCanvas.getContext('2d');
+    const fillStylesUsed = [];
+    let currentFill = gameCtx.fillStyle;
+    Object.defineProperty(gameCtx, 'fillStyle', {
+      configurable: true,
+      get() {
+        return currentFill;
+      },
+      set(v) {
+        currentFill = v;
+        fillStylesUsed.push(v);
+      },
+    });
+    api.drawEnemy(armoredEnemy);
+    assert.ok(fillStylesUsed.includes('#a0aec0'), 'Armored zombie should render steel plate armor (#a0aec0)');
+    assert.ok(fillStylesUsed.includes('#cbd5e0'), 'Armored zombie should render polished steel pauldrons/highlights (#cbd5e0)');
+    assert.ok(fillStylesUsed.includes('#ecc94b'), 'Armored zombie should render brass cuirass belt buckle (#ecc94b)');
+
+    // Also test knocked-down armored zombie rendering
+    fillStylesUsed.length = 0;
+    armoredEnemy.knockdownTimer = 2.0;
+    api.drawEnemy(armoredEnemy);
+    assert.ok(fillStylesUsed.includes('#a0aec0'), 'Knocked-down armored zombie should render steel breastplate and helmet (#a0aec0)');
+    armoredEnemy.knockdownTimer = 0;
+    delete gameCtx.fillStyle;
+    gameCtx.fillStyle = currentFill;
+
     api.enemies.push(armoredEnemy);
     api.render();
   });

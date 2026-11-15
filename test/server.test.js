@@ -140,11 +140,11 @@ describe('Server Constants & Configuration', () => {
   });
 
   it('defines powerup durations and parameters', () => {
-    assert.equal(srv.DISCO_HAMMER_DURATION, 60.0);
+    assert.equal(srv.DISCO_HAMMER_DURATION, 30.0);
     assert.equal(srv.ZOMBIE_DANCE_DURATION, 30.0);
     assert.equal(srv.ZOMBIE_DANCE_IMMUNE_DURATION, 45.0);
-    assert.equal(srv.JACKOLANTERN_HAMMER_DURATION, 60.0);
-    assert.equal(srv.SPIDER_HAMMER_DURATION, 60.0);
+    assert.equal(srv.JACKOLANTERN_HAMMER_DURATION, 30.0);
+    assert.equal(srv.SPIDER_HAMMER_DURATION, 30.0);
     assert.equal(srv.THOR_HAMMER_DURATION, 60.0);
     assert.equal(srv.THOR_EXPLOSION_RADIUS, srv.EXPLOSION_RADIUS * 0.5);
     assert.equal(srv.THOR_BLAST_DAMAGE_MULT, 0.5);
@@ -155,7 +155,7 @@ describe('Server Constants & Configuration', () => {
     assert.equal(srv.HORSE_RADIUS, 35);
     assert.equal(srv.TORTOISE_RADIUS, 36);
     assert.equal(srv.ELEPHANT_RADIUS, 45);
-    assert.equal(srv.EARTHQUAKE_DURATION, 5.0);
+    assert.equal(srv.EARTHQUAKE_DURATION, 4.0);
     assert.equal(srv.ZOMBIE_KNOCKDOWN_RECOVERY, 5.0);
     assert.equal(srv.FEAR_DURATION, 20.0);
     assert.equal(srv.FEAR_SPEED_MULT, 4.0);
@@ -526,9 +526,29 @@ describe('Rare Powerups: Extra Hammer (60s), Mounts (Horse, Tortoise, Elephant),
       elephantSpeed > tortoiseSpeed * 2.5,
       `Expected elephant speed (${elephantSpeed}) > 2.5x tortoise speed (${tortoiseSpeed})`
     );
+
+    // War Elephant deals 40 hitpoints of damage and pushes back enemies, while the elephant itself also takes damage
+    assert.equal(srv.ELEPHANT_DAMAGE, 40);
+    p.x = 2100;
+    p.y = 2100;
+    p.vx = 0;
+    p.vy = 0;
+    p.mountHp = 250;
+    p.hammer.x = 1800;
+    p.hammer.y = 2100;
+    srv.initHammerChainNodes(p, p.hammer);
+    srv.updatePlayerBroadphaseBounds(p);
+    const eTrample = addTestEnemy(p.x + 40, p.y, 100);
+    eTrample.contactDamage = 6;
+    eTrample.contactCooldown = 0;
+    srv.stepWorldPhysics(0.016);
+    assert.equal(eTrample.hp, 60, 'Elephant deals 40 hitpoints of damage to enemy on contact');
+    assert.equal(p.mountHp, 244, 'Elephant itself also takes contact damage from enemy');
+    assert.ok(eTrample.x > p.x + p.radius + eTrample.radius, 'Elephant pushes enemy back on contact');
+    assert.ok(eTrample.vx > 0, 'Enemy receives pushback velocity away from elephant');
   });
 
-  it('triggers Earthquake (5s quake + 5s zombie knockdown) and immobilizes enemies', () => {
+  it('triggers Earthquake (4s quake + 5s zombie knockdown) and immobilizes all existing and newly spawned enemies', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     const e = addTestEnemy(2400, 2100, 100);
     e.vx = 100;
@@ -537,16 +557,58 @@ describe('Rare Powerups: Extra Hammer (60s), Mounts (Horse, Tortoise, Elephant),
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'earthquake' });
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(srv.getState().earthquakeTimer, srv.EARTHQUAKE_DURATION);
+    assert.equal(srv.EARTHQUAKE_DURATION, 4.0);
     assert.equal(e.knockdownTimer, srv.ZOMBIE_KNOCKDOWN_RECOVERY);
     assert.equal(e.vx, 0);
     assert.equal(e.vy, 0);
 
-    // During quake, enemy remains knocked down and motionless
+    // Newly spawned regular, armored mob, and motorcycle enemies during active quake are knocked down and never move
+    srv.spawnEnemy(true);
+    const eSpawnedDuringQuake = srv.enemies[srv.enemies.length - 1];
+    const [eMobDuringQuake] = srv.spawnArmoredMob(2);
+    const eMotoDuringQuake = srv.spawnMotorcycleZombie();
+    assert.ok(eSpawnedDuringQuake.knockdownTimer > 0, 'Regular enemy spawned during quake is knocked down');
+    assert.ok(eMobDuringQuake.knockdownTimer > 0, 'Armored mob enemy spawned during quake is knocked down');
+    assert.ok(eMotoDuringQuake.knockdownTimer > 0, 'Motorcycle enemy spawned during quake is knocked down');
+
+    const origX = eSpawnedDuringQuake.x;
+    const origY = eSpawnedDuringQuake.y;
+    const origMobX = eMobDuringQuake.x;
+    const origMobY = eMobDuringQuake.y;
+    const origMotoX = eMotoDuringQuake.x;
+    const origMotoY = eMotoDuringQuake.y;
+
+    // During quake, enemies remain knocked down and completely motionless
     srv.stepWorldPhysics(1.0);
-    assert.ok(srv.getState().earthquakeTimer > 3.9);
+    assert.ok(srv.getState().earthquakeTimer > 2.9);
     assert.equal(e.knockdownTimer, srv.ZOMBIE_KNOCKDOWN_RECOVERY);
     assert.equal(e.vx, 0);
     assert.equal(e.vy, 0);
+    assert.equal(eSpawnedDuringQuake.x, origX);
+    assert.equal(eSpawnedDuringQuake.y, origY);
+    assert.equal(eSpawnedDuringQuake.vx, 0);
+    assert.equal(eSpawnedDuringQuake.vy, 0);
+    assert.equal(eMobDuringQuake.x, origMobX);
+    assert.equal(eMobDuringQuake.y, origMobY);
+    assert.equal(eMotoDuringQuake.x, origMotoX);
+    assert.equal(eMotoDuringQuake.y, origMotoY);
+
+    // Advance past the 4s tremor into the 5s knockdown recovery phase
+    srv.stepWorldPhysics(3.1);
+    assert.equal(srv.getState().earthquakeTimer, 0);
+    assert.ok(srv.getState().earthquakeKnockdownTimer > 4.5);
+
+    // Newly spawned enemy during the knockdown recovery window also spawns knocked down and never moves while lying down
+    srv.spawnEnemy(true);
+    const eSpawnedInRecovery = srv.enemies[srv.enemies.length - 1];
+    assert.ok(eSpawnedInRecovery.knockdownTimer > 0, 'Enemy spawned during knockdown recovery is knocked down');
+    const recX = eSpawnedInRecovery.x;
+    const recY = eSpawnedInRecovery.y;
+    srv.stepWorldPhysics(0.5);
+    assert.equal(eSpawnedInRecovery.x, recX);
+    assert.equal(eSpawnedInRecovery.y, recY);
+    assert.equal(eSpawnedInRecovery.vx, 0);
+    assert.equal(eSpawnedInRecovery.vy, 0);
   });
 
   it('triggers Fear wave and contagious 4x panic fleeing between zombies', () => {
@@ -575,7 +637,7 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'disco' });
     srv.stepPlayerPhysics(p, 0.016);
-    assert.ok(p.hammer.discoTimer > 59.9 && p.hammer.discoTimer <= 60);
+    assert.ok(p.hammer.discoTimer > 29.9 && p.hammer.discoTimer <= 30);
 
     // Place zombie directly in path of moving disco hammer
     const e1 = addTestEnemy(2200, 2100, 100);
@@ -601,11 +663,11 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     assert.equal(srv.startEnemyDance(e1), false);
   });
 
-  it('Jack-o-Lantern Hammer lasts 60s and deals normal impact damage', () => {
+  it('Jack-o-Lantern Hammer lasts 30s, deals normal impact damage, and always sets fire to enemies', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'jackolantern' });
     srv.stepPlayerPhysics(p, 0.016);
-    assert.ok(p.hammer.jackolanternTimer > 59.9 && p.hammer.jackolanternTimer <= 60);
+    assert.ok(p.hammer.jackolanternTimer > 29.9 && p.hammer.jackolanternTimer <= 30);
 
     const e = addTestEnemy(2200, 2100, 200);
     p.hammer.x = 2190;
@@ -615,14 +677,26 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
 
     srv.stepWorldPhysics(0.016);
     assert.ok(e.hp < 200, 'Jack-o-lantern hammer should deal normal impact damage');
+    assert.ok(e.burnTimer > 9.9, 'Jack-o-lantern hammer should ignite the hit enemy');
+
+    // Hitting another enemy (even one with fireproofTimer > 0) also sets it on fire without consuming charges
+    const e2 = addTestEnemy(2200, 2250, 250);
+    e2.fireproofTimer = 4.0;
+    p.hammer.x = 2190;
+    p.hammer.y = 2250;
+    p.hammer.vx = 600;
+    p.hammer.vy = 0;
+    srv.stepWorldPhysics(0.016);
+    assert.equal(e2.fireproofTimer, 0);
+    assert.ok(e2.burnTimer > 9.9, 'Jack-o-lantern hammer should always set fire to enemies');
   });
 
-  it('Spider Hammer lasts 60s, deals normal damage, and wraps zombies in white webbing for 30s so they cannot move', () => {
+  it('Spider Hammer lasts 30s, deals normal damage, and wraps zombies in white webbing for 30s so they cannot move', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'spider' });
     srv.stepPlayerPhysics(p, 0.016);
     assert.equal(p.hammer.isSpider, true);
-    assert.ok(p.hammer.spiderTimer > 59.9 && p.hammer.spiderTimer <= 60);
+    assert.ok(p.hammer.spiderTimer > 29.9 && p.hammer.spiderTimer <= 30);
 
     // Cannot pick up another spider powerup when all hammers are already spiders
     srv.blackCircles.push({ id: 2, x: p.x, y: p.y, radius: 10, type: 'spider' });
@@ -707,7 +781,7 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     assert.equal(p.hammer.thorTimer, 0);
   });
 
-  it('Bulldozer mode grants 20s invincibility, crushes zombies, cannot move fixed stone columns, and blocks other pickups', () => {
+  it('Bulldozer mode grants 20s invincibility, deals 300 damage and pushes enemies back (2x) to hit them again, cannot move fixed stone columns, and blocks other pickups', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     // Place bulldozer pickup and a speed pickup at the same spot
     srv.blackCircles.push({ id: 1, x: p.x, y: p.y, radius: 10, type: 'speed' });
@@ -716,6 +790,7 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
 
     assert.ok(p.bulldozerTimer > 19.9);
     assert.equal(p.radius, srv.BULLDOZER_RADIUS);
+    assert.equal(srv.BULLDOZER_DAMAGE, 300);
     // Same-tick pickup guard prevented picking up the speed powerup
     assert.equal(p.speedMultiplier, 1.0);
     assert.equal(srv.blackCircles.length, 1);
@@ -724,10 +799,29 @@ describe('Rare Powerups: Disco Ball, Jack-o-Lantern, Spider Hammer, Bulldozer', 
     assert.equal(srv.applyDamageToPlayer(p, 999), false);
     assert.equal(p.hp, 100);
 
-    // Crushes zombies on contact
-    const e = addTestEnemy(p.x + 20, p.y, 200);
+    // Deals 300 damage and pushes a 400-HP zombie back (2x pushback) so the bulldozer will soon hit it again
+    p.hammer.x = 1800;
+    p.hammer.y = 2100;
+    const e = addTestEnemy(p.x + 20, p.y, 400);
     srv.stepWorldPhysics(0.016);
-    assert.equal(srv.enemies.includes(e), false);
+    assert.equal(srv.enemies.includes(e), true, '400-HP enemy survives first 300-damage bulldozer hit');
+    assert.equal(e.hp, 100, 'Bulldozer deals 300 points of damage (doubled)');
+    assert.ok(e.x > p.x + p.radius + e.radius, 'Enemy is pushed back in front of the bulldozer');
+    assert.ok(e.vx > 200, 'Enemy has doubled knockback velocity away from the bulldozer');
+    assert.equal(p.kills, 0);
+
+    // As the bulldozer continues forward, the bulldozer soon hits the enemy again and defeats it
+    p.angle = 0;
+    p.input.mouseWorldX = p.x + 500;
+    p.input.mouseWorldY = p.y;
+    for (let step = 0; step < 40 && srv.enemies.includes(e); step++) {
+      srv.stepPlayerPhysics(p, 0.033);
+      p.hammer.x = p.x - 200;
+      p.hammer.y = p.y;
+      srv.updatePlayerBroadphaseBounds(p);
+      srv.stepWorldPhysics(0.033);
+    }
+    assert.equal(srv.enemies.includes(e), false, 'Bulldozer soon hits the pushed-back enemy again and defeats it');
     assert.equal(p.kills, 1);
 
     // Stone columns are fixed in location and cannot be moved by bulldozer
@@ -1579,7 +1673,7 @@ describe('Whirlwind / Momentum Spin-Up and Overdrive', () => {
     assert.equal(mz.variant, 'motorcycle');
     // Regular zombie walker has moveForce = 210. Motorcycle zombie is 5x = 1050
     assert.equal(mz.moveForce, 1050, 'Motorcycle zombie moves 5x as fast as regular zombie (5 * 210 = 1050)');
-    assert.equal(mz.turnRate, 1.2, 'Motorcycle zombie has turnRate for wide turning radius');
+    assert.equal(mz.turnRate, +(1.2 / 0.7).toFixed(4), 'Motorcycle zombie has turnRate for 30% smaller turning radius');
 
     // 3. Spawns again at 40 kills
     srv.enemies.length = 0;
@@ -1589,13 +1683,11 @@ describe('Whirlwind / Momentum Spin-Up and Overdrive', () => {
     assert.equal(srv.getState().teamKills, 40);
     assert.equal(srv.enemies.filter((e) => e.variant === 'motorcycle').length, 1, 'Spawns motorcycle zombie at 40 kills');
 
-    // 4. Wide turning radius physics verification:
+    // 4. Wide turning radius physics verification (30% reduced turn radius -> turnRate = 1.2 / 0.7):
     // Place a motorcycle zombie pointing East (angle = 0).
     // Place player directly North (targetAngle = -PI/2).
     // Angle difference is PI/2 = 1.5708 rad.
-    // In one step (dt = 0.016), turn rate is 1.2 rad/s.
-    // Max angular change is 1.2 * 0.016 = 0.0192 rad.
-    // Regular zombie immediately snaps angle to -PI/2; motorcycle zombie only turns by 0.0192 rad!
+    // In one step (dt = 0.016), turn rate is MOTORCYCLE_TURN_RATE (1.7143 rad/s).
     srv.enemies.length = 0;
     const testMoto = srv.spawnMotorcycleZombie();
     testMoto.x = 2000;
@@ -1609,7 +1701,7 @@ describe('Whirlwind / Momentum Spin-Up and Overdrive', () => {
     const dt = 0.016;
     srv.stepWorldPhysics(dt);
 
-    const expectedMaxTurn = 1.2 * dt;
+    const expectedMaxTurn = srv.MOTORCYCLE_TURN_RATE * dt;
     assert.ok(
       Math.abs(testMoto.angle) <= expectedMaxTurn + 0.001,
       `Motorcycle angle should turn smoothly by <= ${expectedMaxTurn} rad, actual: ${testMoto.angle}`
