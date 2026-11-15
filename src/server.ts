@@ -162,6 +162,21 @@ const MOTORCYCLE_WRECK_SCALE = 1.2;
 const MOTORCYCLE_WRECK_RADIUS = Math.round(21 * MOTORCYCLE_WRECK_SCALE); // 25
 const MOTORCYCLE_MOUNT_RADIUS = 30;
 
+const BOSS_KILL_INTERVAL = 200;
+const BOSS_QUAKE_DELAY = 5.0;
+const BOSS_DEFEAT_SEGMENT_THRESHOLD = 8;
+const BOSS_BLINK_DURATION = 3.0;
+const BOSS_PALM_RADIUS = 165;
+const BOSS_SEGMENT_RADIUS = 72;
+const BOSS_SEGMENT_BASE_HP = 300;
+const BOSS_SPEED_MULT = 1.2;
+const BOSS_DETACHED_SPEED_MULT = 1.25;
+const BOSS_DETACH_HP_RATIO = 0.25;
+const BOSS_FINGER_SPREAD_RATE = 0.8;
+const BOSS_DEFEAT_POWERUP_COUNT = 24;
+const BOSS_DIGIT_ANGLE_OFFSETS = [-0.95, -0.42, -0.08, 0.26, 0.60] as const;
+const BOSS_DIGIT_SEGMENT_COUNTS = [2, 3, 3, 3, 3] as const;
+
 const HIT_STOP_DURATION = 0.030;
 const HIT_STOP_DAMAGE_THRESHOLD = 350;
 const HIT_STOP_BIG_SHAKE_THRESHOLD = 425;
@@ -498,8 +513,24 @@ let lastEmptyTime: number | null = Date.now();
 let lastServerWallClockTime = Date.now();
 let lastMobSpawnMilestone = 0;
 let lastMotorcycleSpawnMilestone = 0;
+let lastBossSpawnMilestone = 0;
 let nextMobId = 1;
 let nextMotorcycleWreckId = 1;
+let nextBossId = 1;
+let bossStartQuakeTimer = 0;
+
+interface BossHandState {
+  bossId: string;
+  palm: any;
+  segments: any[];
+  parts: any[];
+  defeatedSegments: number;
+  defeatedTriggered: boolean;
+  blinkTimer: number;
+  x: number;
+  y: number;
+}
+const activeBossHands = new Map<string, BossHandState>();
 
 interface LaidDownMotorcycle {
   id: number;
@@ -1213,6 +1244,7 @@ function spawnEnemy(awayFromPlayers = false) {
 }
 
 function startEnemyDance(e) {
+  if (!e || e.isBossPart) return false;
   if ((e.danceTimer || 0) > 0 || (e.danceImmuneTimer || 0) > 0) return false;
   e.danceTimer = ZOMBIE_DANCE_DURATION;
   e.vx = 0;
@@ -1226,6 +1258,7 @@ function startEnemyDance(e) {
 }
 
 function taintEnemyWithFear(e, sourcePlayer, duration = FEAR_DURATION) {
+  if (!e || e.isBossPart) return false;
   if ((e.fearTimer || 0) > 0 && duration <= e.fearTimer) return false;
   e.fearTimer = duration;
   e.fearSource = sourcePlayer || null;
@@ -1247,6 +1280,14 @@ function taintEnemyWithFear(e, sourcePlayer, duration = FEAR_DURATION) {
     x: Math.round(e.x),
     y: Math.round(e.y),
   });
+  return true;
+}
+
+function canEnemyBeWebbed(e: any): boolean {
+  if (!e) return false;
+  if (e.isBossPart) {
+    return e.bossPartType === 'segment' && !e.attached;
+  }
   return true;
 }
 
@@ -1561,6 +1602,7 @@ function defeatEnemy(
   teamKills += 1;
   checkArmoredMobSpawn();
   checkMotorcycleSpawn();
+  checkBossSpawn();
   if (killerPlayer) {
     killerPlayer.kills += 1;
     if (!killerPlayer.isBot) {
@@ -1572,13 +1614,15 @@ function defeatEnemy(
       }
     }
   }
-  const pickupType = rollRandomPickupType();
-  addPickupToWorld({
-    id: nextPickupId++,
-    x: e.x,
-    y: e.y,
-    type: pickupType,
-  });
+  if (!e.isBossPart) {
+    const pickupType = rollRandomPickupType();
+    addPickupToWorld({
+      id: nextPickupId++,
+      x: e.x,
+      y: e.y,
+      type: pickupType,
+    });
+  }
   let ghostVx = 0;
   let ghostVy = 0;
   if (killerHammer) {
@@ -1600,13 +1644,26 @@ function defeatEnemy(
     enemies.splice(index, 1);
   }
 
+  if (e.isBossPart && e.bossPartType === 'segment' && e.bossId) {
+    const bossHand = activeBossHands.get(e.bossId);
+    if (bossHand) {
+      bossHand.defeatedSegments += 1;
+      if (
+        !bossHand.defeatedTriggered &&
+        bossHand.defeatedSegments >= BOSS_DEFEAT_SEGMENT_THRESHOLD
+      ) {
+        triggerBossDefeated(bossHand);
+      }
+    }
+  }
+
   if (roundState === 'playing' && teamKills > VICTORY_KILL_TARGET) {
     triggerCoopVictory();
   }
 }
 
 function checkEnemyLimbLoss(e: any, hitVx: number = 0, hitVy: number = 0) {
-  if (!e) return;
+  if (!e || e.isBossPart) return;
   checkMotorcycleDismount(e);
   if (!e.lostLimbs) e.lostLimbs = [];
   if (e.hp <= 0) return;
@@ -1664,12 +1721,21 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer, options: any
     (sourceHammer && sourceHammer.flameTimer > 0) ||
     (sourcePlayer && sourcePlayer.hammer && sourcePlayer.hammer.flameTimer > 0);
 
+  const hitBossSegments = new Set<any>();
   for (let j = enemies.length - 1; j >= 0; j--) {
     const target = enemies[j];
+    if (target.isBossPart && (target.bossBlinkTimer || 0) > 0) continue;
     const bdx = target.x - ex;
     const bdy = target.y - ey;
     const bDist = Math.hypot(bdx, bdy);
     if (bDist <= blastRadius + target.radius) {
+      const dmgTarget = target.isBossPart ? resolveBossTargetSegment(target) : target;
+      if (!dmgTarget) continue;
+      if (target.isBossPart) {
+        if (hitBossSegments.has(dmgTarget)) continue;
+        hitBossSegments.add(dmgTarget);
+      }
+
       const falloff = Math.max(0.35, 1 - bDist / (blastRadius + target.radius));
       const blastDamage = Math.round(550 * damageScale * falloff);
       const blastImpulse = 2400 * damageScale * falloff;
@@ -1677,31 +1743,34 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer, options: any
       const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
 
       const targetKnockedDown =
-        earthquakeTimer > 0 || earthquakeKnockdownTimer > 0 || (target.knockdownTimer || 0) > 0;
+        !target.isBossPart &&
+        (earthquakeTimer > 0 || earthquakeKnockdownTimer > 0 || (target.knockdownTimer || 0) > 0);
       if (targetKnockedDown) {
         target.vx = 0;
         target.vy = 0;
-      } else {
+      } else if (!target.isBossPart || !target.attached || target.bossPartType === 'palm') {
         target.vx += (blastImpulse / target.mass) * bnx;
         target.vy += (blastImpulse / target.mass) * bny;
       }
-      target.hp -= blastDamage;
+      dmgTarget.hp -= blastDamage;
+      dmgTarget.hurtFlash = 0.32;
       target.hurtFlash = 0.32;
-      target.lastBlastKiller = sourcePlayer || null;
-      checkMotorcycleDismount(target);
+      dmgTarget.lastBlastKiller = sourcePlayer || null;
+      checkMotorcycleDismount(dmgTarget);
       checkEnemyLimbLoss(
-        target,
-        (blastImpulse / target.mass) * bnx * 0.5,
-        (blastImpulse / target.mass) * bny * 0.5
+        dmgTarget,
+        (blastImpulse / dmgTarget.mass) * bnx * 0.5,
+        (blastImpulse / dmgTarget.mass) * bny * 0.5
       );
+      checkBossSegmentDetach(dmgTarget);
 
       if (isFlamingBlast) {
         if (isJackBlast) {
-          target.fireproofTimer = 0;
+          dmgTarget.fireproofTimer = 0;
         }
-        if (!igniteEnemy(target, sourcePlayer) && isJackBlast) {
-          target.burnTimer = ZOMBIE_BURN_DURATION;
-          target.burnOwner = sourcePlayer || target.burnOwner || null;
+        if (!igniteEnemy(dmgTarget, sourcePlayer) && isJackBlast) {
+          dmgTarget.burnTimer = ZOMBIE_BURN_DURATION;
+          dmgTarget.burnOwner = sourcePlayer || dmgTarget.burnOwner || null;
         }
       }
 
@@ -1711,8 +1780,8 @@ function triggerHammerExplosion(ex, ey, sourcePlayer, sourceHammer, options: any
 
       pendingEvents.push({
         type: 'floating_text',
-        x: Math.round(target.x),
-        y: Math.round(target.y - target.radius - 10),
+        x: Math.round(dmgTarget.x),
+        y: Math.round(dmgTarget.y - dmgTarget.radius - 10),
         text: `-${blastDamage}`,
         color: isThor ? '#90cdf4' : '#f6ad55',
         scale: isThor ? 1.25 : 1.35,
@@ -1759,12 +1828,21 @@ function triggerWhirlwindGust(gx, gy, sourcePlayer, sourceHammer, options: any =
     scale: 1.15 + level * 0.15,
   });
 
+  const hitBossSegments = new Set<any>();
   for (let j = enemies.length - 1; j >= 0; j--) {
     const target = enemies[j];
+    if (target.isBossPart && (target.bossBlinkTimer || 0) > 0) continue;
     const bdx = target.x - gx;
     const bdy = target.y - gy;
     const bDist = Math.hypot(bdx, bdy);
     if (bDist <= gustRadius + target.radius) {
+      const dmgTarget = target.isBossPart ? resolveBossTargetSegment(target) : target;
+      if (!dmgTarget) continue;
+      if (target.isBossPart) {
+        if (hitBossSegments.has(dmgTarget)) continue;
+        hitBossSegments.add(dmgTarget);
+      }
+
       const falloff = Math.max(0.4, 1 - bDist / (gustRadius + target.radius));
       const gustDamage = Math.round(gustMaxDamage * falloff);
       const gustImpulse = (1200 + level * 200) * falloff;
@@ -1772,35 +1850,38 @@ function triggerWhirlwindGust(gx, gy, sourcePlayer, sourceHammer, options: any =
       const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
 
       const targetKnockedDown =
-        earthquakeTimer > 0 || earthquakeKnockdownTimer > 0 || (target.knockdownTimer || 0) > 0;
+        !target.isBossPart &&
+        (earthquakeTimer > 0 || earthquakeKnockdownTimer > 0 || (target.knockdownTimer || 0) > 0);
       if (targetKnockedDown) {
         target.vx = 0;
         target.vy = 0;
-      } else {
+      } else if (!target.isBossPart || !target.attached || target.bossPartType === 'palm') {
         target.vx += (gustImpulse / target.mass) * bnx;
         target.vy += (gustImpulse / target.mass) * bny;
       }
-      target.hp -= gustDamage;
+      dmgTarget.hp -= gustDamage;
+      dmgTarget.hurtFlash = 0.28;
       target.hurtFlash = 0.28;
-      target.lastBlastKiller = sourcePlayer || null;
-      checkMotorcycleDismount(target);
+      dmgTarget.lastBlastKiller = sourcePlayer || null;
+      checkMotorcycleDismount(dmgTarget);
       checkEnemyLimbLoss(
-        target,
-        (gustImpulse / target.mass) * bnx * 0.5,
-        (gustImpulse / target.mass) * bny * 0.5
+        dmgTarget,
+        (gustImpulse / dmgTarget.mass) * bnx * 0.5,
+        (gustImpulse / dmgTarget.mass) * bny * 0.5
       );
+      checkBossSegmentDetach(dmgTarget);
 
       if (isFlaming) {
         if (isJackGust) {
-          target.fireproofTimer = 0;
+          dmgTarget.fireproofTimer = 0;
         }
-        if (igniteEnemy(target, sourcePlayer)) {
-          if (target.hp <= 0) {
-            target.hp = Math.max(18, Math.round(target.maxHp * 0.3));
+        if (igniteEnemy(dmgTarget, sourcePlayer)) {
+          if (!dmgTarget.isBossPart && dmgTarget.hp <= 0) {
+            dmgTarget.hp = Math.max(18, Math.round(dmgTarget.maxHp * 0.3));
           }
         } else if (isJackGust) {
-          target.burnTimer = ZOMBIE_BURN_DURATION;
-          target.burnOwner = sourcePlayer || target.burnOwner || null;
+          dmgTarget.burnTimer = ZOMBIE_BURN_DURATION;
+          dmgTarget.burnOwner = sourcePlayer || dmgTarget.burnOwner || null;
         }
       }
 
@@ -1810,8 +1891,8 @@ function triggerWhirlwindGust(gx, gy, sourcePlayer, sourceHammer, options: any =
 
       pendingEvents.push({
         type: 'floating_text',
-        x: Math.round(target.x),
-        y: Math.round(target.y - target.radius - 8),
+        x: Math.round(dmgTarget.x),
+        y: Math.round(dmgTarget.y - dmgTarget.radius - 8),
         text: `-${gustDamage}`,
         color: isFlaming ? '#ff6b35' : (levelColors[level] || '#a7f3d0'),
         scale: 1.05 + level * 0.1,
@@ -2097,12 +2178,530 @@ function checkMotorcycleDismount(e: any): boolean {
   return true;
 }
 
+function getNearestMapEdgeDirection(x: number, y: number): { x: number; y: number } {
+  const distLeft = x;
+  const distRight = WORLD_WIDTH - x;
+  const distTop = y;
+  const distBottom = WORLD_HEIGHT - y;
+  const minDist = Math.min(distLeft, distRight, distTop, distBottom);
+  if (minDist === distLeft) return { x: -1, y: 0 };
+  if (minDist === distRight) return { x: 1, y: 0 };
+  if (minDist === distTop) return { x: 0, y: -1 };
+  return { x: 0, y: 1 };
+}
+
+function triggerEarthquake(epicenterX: number = WORLD_WIDTH / 2, epicenterY: number = WORLD_HEIGHT / 2) {
+  earthquakeTimer = EARTHQUAKE_DURATION;
+  earthquakeKnockdownTimer = EARTHQUAKE_DURATION + ZOMBIE_KNOCKDOWN_RECOVERY;
+  for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
+    const en = enemies[eIdx];
+    if (en.isBossPart) continue;
+    en.knockdownTimer = ZOMBIE_KNOCKDOWN_RECOVERY;
+    en.vx = 0;
+    en.vy = 0;
+  }
+  pendingEvents.push({
+    type: 'earthquake',
+    x: Math.round(epicenterX),
+    y: Math.round(epicenterY),
+  });
+}
+
+function getBossFingerSpread(palm: any): number {
+  const phase =
+    palm && typeof palm.fingerSpreadPhase === 'number'
+      ? palm.fingerSpreadPhase
+      : palm && typeof palm.walkPhase === 'number'
+      ? palm.walkPhase
+      : 0;
+  return 0.5 + 0.5 * Math.sin(phase);
+}
+
+function getBossSegmentAttachedPose(
+  palm: any,
+  digitIndex: number,
+  segmentIndex: number,
+  segRadius: number = digitIndex === 0 ? BOSS_SEGMENT_RADIUS + 6 : BOSS_SEGMENT_RADIUS
+) {
+  const baseOffset = BOSS_DIGIT_ANGLE_OFFSETS[digitIndex] ?? 0;
+  const palmAngle = palm.angle || 0;
+  const palmR = palm.radius || BOSS_PALM_RADIUS;
+  const spread = getBossFingerSpread(palm);
+
+  let knuckleOffset: number;
+  let dirOffset: number;
+  if (digitIndex === 0) {
+    // Thumb tucks inward when aligned (spread = 0) and splays outward when spread (spread = 1)
+    knuckleOffset = -0.62 + (baseOffset - -0.62) * (0.35 + 0.80 * spread);
+    dirOffset = -0.35 + (baseOffset - -0.35) * (0.20 + 0.95 * spread);
+  } else {
+    // 4 fingers align parallel side-by-side when spread = 0 and fan out wide when spread = 1
+    const fingerCenterOffset = 0.09;
+    knuckleOffset =
+      fingerCenterOffset + (baseOffset - fingerCenterOffset) * (0.48 + 0.67 * spread);
+    dirOffset =
+      fingerCenterOffset + (baseOffset - fingerCenterOffset) * (0.05 + 1.10 * spread);
+  }
+
+  const knuckleAngle = palmAngle + knuckleOffset;
+  const digitAngle = palmAngle + dirOffset;
+  const baseDist = palmR + segRadius * 0.75;
+  const baseX = palm.x + Math.cos(knuckleAngle) * baseDist;
+  const baseY = palm.y + Math.sin(knuckleAngle) * baseDist;
+  const stepDist = segRadius * 1.85;
+  const reach = (segmentIndex - 1) * stepDist;
+  return {
+    x: baseX + Math.cos(digitAngle) * reach,
+    y: baseY + Math.sin(digitAngle) * reach,
+    angle: digitAngle,
+  };
+}
+
+function syncBossHandAttachedSegments(palm: any) {
+  if (!palm || !palm.bossId) return;
+  const bh = activeBossHands.get(palm.bossId);
+  if (bh) {
+    bh.x = palm.x;
+    bh.y = palm.y;
+  }
+  for (let i = 0; i < enemies.length; i++) {
+    const seg = enemies[i];
+    if (
+      seg.isBossPart &&
+      seg.bossId === palm.bossId &&
+      seg.bossPartType === 'segment' &&
+      seg.attached
+    ) {
+      const pose = getBossSegmentAttachedPose(
+        palm,
+        seg.digitIndex,
+        seg.segmentIndex,
+        seg.radius || BOSS_SEGMENT_RADIUS
+      );
+      seg.x = pose.x;
+      seg.y = pose.y;
+      seg.vx = palm.vx || 0;
+      seg.vy = palm.vy || 0;
+      seg.angle = pose.angle;
+    }
+  }
+}
+
+function spawnBossHand(atX?: number, atY?: number) {
+  // 1. All regular zombies enter the fear state and run for the edges of the map
+  for (let i = 0; i < enemies.length; i++) {
+    const en = enemies[i];
+    if (en.isBossPart) continue;
+    en.fearTimer = Math.max(en.fearTimer || 0, FEAR_DURATION);
+    en.fearToEdge = true;
+    en.fearSource = null;
+    const isKnockedDown =
+      earthquakeTimer > 0 || earthquakeKnockdownTimer > 0 || (en.knockdownTimer || 0) > 0;
+    if (!isKnockedDown) {
+      const edgeDir = getNearestMapEdgeDirection(en.x, en.y);
+      const burstSpeed = (en.moveForce / en.traction) * FEAR_SPEED_MULT * 0.85;
+      en.angle = Math.atan2(edgeDir.y, edgeDir.x);
+      en.vx = edgeDir.x * burstSpeed;
+      en.vy = edgeDir.y * burstSpeed;
+    }
+  }
+
+  // 2. 5 seconds later an earthquake is triggered
+  bossStartQuakeTimer = BOSS_QUAKE_DELAY;
+
+  // 3. Spawn a giant floating hand that slowly pursues the nearest warrior
+  const bossId = `boss_${nextBossId++}`;
+  const hpScale = getMonsterStrength();
+  const baseMoveForce = Math.round(210 * BOSS_SPEED_MULT); // 126
+  const segHp = Math.round(BOSS_SEGMENT_BASE_HP * hpScale);
+
+  let spawnX = typeof atX === 'number' ? atX : WORLD_WIDTH / 2;
+  let spawnY = typeof atY === 'number' ? atY : 260;
+  if (typeof atX !== 'number' || typeof atY !== 'number') {
+    for (let attempt = 0; attempt < 25; attempt++) {
+      const side = Math.floor(Math.random() * 4);
+      const margin = 240;
+      let cx = WORLD_WIDTH / 2;
+      let cy = WORLD_HEIGHT / 2;
+      if (side === 0) {
+        cx = margin + Math.random() * (WORLD_WIDTH - margin * 2);
+        cy = margin;
+      } else if (side === 1) {
+        cx = WORLD_WIDTH - margin;
+        cy = margin + Math.random() * (WORLD_HEIGHT - margin * 2);
+      } else if (side === 2) {
+        cx = margin + Math.random() * (WORLD_WIDTH - margin * 2);
+        cy = WORLD_HEIGHT - margin;
+      } else {
+        cx = margin;
+        cy = margin + Math.random() * (WORLD_HEIGHT - margin * 2);
+      }
+      if (touchesStoneColumn(cx, cy, BOSS_PALM_RADIUS + 40)) continue;
+      let tooClose = false;
+      for (const p of players.values()) {
+        if (p.alive && Math.hypot(p.x - cx, p.y - cy) < 620) {
+          tooClose = true;
+          break;
+        }
+      }
+      spawnX = cx;
+      spawnY = cy;
+      if (!tooClose) break;
+    }
+  }
+
+  let initialAngle = 0;
+  let nearestDist = Infinity;
+  for (const p of players.values()) {
+    if (!p.alive) continue;
+    const d = Math.hypot(p.x - spawnX, p.y - spawnY);
+    if (d < nearestDist) {
+      nearestDist = d;
+      initialAngle = Math.atan2(p.y - spawnY, p.x - spawnX);
+    }
+  }
+
+  const palm: any = {
+    id: nextEnemyId++,
+    variant: 'boss_palm',
+    isBossPart: true,
+    bossId,
+    bossPartType: 'palm',
+    digitIndex: -1,
+    segmentIndex: 0,
+    isThumb: false,
+    attached: true,
+    bossBlinkTimer: 0,
+    x: spawnX,
+    y: spawnY,
+    vx: 0,
+    vy: 0,
+    angle: initialAngle,
+    radius: BOSS_PALM_RADIUS,
+    mass: 10.0,
+    hp: segHp * 14,
+    maxHp: segHp * 14,
+    moveForce: baseMoveForce,
+    baseBossMoveForce: baseMoveForce,
+    traction: 4.5,
+    contactDamage: 22,
+    contactPush: 260,
+    skinColor: '#d6bcfa',
+    coatColor: '#553c9a',
+    shirtColor: '#805ad5',
+    hitCooldown: 0,
+    chainHitCooldown: 0,
+    contactCooldown: 0,
+    hurtFlash: 0,
+    burnTimer: 0,
+    burnTickAccum: 0,
+    burnOwner: null,
+    fireproofTimer: 0,
+    fearTimer: 0,
+    fearSource: null,
+    danceTimer: 0,
+    danceImmuneTimer: 0,
+    webTimer: 0,
+    knockdownTimer: 0,
+    walkPhase: 0,
+    fingerSpreadPhase: 0,
+    lostLimbs: [] as string[],
+  };
+
+  const spawnedParts: any[] = [];
+  for (let dIdx = 0; dIdx < BOSS_DIGIT_SEGMENT_COUNTS.length; dIdx++) {
+    const segCount = BOSS_DIGIT_SEGMENT_COUNTS[dIdx];
+    const isThumb = dIdx === 0;
+    for (let sIdx = 1; sIdx <= segCount; sIdx++) {
+      const segRadius = isThumb ? BOSS_SEGMENT_RADIUS + 6 : BOSS_SEGMENT_RADIUS;
+      const pose = getBossSegmentAttachedPose(palm, dIdx, sIdx, segRadius);
+      const seg: any = {
+        id: nextEnemyId++,
+        variant: 'boss_segment',
+        isBossPart: true,
+        bossId,
+        bossPartType: 'segment',
+        digitIndex: dIdx,
+        segmentIndex: sIdx,
+        isThumb,
+        hasRing: dIdx === 3 && sIdx === 1,
+        attached: true,
+        bossBlinkTimer: 0,
+        x: pose.x,
+        y: pose.y,
+        vx: 0,
+        vy: 0,
+        angle: pose.angle,
+        radius: segRadius,
+        mass: 3.2,
+        hp: segHp,
+        maxHp: segHp,
+        moveForce: baseMoveForce,
+        baseBossMoveForce: baseMoveForce,
+        traction: 4.5,
+        contactDamage: 18,
+        contactPush: 220,
+        skinColor: sIdx === segCount ? '#b794f4' : '#d6bcfa',
+        coatColor: '#553c9a',
+        shirtColor: '#9f7aea',
+        hitCooldown: 0,
+        chainHitCooldown: 0,
+        contactCooldown: 0,
+        hurtFlash: 0,
+        burnTimer: 0,
+        burnTickAccum: 0,
+        burnOwner: null,
+        fireproofTimer: 0,
+        fearTimer: 0,
+        fearSource: null,
+        danceTimer: 0,
+        danceImmuneTimer: 0,
+        webTimer: 0,
+        knockdownTimer: 0,
+        walkPhase: 0,
+        lostLimbs: [] as string[],
+      };
+      enemies.push(seg);
+      spawnedParts.push(seg);
+    }
+  }
+
+  const segments = spawnedParts.slice();
+
+  // Push palm last so reverse iteration in stepWorldPhysics updates palm first each step
+  enemies.push(palm);
+  spawnedParts.push(palm);
+
+  const bossHandState: BossHandState = {
+    bossId,
+    palm,
+    segments,
+    parts: spawnedParts,
+    defeatedSegments: 0,
+    defeatedTriggered: false,
+    blinkTimer: 0,
+    x: spawnX,
+    y: spawnY,
+  };
+  activeBossHands.set(bossId, bossHandState);
+
+  pendingEvents.push({
+    type: 'boss_spawn',
+    bossId,
+    x: Math.round(spawnX),
+    y: Math.round(spawnY),
+  });
+  pendingEvents.push({
+    type: 'floating_text',
+    x: Math.round(spawnX),
+    y: Math.round(spawnY - BOSS_PALM_RADIUS - 20),
+    text: 'BOSS HAND AWAKENS!',
+    color: '#d6bcfa',
+    scale: 1.8,
+  });
+
+  return bossHandState;
+}
+
+function checkBossSpawn() {
+  while (teamKills >= lastBossSpawnMilestone + BOSS_KILL_INTERVAL) {
+    lastBossSpawnMilestone += BOSS_KILL_INTERVAL;
+    spawnBossHand();
+  }
+}
+
+function isBossActive(): boolean {
+  if (activeBossHands.size === 0) return false;
+  for (const [bId] of activeBossHands.entries()) {
+    let hasPart = false;
+    for (let i = 0; i < enemies.length; i++) {
+      if (enemies[i].bossId === bId) {
+        hasPart = true;
+        break;
+      }
+    }
+    if (!hasPart) {
+      activeBossHands.delete(bId);
+    }
+  }
+  return activeBossHands.size > 0;
+}
+
+function resolveBossTargetSegment(hitPart: any): any {
+  if (!hitPart || !hitPart.isBossPart) return hitPart;
+  if ((hitPart.bossBlinkTimer || 0) > 0) return null;
+  if (hitPart.bossPartType === 'segment' && !hitPart.attached) {
+    return hitPart;
+  }
+
+  const bossId = hitPart.bossId;
+  if (hitPart.bossPartType === 'segment' && typeof hitPart.digitIndex === 'number') {
+    let furthestOnDigit: any = null;
+    for (let i = 0; i < enemies.length; i++) {
+      const en = enemies[i];
+      if (
+        en.isBossPart &&
+        en.bossId === bossId &&
+        en.bossPartType === 'segment' &&
+        en.attached &&
+        en.hp > 0 &&
+        en.digitIndex === hitPart.digitIndex
+      ) {
+        if (!furthestOnDigit || en.segmentIndex > furthestOnDigit.segmentIndex) {
+          furthestOnDigit = en;
+        }
+      }
+    }
+    if (furthestOnDigit) return furthestOnDigit;
+  }
+
+  let furthestAttached: any = null;
+  for (let i = 0; i < enemies.length; i++) {
+    const en = enemies[i];
+    if (
+      en.isBossPart &&
+      en.bossId === bossId &&
+      en.bossPartType === 'segment' &&
+      en.attached &&
+      en.hp > 0
+    ) {
+      if (
+        !furthestAttached ||
+        en.segmentIndex > furthestAttached.segmentIndex ||
+        (en.segmentIndex === furthestAttached.segmentIndex &&
+          en.digitIndex > furthestAttached.digitIndex)
+      ) {
+        furthestAttached = en;
+      }
+    }
+  }
+  if (furthestAttached) return furthestAttached;
+
+  // Fallback if all remaining alive segments are already detached
+  let furthestAlive: any = null;
+  for (let i = 0; i < enemies.length; i++) {
+    const en = enemies[i];
+    if (
+      en.isBossPart &&
+      en.bossId === bossId &&
+      en.bossPartType === 'segment' &&
+      en.hp > 0
+    ) {
+      if (!furthestAlive || en.segmentIndex > furthestAlive.segmentIndex) {
+        furthestAlive = en;
+      }
+    }
+  }
+  return furthestAlive;
+}
+
+function checkBossSegmentDetach(seg: any): boolean {
+  if (!seg || !seg.isBossPart || seg.bossPartType !== 'segment') return false;
+  if (!seg.attached || seg.hp <= 0) return false;
+  // When a segment has lost 75% of its hitpoints (<= 25% HP remaining), it becomes detached
+  if (seg.hp <= seg.maxHp * BOSS_DETACH_HP_RATIO) {
+    seg.attached = false;
+    const baseForce = seg.baseBossMoveForce || Math.round(210 * BOSS_SPEED_MULT);
+    seg.moveForce = Math.round(baseForce * BOSS_DETACHED_SPEED_MULT);
+    const popAng = seg.angle || 0;
+    seg.vx = (seg.vx || 0) + Math.cos(popAng) * 95;
+    seg.vy = (seg.vy || 0) + Math.sin(popAng) * 95;
+    pendingEvents.push({
+      type: 'floating_text',
+      x: Math.round(seg.x),
+      y: Math.round(seg.y - seg.radius - 10),
+      text: 'DETACHED!',
+      color: '#d6bcfa',
+      scale: 1.15,
+    });
+    return true;
+  }
+  return false;
+}
+
+function spawnBossDefeatPowerups(cx: number, cy: number, count: number = BOSS_DEFEAT_POWERUP_COUNT) {
+  const spawned: Array<{ id: number; x: number; y: number; type: string }> = [];
+  const innerCount = Math.min(8, count);
+  const outerCount = Math.max(0, count - innerCount);
+
+  for (let i = 0; i < innerCount; i++) {
+    const angle = (i / innerCount) * Math.PI * 2;
+    const r = 90;
+    const x = Math.max(40, Math.min(WORLD_WIDTH - 40, Math.round(cx + Math.cos(angle) * r)));
+    const y = Math.max(40, Math.min(WORLD_HEIGHT - 40, Math.round(cy + Math.sin(angle) * r)));
+    const pickup = {
+      id: nextPickupId++,
+      x,
+      y,
+      type: rollRandomPickupType(),
+    };
+    addPickupToWorld(pickup);
+    spawned.push(pickup);
+  }
+
+  for (let i = 0; i < outerCount; i++) {
+    const angle = (i / outerCount) * Math.PI * 2 + Math.PI / outerCount;
+    const r = 185;
+    const x = Math.max(40, Math.min(WORLD_WIDTH - 40, Math.round(cx + Math.cos(angle) * r)));
+    const y = Math.max(40, Math.min(WORLD_HEIGHT - 40, Math.round(cy + Math.sin(angle) * r)));
+    const pickup = {
+      id: nextPickupId++,
+      x,
+      y,
+      type: rollRandomPickupType(),
+    };
+    addPickupToWorld(pickup);
+    spawned.push(pickup);
+  }
+
+  return spawned;
+}
+
+function triggerBossDefeated(bossHand: BossHandState) {
+  if (!bossHand || bossHand.defeatedTriggered) return;
+  bossHand.defeatedTriggered = true;
+  bossHand.blinkTimer = BOSS_BLINK_DURATION;
+
+  for (let i = 0; i < enemies.length; i++) {
+    const en = enemies[i];
+    if (en.isBossPart && en.bossId === bossHand.bossId) {
+      en.bossBlinkTimer = BOSS_BLINK_DURATION;
+      en.vx = 0;
+      en.vy = 0;
+      if (en.bossPartType === 'palm') {
+        bossHand.x = en.x;
+        bossHand.y = en.y;
+      }
+    }
+  }
+
+  spawnBossDefeatPowerups(bossHand.x, bossHand.y, BOSS_DEFEAT_POWERUP_COUNT);
+
+  pendingEvents.push({
+    type: 'boss_defeated',
+    bossId: bossHand.bossId,
+    x: Math.round(bossHand.x),
+    y: Math.round(bossHand.y),
+  });
+  pendingEvents.push({
+    type: 'floating_text',
+    x: Math.round(bossHand.x),
+    y: Math.round(bossHand.y - 40),
+    text: 'BOSS DEFEATED!',
+    color: '#faf089',
+    scale: 1.85,
+  });
+}
+
 function resetGameWorld() {
   lastEmptyTime = null;
   roundState = 'playing';
   teamKills = 0;
   lastMobSpawnMilestone = 0;
   lastMotorcycleSpawnMilestone = 0;
+  lastBossSpawnMilestone = 0;
+  bossStartQuakeTimer = 0;
+  activeBossHands.clear();
   laidDownMotorcycles.length = 0;
   victoryInfo = null;
   enemies.length = 0;
@@ -2861,18 +3460,7 @@ function stepPlayerPhysics(p, dt) {
         label = 'WAR ELEPHANT MOUNTED! (1x SPEED, 10x GRIP)';
         color = '#e2e8f0';
       } else if (pType === 'earthquake') {
-        earthquakeTimer = EARTHQUAKE_DURATION;
-        earthquakeKnockdownTimer = EARTHQUAKE_DURATION + ZOMBIE_KNOCKDOWN_RECOVERY;
-        for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
-          enemies[eIdx].knockdownTimer = ZOMBIE_KNOCKDOWN_RECOVERY;
-          enemies[eIdx].vx = 0;
-          enemies[eIdx].vy = 0;
-        }
-        pendingEvents.push({
-          type: 'earthquake',
-          x: Math.round(p.x),
-          y: Math.round(p.y),
-        });
+        triggerEarthquake(p.x, p.y);
         label = 'EARTHQUAKE! (4s QUAKE + 5s ZOMBIE KNOCKDOWN)';
         color = '#ecc94b';
       } else if (pType === 'fear') {
@@ -3087,6 +3675,34 @@ function stepWorldPhysics(dt) {
     earthquakeKnockdownTimer = Math.max(0, earthquakeKnockdownTimer - dt);
   }
 
+  if (bossStartQuakeTimer > 0) {
+    bossStartQuakeTimer = Math.max(0, bossStartQuakeTimer - dt);
+    if (bossStartQuakeTimer <= 0) {
+      triggerEarthquake();
+    }
+  }
+
+  for (const [bId, bh] of activeBossHands.entries()) {
+    if (bh.defeatedTriggered && bh.blinkTimer > 0) {
+      bh.blinkTimer = Math.max(0, bh.blinkTimer - dt);
+      for (let i = 0; i < enemies.length; i++) {
+        const en = enemies[i];
+        if (en.isBossPart && en.bossId === bId) {
+          en.bossBlinkTimer = bh.blinkTimer;
+        }
+      }
+      if (bh.blinkTimer <= 0) {
+        triggerEarthquake(bh.x, bh.y);
+        for (let i = enemies.length - 1; i >= 0; i--) {
+          if (enemies[i].bossId === bId) {
+            enemies.splice(i, 1);
+          }
+        }
+        activeBossHands.delete(bId);
+      }
+    }
+  }
+
   for (let i = laidDownMotorcycles.length - 1; i >= 0; i--) {
     laidDownMotorcycles[i].timer -= dt;
     if (laidDownMotorcycles[i].timer <= 0) {
@@ -3142,13 +3758,26 @@ function stepWorldPhysics(dt) {
     if (e.contactCooldown > 0) e.contactCooldown = Math.max(0, e.contactCooldown - dt);
     if (e.hurtFlash > 0) e.hurtFlash = Math.max(0, e.hurtFlash - dt);
 
-    if (earthquakeTimer > 0) {
+    if (e.isBossPart) {
+      e.knockdownTimer = 0;
+      e.danceTimer = 0;
+      e.fearTimer = 0;
+      if (e.bossPartType !== 'segment' || e.attached) {
+        e.webTimer = 0;
+      }
+      if ((e.bossBlinkTimer || 0) > 0) {
+        e.vx = 0;
+        e.vy = 0;
+        continue;
+      }
+    } else if (earthquakeTimer > 0) {
       e.knockdownTimer = Math.max(e.knockdownTimer || 0, ZOMBIE_KNOCKDOWN_RECOVERY);
     } else if (e.knockdownTimer > 0) {
       e.knockdownTimer = Math.max(0, e.knockdownTimer - dt);
     }
     const isKnockedDown =
-      earthquakeTimer > 0 || earthquakeKnockdownTimer > 0 || (e.knockdownTimer || 0) > 0;
+      !e.isBossPart &&
+      (earthquakeTimer > 0 || earthquakeKnockdownTimer > 0 || (e.knockdownTimer || 0) > 0);
     if (isKnockedDown) {
       e.vx = 0;
       e.vy = 0;
@@ -3158,20 +3787,28 @@ function stepWorldPhysics(dt) {
     if (e.burnTimer > 0) {
       const stepBurn = Math.min(dt, e.burnTimer);
       e.burnTimer -= stepBurn;
-      e.hp -= ZOMBIE_BURN_DPS * stepBurn;
-      checkEnemyLimbLoss(e, 0, 0);
+      const burnTarget = e.isBossPart ? resolveBossTargetSegment(e) : e;
+      const shouldApplyBurnDmg =
+        burnTarget && (!e.isBossPart || burnTarget === e || (burnTarget.burnTimer || 0) <= 0);
+      if (shouldApplyBurnDmg) {
+        burnTarget.hp -= ZOMBIE_BURN_DPS * stepBurn;
+        checkEnemyLimbLoss(burnTarget, 0, 0);
+        checkBossSegmentDetach(burnTarget);
+      }
       e.burnTickAccum = (e.burnTickAccum || 0) + stepBurn;
 
       if (e.burnTickAccum >= 1.0) {
         e.burnTickAccum -= 1.0;
-        pendingEvents.push({
-          type: 'floating_text',
-          x: Math.round(e.x),
-          y: Math.round(e.y - e.radius - 10),
-          text: `-${ZOMBIE_BURN_DPS}`,
-          color: '#ff6b35',
-          scale: 0.95,
-        });
+        if (shouldApplyBurnDmg) {
+          pendingEvents.push({
+            type: 'floating_text',
+            x: Math.round(burnTarget.x),
+            y: Math.round(burnTarget.y - burnTarget.radius - 10),
+            text: `-${ZOMBIE_BURN_DPS}`,
+            color: '#ff6b35',
+            scale: 0.95,
+          });
+        }
       }
 
       if (e.burnTimer <= 0.0001) {
@@ -3180,9 +3817,17 @@ function stepWorldPhysics(dt) {
         e.fireproofTimer = ZOMBIE_FIREPROOF_DURATION;
       }
 
-      if (e.hp <= 0) {
-        defeatEnemy(i, e.burnOwner);
-        continue;
+      if (shouldApplyBurnDmg && burnTarget.hp <= 0) {
+        if (burnTarget === e) {
+          defeatEnemy(i, e.burnOwner);
+          continue;
+        } else {
+          const btIdx = enemies.indexOf(burnTarget);
+          defeatEnemy(burnTarget, e.burnOwner);
+          if (btIdx !== -1 && btIdx < i) {
+            i--;
+          }
+        }
       }
     } else if (e.fireproofTimer > 0) {
       e.fireproofTimer = Math.max(0, e.fireproofTimer - dt);
@@ -3192,12 +3837,13 @@ function stepWorldPhysics(dt) {
       e.fearTimer = Math.max(0, e.fearTimer - dt);
       if (e.fearTimer <= 0) {
         e.fearSource = null;
+        e.fearToEdge = false;
       }
     }
-    const isFeared = (e.fearTimer || 0) > 0;
+    const isFeared = !e.isBossPart && (e.fearTimer || 0) > 0;
 
     // Disco dancing state (30s dancing in place -> 45s immune to dancing)
-    if (e.danceTimer > 0) {
+    if (!e.isBossPart && e.danceTimer > 0) {
       e.danceTimer -= dt;
       if (e.danceTimer <= 0.0001) {
         e.danceTimer = 0;
@@ -3206,24 +3852,39 @@ function stepWorldPhysics(dt) {
     } else if (e.danceImmuneTimer > 0) {
       e.danceImmuneTimer = Math.max(0, e.danceImmuneTimer - dt);
     }
-    const isDancing = (e.danceTimer || 0) > 0;
+    const isDancing = !e.isBossPart && (e.danceTimer || 0) > 0;
 
     // Spider webbing state (30s wrapped in white webbing and unable to move)
     if (e.webTimer > 0) {
-      e.webTimer = Math.max(0, e.webTimer - dt);
+      if (!canEnemyBeWebbed(e)) {
+        e.webTimer = 0;
+      } else {
+        e.webTimer = Math.max(0, e.webTimer - dt);
+      }
     }
-    const isWebbed = (e.webTimer || 0) > 0;
+    const isWebbed = canEnemyBeWebbed(e) && (e.webTimer || 0) > 0;
 
-    // Speed multiplier: 4x when fleeing in fear, 3x when flaming, 1/2x when fire-proof
-    let speedMult = e.burnTimer > 0 ? 3.0 : e.fireproofTimer > 0 ? 0.5 : 1.0;
+    // Speed multiplier: 4x when fleeing in fear, 3x when flaming, 1/2x when fire-proof (regular zombies only)
+    let speedMult = e.isBossPart
+      ? 1.0
+      : e.burnTimer > 0
+      ? 3.0
+      : e.fireproofTimer > 0
+      ? 0.5
+      : 1.0;
     if (isFeared) {
       speedMult = Math.max(speedMult, FEAR_SPEED_MULT);
     }
-    const lostLegsCount = (e.lostLimbs || []).filter((l: string) => l === 'left_leg' || l === 'right_leg').length;
-    if (lostLegsCount === 1) {
-      speedMult *= 0.75;
-    } else if (lostLegsCount >= 2) {
-      speedMult *= 0.45;
+    if (!e.isBossPart) {
+      const lostLegsCount = (e.lostLimbs || []).filter((l: string) => l === 'left_leg' || l === 'right_leg').length;
+      if (lostLegsCount === 1) {
+        speedMult *= 0.75;
+      } else if (lostLegsCount >= 2) {
+        speedMult *= 0.45;
+      }
+    } else if (e.bossPartType === 'segment' && !e.attached) {
+      const baseForce = e.baseBossMoveForce || Math.round(210 * BOSS_SPEED_MULT);
+      e.moveForce = Math.round(baseForce * BOSS_DETACHED_SPEED_MULT);
     }
 
     // Find closest alive player using squared distance first
@@ -3241,7 +3902,32 @@ function stepWorldPhysics(dt) {
     }
     const closestDist = closestPlayer ? Math.sqrt(closestDistSq) : Infinity;
 
-    if (isKnockedDown) {
+    const isAttachedBossSegment =
+      e.isBossPart && e.bossPartType === 'segment' && e.attached;
+
+    if (isAttachedBossSegment) {
+      let palm: any = null;
+      for (let k = 0; k < enemies.length; k++) {
+        const en = enemies[k];
+        if (en.isBossPart && en.bossId === e.bossId && en.bossPartType === 'palm') {
+          palm = en;
+          break;
+        }
+      }
+      if (palm) {
+        const pose = getBossSegmentAttachedPose(
+          palm,
+          e.digitIndex,
+          e.segmentIndex,
+          e.radius || BOSS_SEGMENT_RADIUS
+        );
+        e.x = pose.x;
+        e.y = pose.y;
+        e.vx = palm.vx || 0;
+        e.vy = palm.vy || 0;
+        e.angle = pose.angle;
+      }
+    } else if (isKnockedDown) {
       // Fallen zombies remain completely motionless on the ground
       e.vx = 0;
       e.vy = 0;
@@ -3259,7 +3945,7 @@ function stepWorldPhysics(dt) {
       // Stand in one place and dance!
       e.vx = 0;
       e.vy = 0;
-    } else if (Array.isArray(e.lostLimbs) && e.lostLimbs.includes('head')) {
+    } else if (!e.isBossPart && Array.isArray(e.lostLimbs) && e.lostLimbs.includes('head')) {
       // A zombie that has lost its head should wander in circles rather than following a warrior
       e.wanderAngle = (typeof e.wanderAngle === 'number' ? e.wanderAngle : e.angle || 0) + dt * 2.0;
       let dirX = Math.cos(e.wanderAngle);
@@ -3278,6 +3964,30 @@ function stepWorldPhysics(dt) {
       e.angle = Math.atan2(dirY, dirX);
       e.vx += dirX * e.moveForce * speedMult * dt;
       e.vy += dirY * e.moveForce * speedMult * dt;
+    } else if (isFeared && e.fearToEdge) {
+      const edgeDir = getNearestMapEdgeDirection(e.x, e.y);
+      const dirX = edgeDir.x;
+      const dirY = edgeDir.y;
+      if (e.variant === 'motorcycle') {
+        const targetAngle = Math.atan2(dirY, dirX);
+        let angleDiff = targetAngle - e.angle;
+        while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+        while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+        const maxTurn = (e.turnRate || MOTORCYCLE_TURN_RATE) * dt;
+        if (Math.abs(angleDiff) <= maxTurn) {
+          e.angle = targetAngle;
+        } else {
+          e.angle += Math.sign(angleDiff) * maxTurn;
+        }
+        const fwdX = Math.cos(e.angle);
+        const fwdY = Math.sin(e.angle);
+        e.vx += fwdX * e.moveForce * speedMult * dt;
+        e.vy += fwdY * e.moveForce * speedMult * dt;
+      } else {
+        e.angle = Math.atan2(dirY, dirX);
+        e.vx += dirX * e.moveForce * speedMult * dt;
+        e.vy += dirY * e.moveForce * speedMult * dt;
+      }
     } else if (closestPlayer && closestDist > 0.001) {
       if (isFeared) {
         const refPlayer =
@@ -3374,14 +4084,16 @@ function stepWorldPhysics(dt) {
       }
     }
 
-    if (!isKnockedDown && !isWebbed) {
-      const enemyDamp = Math.exp(-(isDancing ? e.traction * 8.0 : e.traction) * dt);
-      e.vx *= enemyDamp;
-      e.vy *= enemyDamp;
-    }
+    if (!isAttachedBossSegment) {
+      if (!isKnockedDown && !isWebbed) {
+        const enemyDamp = Math.exp(-(isDancing ? e.traction * 8.0 : e.traction) * dt);
+        e.vx *= enemyDamp;
+        e.vy *= enemyDamp;
+      }
 
-    e.x += e.vx * dt;
-    e.y += e.vy * dt;
+      e.x += e.vx * dt;
+      e.y += e.vy * dt;
+    }
     if (isDancing && !isKnockedDown && !isWebbed) {
       e.walkPhase += dt * 11.5;
     } else if (!isKnockedDown && !isWebbed) {
@@ -3389,30 +4101,37 @@ function stepWorldPhysics(dt) {
     }
 
     const ePad = e.radius + 20;
-    e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, e.x));
-    e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, e.y));
+    if (!isAttachedBossSegment) {
+      e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, e.x));
+      e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, e.y));
 
-    // Collide zombie with the immovable stone columns
-    for (let cIdx = 0; cIdx < stoneColumns.length; cIdx++) {
-      const col = stoneColumns[cIdx];
-      const minEnemyColDist = e.radius + col.radius;
-      const cdx = e.x - col.x;
-      if (cdx <= -minEnemyColDist || cdx >= minEnemyColDist) continue;
-      const cdy = e.y - col.y;
-      if (cdy <= -minEnemyColDist || cdy >= minEnemyColDist) continue;
-      const cDistSq = cdx * cdx + cdy * cdy;
-      if (cDistSq < minEnemyColDist * minEnemyColDist && cDistSq > 1e-8) {
-        const cDist = Math.sqrt(cDistSq);
-        const nx = cdx / cDist;
-        const ny = cdy / cDist;
-        e.x = col.x + nx * minEnemyColDist;
-        e.y = col.y + ny * minEnemyColDist;
-        const vn = e.vx * nx + e.vy * ny;
-        if (vn < 0) {
-          e.vx -= vn * nx;
-          e.vy -= vn * ny;
+      // Collide zombie with the immovable stone columns
+      for (let cIdx = 0; cIdx < stoneColumns.length; cIdx++) {
+        const col = stoneColumns[cIdx];
+        const minEnemyColDist = e.radius + col.radius;
+        const cdx = e.x - col.x;
+        if (cdx <= -minEnemyColDist || cdx >= minEnemyColDist) continue;
+        const cdy = e.y - col.y;
+        if (cdy <= -minEnemyColDist || cdy >= minEnemyColDist) continue;
+        const cDistSq = cdx * cdx + cdy * cdy;
+        if (cDistSq < minEnemyColDist * minEnemyColDist && cDistSq > 1e-8) {
+          const cDist = Math.sqrt(cDistSq);
+          const nx = cdx / cDist;
+          const ny = cdy / cDist;
+          e.x = col.x + nx * minEnemyColDist;
+          e.y = col.y + ny * minEnemyColDist;
+          const vn = e.vx * nx + e.vy * ny;
+          if (vn < 0) {
+            e.vx -= vn * nx;
+            e.vy -= vn * ny;
+          }
         }
       }
+    }
+
+    if (e.isBossPart && e.bossPartType === 'palm') {
+      e.fingerSpreadPhase = (e.fingerSpreadPhase || 0) + dt * BOSS_FINGER_SPREAD_RATE;
+      syncBossHandAttachedSegments(e);
     }
 
     // Check collisions against every alive player's Maces, Chains, and Warrior body
@@ -3449,6 +4168,7 @@ function stepWorldPhysics(dt) {
         ) {
           const hDistSq = hdx * hdx + hdy * hdy;
           if (hDistSq < minHammerEnemyDist * minHammerEnemyDist && hDistSq > 1e-8) {
+            if ((e.bossBlinkTimer || 0) > 0) continue;
             const hDist = Math.sqrt(hDistSq);
             if ((h.discoTimer || 0) > 0) {
               // Disco Ball does not do any damage and passes through zombies rather than bouncing off of them;
@@ -3462,8 +4182,13 @@ function stepWorldPhysics(dt) {
               const totalInvMass = 1 / h.mass + 1 / e.mass;
               h.x -= nx * overlap * ((1 / h.mass) / totalInvMass);
               h.y -= ny * overlap * ((1 / h.mass) / totalInvMass);
-              e.x += nx * overlap * ((1 / e.mass) / totalInvMass);
-              e.y += ny * overlap * ((1 / e.mass) / totalInvMass);
+              if (!isAttachedBossSegment) {
+                e.x += nx * overlap * ((1 / e.mass) / totalInvMass);
+                e.y += ny * overlap * ((1 / e.mass) / totalInvMass);
+              }
+
+              const dmgTarget = e.isBossPart ? resolveBossTargetSegment(e) : e;
+              if (!dmgTarget) continue;
 
               const isJackOLantern = (h.jackolanternTimer || 0) > 0;
               let hadFlame = isJackOLantern || (h.flameCharges > 0) || ((h.flameTimer || 0) > 0);
@@ -3478,15 +4203,22 @@ function stepWorldPhysics(dt) {
                   e.burnTimer = ZOMBIE_BURN_DURATION;
                   e.burnOwner = p || e.burnOwner || null;
                 }
+                if (dmgTarget !== e) {
+                  dmgTarget.fireproofTimer = 0;
+                  igniteEnemy(dmgTarget, p);
+                }
               } else if (h.flameCharges > 0 && e.burnTimer <= 0 && e.fireproofTimer <= 0) {
                 if (igniteEnemy(e, p)) {
                   justIgnited = true;
                   h.flameCharges -= 1;
                   h.flameTimer = h.flameCharges > 0 ? h.flameCharges : 0;
+                  if (dmgTarget !== e) {
+                    igniteEnemy(dmgTarget, p);
+                  }
                 }
               }
 
-              if (h.isSpider) {
+              if (h.isSpider && canEnemyBeWebbed(e)) {
                 const wasFreshlyWebbed = (e.webTimer || 0) > ZOMBIE_WEB_DURATION - 0.45;
                 e.webTimer = ZOMBIE_WEB_DURATION;
                 if (!wasFreshlyWebbed) {
@@ -3526,16 +4258,23 @@ function stepWorldPhysics(dt) {
 
                 h.vx -= (impulse / h.mass) * nx;
                 h.vy -= (impulse / h.mass) * ny;
-                e.vx += (impulse / e.mass) * nx;
-                e.vy += (impulse / e.mass) * ny;
+                if (!isAttachedBossSegment) {
+                  e.vx += (impulse / e.mass) * nx;
+                  e.vy += (impulse / e.mass) * ny;
+                }
 
                 if (e.hitCooldown <= 0 && impulse > 8) {
                   const damage = Math.max(1, Math.round(impulse * DAMAGE_PER_IMPULSE));
-                  e.hp -= damage;
-                  checkMotorcycleDismount(e);
-                  checkEnemyLimbLoss(e, strikeHvx, strikeHvy);
+                  dmgTarget.hp -= damage;
+                  checkMotorcycleDismount(dmgTarget);
+                  checkEnemyLimbLoss(dmgTarget, strikeHvx, strikeHvy);
+                  checkBossSegmentDetach(dmgTarget);
                   e.hitCooldown = 0.09;
                   e.hurtFlash = 0.18;
+                  if (dmgTarget !== e) {
+                    dmgTarget.hitCooldown = 0.09;
+                    dmgTarget.hurtFlash = 0.18;
+                  }
 
                   if (damage > p.maxDamageBlow) {
                     p.maxDamageBlow = damage;
@@ -3548,8 +4287,8 @@ function stepWorldPhysics(dt) {
                     type: 'impact',
                     x: Math.round(contactX),
                     y: Math.round(contactY),
-                    enemyX: Math.round(e.x),
-                    enemyY: Math.round(e.y - e.radius - 6),
+                    enemyX: Math.round(dmgTarget.x),
+                    enemyY: Math.round(dmgTarget.y - dmgTarget.radius - 6),
                     damage,
                     isChain: false,
                     dirX: nx,
@@ -3570,15 +4309,23 @@ function stepWorldPhysics(dt) {
               }
 
               // Ensure a zombie newly ignited by the Flaming Hammer survives the initial hit to run on fire
-              if (justIgnited && !detonatedBomb && e.hp <= 0) {
-                e.hp = Math.max(18, Math.round(e.maxHp * 0.3));
-                checkEnemyLimbLoss(e, 0, 0);
+              if (!dmgTarget.isBossPart && justIgnited && !detonatedBomb && dmgTarget.hp <= 0) {
+                dmgTarget.hp = Math.max(18, Math.round(dmgTarget.maxHp * 0.3));
+                checkEnemyLimbLoss(dmgTarget, 0, 0);
               }
 
-              if (e.hp <= 0) {
-                defeatEnemy(i, e.lastBlastKiller || p, h, strikeHvx, strikeHvy);
-                enemyDefeated = true;
-                break;
+              if (dmgTarget.hp <= 0) {
+                if (dmgTarget === e) {
+                  defeatEnemy(i, dmgTarget.lastBlastKiller || p, h, strikeHvx, strikeHvy);
+                  enemyDefeated = true;
+                  break;
+                } else {
+                  const dmgIdx = enemies.indexOf(dmgTarget);
+                  defeatEnemy(dmgTarget, dmgTarget.lastBlastKiller || p, h, strikeHvx, strikeHvy);
+                  if (dmgIdx !== -1 && dmgIdx < i) {
+                    i--;
+                  }
+                }
               }
             }
           }
@@ -3587,6 +4334,7 @@ function stepWorldPhysics(dt) {
         // B. Chain vs. Zombie: Continuous segment collision along every point of the chain (1/3 momentum transfer & 1/3 damage)
         const minChainEnemyDist = CHAIN_LINK_RADIUS + e.radius;
         if (
+          (e.bossBlinkTimer || 0) <= 0 &&
           e.x + e.radius >= h.chainMinX &&
           e.x - e.radius <= h.chainMaxX &&
           e.y + e.radius >= h.chainMinY &&
@@ -3663,8 +4411,10 @@ function stepWorldPhysics(dt) {
               nB.y -= cny * cOverlap * 0.82 * t;
             }
 
-            e.x += cnx * cOverlap * 0.18;
-            e.y += cny * cOverlap * 0.18;
+            if (!isAttachedBossSegment) {
+              e.x += cnx * cOverlap * 0.18;
+              e.y += cny * cOverlap * 0.18;
+            }
 
             const chainVx = nA.vx + (nB.vx - nA.vx) * t;
             const chainVy = nA.vy + (nB.vy - nA.vy) * t;
@@ -3678,8 +4428,10 @@ function stepWorldPhysics(dt) {
                 ((1 + HAMMER_ENEMY_RESTITUTION) * cVelAlongNormal) / totalInvMass;
               const chainImpulse = hammerEquivImpulse * CHAIN_MOMENTUM_FACTOR;
 
-              e.vx += (chainImpulse / e.mass) * cnx;
-              e.vy += (chainImpulse / e.mass) * cny;
+              if (!isAttachedBossSegment) {
+                e.vx += (chainImpulse / e.mass) * cnx;
+                e.vy += (chainImpulse / e.mass) * cny;
+              }
 
               const deltaV = cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION);
               nA.vx -= deltaV * (1 - t) * cnx;
@@ -3706,36 +4458,52 @@ function stepWorldPhysics(dt) {
               p.vy -= warriorChainRecoil * cny;
 
               if (e.chainHitCooldown <= 0 && hammerEquivImpulse > 8) {
-                const chainDamage = Math.max(
-                  1,
-                  Math.round(hammerEquivImpulse * DAMAGE_PER_IMPULSE * CHAIN_DAMAGE_FACTOR)
-                );
-                e.hp -= chainDamage;
-                checkMotorcycleDismount(e);
-                checkEnemyLimbLoss(e, cnx * hammerEquivImpulse * 0.2, cny * hammerEquivImpulse * 0.2);
-                e.chainHitCooldown = 0.09;
-                e.hurtFlash = 0.14;
+                const dmgTarget = e.isBossPart ? resolveBossTargetSegment(e) : e;
+                if (dmgTarget) {
+                  const chainDamage = Math.max(
+                    1,
+                    Math.round(hammerEquivImpulse * DAMAGE_PER_IMPULSE * CHAIN_DAMAGE_FACTOR)
+                  );
+                  dmgTarget.hp -= chainDamage;
+                  checkMotorcycleDismount(dmgTarget);
+                  checkEnemyLimbLoss(dmgTarget, cnx * hammerEquivImpulse * 0.2, cny * hammerEquivImpulse * 0.2);
+                  checkBossSegmentDetach(dmgTarget);
+                  e.chainHitCooldown = 0.09;
+                  e.hurtFlash = 0.14;
+                  if (dmgTarget !== e) {
+                    dmgTarget.chainHitCooldown = 0.09;
+                    dmgTarget.hurtFlash = 0.14;
+                  }
 
-                if (chainDamage > p.maxDamageBlow) {
-                  p.maxDamageBlow = chainDamage;
-                }
+                  if (chainDamage > p.maxDamageBlow) {
+                    p.maxDamageBlow = chainDamage;
+                  }
 
-                pendingEvents.push({
-                  type: 'impact',
-                  x: Math.round(closestPointX),
-                  y: Math.round(closestPointY),
-                  enemyX: Math.round(e.x),
-                  enemyY: Math.round(e.y - e.radius - 6),
-                  damage: chainDamage,
-                  isChain: true,
-                  dirX: cnx,
-                  dirY: cny,
-                });
+                  pendingEvents.push({
+                    type: 'impact',
+                    x: Math.round(closestPointX),
+                    y: Math.round(closestPointY),
+                    enemyX: Math.round(dmgTarget.x),
+                    enemyY: Math.round(dmgTarget.y - dmgTarget.radius - 6),
+                    damage: chainDamage,
+                    isChain: true,
+                    dirX: cnx,
+                    dirY: cny,
+                  });
 
-                if (e.hp <= 0) {
-                  defeatEnemy(i, p);
-                  enemyDefeated = true;
-                  break;
+                  if (dmgTarget.hp <= 0) {
+                    if (dmgTarget === e) {
+                      defeatEnemy(i, p);
+                      enemyDefeated = true;
+                      break;
+                    } else {
+                      const dmgIdx = enemies.indexOf(dmgTarget);
+                      defeatEnemy(dmgTarget, p);
+                      if (dmgIdx !== -1 && dmgIdx < i) {
+                        i--;
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -3746,6 +4514,7 @@ function stepWorldPhysics(dt) {
       if (enemyDefeated) break;
 
       // C. Zombie touches Player Warrior
+      if ((e.bossBlinkTimer || 0) > 0) continue;
       const minWarriorEnemyDist = p.radius + e.radius;
       const wdx = p.x - e.x;
       if (wdx <= -minWarriorEnemyDist || wdx >= minWarriorEnemyDist) continue;
@@ -3761,46 +4530,63 @@ function stepWorldPhysics(dt) {
           const enx = -wdx / wDist;
           const eny = -wdy / wDist;
           const pushSpeed = Math.max(110, Math.hypot(p.vx || 0, p.vy || 0) * 0.85 + 95) * 2;
-          e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, p.x + enx * (minWarriorEnemyDist + 10)));
-          e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, p.y + eny * (minWarriorEnemyDist + 10)));
-          e.vx = enx * pushSpeed;
-          e.vy = eny * pushSpeed;
+          if (!isAttachedBossSegment) {
+            e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, p.x + enx * (minWarriorEnemyDist + 10)));
+            e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, p.y + eny * (minWarriorEnemyDist + 10)));
+            e.vx = enx * pushSpeed;
+            e.vy = eny * pushSpeed;
+          }
           e.hitCooldown = Math.max(e.hitCooldown || 0, 0.12);
 
           if (e.contactCooldown <= 0) {
-            const crushDmg = BULLDOZER_DAMAGE;
-            e.hp -= crushDmg;
-            e.contactCooldown = 0.18;
-            e.hurtFlash = 0.22;
-            checkMotorcycleDismount(e);
-            checkEnemyLimbLoss(e, enx * pushSpeed, eny * pushSpeed);
+            const dmgTarget = e.isBossPart ? resolveBossTargetSegment(e) : e;
+            if (dmgTarget) {
+              const crushDmg = BULLDOZER_DAMAGE;
+              dmgTarget.hp -= crushDmg;
+              e.contactCooldown = 0.18;
+              e.hurtFlash = 0.22;
+              if (dmgTarget !== e) {
+                dmgTarget.hurtFlash = 0.22;
+              }
+              checkMotorcycleDismount(dmgTarget);
+              checkEnemyLimbLoss(dmgTarget, enx * pushSpeed, eny * pushSpeed);
+              checkBossSegmentDetach(dmgTarget);
 
-            if (crushDmg > p.maxDamageBlow) {
-              p.maxDamageBlow = crushDmg;
-            }
-            pendingEvents.push({
-              type: 'impact',
-              x: Math.round(p.x + enx * p.radius),
-              y: Math.round(p.y + eny * p.radius),
-              enemyX: Math.round(e.x),
-              enemyY: Math.round(e.y - e.radius - 6),
-              damage: crushDmg,
-              isChain: false,
-              dirX: enx,
-              dirY: eny,
-            });
-            pendingEvents.push({
-              type: 'floating_text',
-              x: Math.round(e.x),
-              y: Math.round(e.y - e.radius - 10),
-              text: `-${crushDmg}`,
-              color: '#ecc94b',
-              scale: 1.2,
-            });
-            if (e.hp <= 0) {
-              defeatEnemy(i, p);
-              enemyDefeated = true;
-              break;
+              if (crushDmg > p.maxDamageBlow) {
+                p.maxDamageBlow = crushDmg;
+              }
+              pendingEvents.push({
+                type: 'impact',
+                x: Math.round(p.x + enx * p.radius),
+                y: Math.round(p.y + eny * p.radius),
+                enemyX: Math.round(dmgTarget.x),
+                enemyY: Math.round(dmgTarget.y - dmgTarget.radius - 6),
+                damage: crushDmg,
+                isChain: false,
+                dirX: enx,
+                dirY: eny,
+              });
+              pendingEvents.push({
+                type: 'floating_text',
+                x: Math.round(dmgTarget.x),
+                y: Math.round(dmgTarget.y - dmgTarget.radius - 10),
+                text: `-${crushDmg}`,
+                color: '#ecc94b',
+                scale: 1.2,
+              });
+              if (dmgTarget.hp <= 0) {
+                if (dmgTarget === e) {
+                  defeatEnemy(i, p);
+                  enemyDefeated = true;
+                  break;
+                } else {
+                  const dmgIdx = enemies.indexOf(dmgTarget);
+                  defeatEnemy(dmgTarget, p);
+                  if (dmgIdx !== -1 && dmgIdx < i) {
+                    i--;
+                  }
+                }
+              }
             }
           }
           continue;
@@ -3810,20 +4596,25 @@ function stepWorldPhysics(dt) {
         const wny = wdy / wDist;
         const wOverlap = minWarriorEnemyDist - wDist;
         const isElephant = p.mountType === 'elephant' && (p.mountHp || 0) > 0;
+        const canDealContactDamage = e.isBossPart
+          ? (e.bossBlinkTimer || 0) <= 0
+          : !isKnockedDown && !isDancing && !isWebbed;
 
         if (isElephant) {
           const enx = -wnx;
           const eny = -wny;
           const elephantPushSpeed = Math.max(180, Math.hypot(p.vx || 0, p.vy || 0) * 1.1 + 150);
-          e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, p.x + enx * (minWarriorEnemyDist + 6)));
-          e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, p.y + eny * (minWarriorEnemyDist + 6)));
-          e.vx = enx * elephantPushSpeed;
-          e.vy = eny * elephantPushSpeed;
+          if (!isAttachedBossSegment) {
+            e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, p.x + enx * (minWarriorEnemyDist + 6)));
+            e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, p.y + eny * (minWarriorEnemyDist + 6)));
+            e.vx = enx * elephantPushSpeed;
+            e.vy = eny * elephantPushSpeed;
+          }
           p.vx += wnx * e.contactPush * dt * 3.0;
           p.vy += wny * e.contactPush * dt * 3.0;
 
           if (e.contactCooldown <= 0) {
-            if (!isKnockedDown && !isDancing && !isWebbed) {
+            if (canDealContactDamage) {
               applyDamageToPlayer(p, e.contactDamage);
               pendingEvents.push({
                 type: 'player_hurt',
@@ -3838,45 +4629,60 @@ function stepWorldPhysics(dt) {
               });
             }
 
-            const trampleDmg = ELEPHANT_DAMAGE;
-            e.hp -= trampleDmg;
-            e.contactCooldown = 0.55;
-            e.hurtFlash = 0.22;
-            checkMotorcycleDismount(e);
-            checkEnemyLimbLoss(e, enx * elephantPushSpeed, eny * elephantPushSpeed);
+            const dmgTarget = e.isBossPart ? resolveBossTargetSegment(e) : e;
+            if (dmgTarget) {
+              const trampleDmg = ELEPHANT_DAMAGE;
+              dmgTarget.hp -= trampleDmg;
+              e.contactCooldown = 0.55;
+              e.hurtFlash = 0.22;
+              if (dmgTarget !== e) {
+                dmgTarget.hurtFlash = 0.22;
+              }
+              checkMotorcycleDismount(dmgTarget);
+              checkEnemyLimbLoss(dmgTarget, enx * elephantPushSpeed, eny * elephantPushSpeed);
+              checkBossSegmentDetach(dmgTarget);
 
-            if (trampleDmg > p.maxDamageBlow) {
-              p.maxDamageBlow = trampleDmg;
-            }
-            pendingEvents.push({
-              type: 'impact',
-              x: Math.round(p.x + enx * p.radius),
-              y: Math.round(p.y + eny * p.radius),
-              enemyX: Math.round(e.x),
-              enemyY: Math.round(e.y - e.radius - 6),
-              damage: trampleDmg,
-              isChain: false,
-              dirX: enx,
-              dirY: eny,
-            });
-            pendingEvents.push({
-              type: 'floating_text',
-              x: Math.round(e.x),
-              y: Math.round(e.y - e.radius - 10),
-              text: `-${trampleDmg}`,
-              color: '#fbd38d',
-              scale: 1.15,
-            });
-            if (e.hp <= 0) {
-              defeatEnemy(i, p);
-              enemyDefeated = true;
-              break;
+              if (trampleDmg > p.maxDamageBlow) {
+                p.maxDamageBlow = trampleDmg;
+              }
+              pendingEvents.push({
+                type: 'impact',
+                x: Math.round(p.x + enx * p.radius),
+                y: Math.round(p.y + eny * p.radius),
+                enemyX: Math.round(dmgTarget.x),
+                enemyY: Math.round(dmgTarget.y - dmgTarget.radius - 6),
+                damage: trampleDmg,
+                isChain: false,
+                dirX: enx,
+                dirY: eny,
+              });
+              pendingEvents.push({
+                type: 'floating_text',
+                x: Math.round(dmgTarget.x),
+                y: Math.round(dmgTarget.y - dmgTarget.radius - 10),
+                text: `-${trampleDmg}`,
+                color: '#fbd38d',
+                scale: 1.15,
+              });
+              if (dmgTarget.hp <= 0) {
+                if (dmgTarget === e) {
+                  defeatEnemy(i, p);
+                  enemyDefeated = true;
+                  break;
+                } else {
+                  const dmgIdx = enemies.indexOf(dmgTarget);
+                  defeatEnemy(dmgTarget, p);
+                  if (dmgIdx !== -1 && dmgIdx < i) {
+                    i--;
+                  }
+                }
+              }
             }
           }
           continue;
         }
 
-        if (isDancing || isKnockedDown || isWebbed) {
+        if (isDancing || isKnockedDown || isWebbed || isAttachedBossSegment) {
           p.x += wnx * wOverlap;
           p.y += wny * wOverlap;
         } else {
@@ -3891,7 +4697,7 @@ function stepWorldPhysics(dt) {
         p.vx += wnx * e.contactPush * dt * 8.5;
         p.vy += wny * e.contactPush * dt * 8.5;
 
-        if (!isKnockedDown && !isDancing && !isWebbed && e.contactCooldown <= 0) {
+        if (canDealContactDamage && e.contactCooldown <= 0) {
           applyDamageToPlayer(p, e.contactDamage);
           e.contactCooldown = 0.55;
 
@@ -3949,9 +4755,13 @@ function stepWorldPhysics(dt) {
 
         // Fear contagion: a feared zombie taints any zombie it touches with fear for the remaining duration
         if ((a.fearTimer || 0) > 0 && (b.fearTimer || 0) <= 0) {
-          taintEnemyWithFear(b, a.fearSource, a.fearTimer);
+          if (taintEnemyWithFear(b, a.fearSource, a.fearTimer) && a.fearToEdge) {
+            b.fearToEdge = true;
+          }
         } else if ((b.fearTimer || 0) > 0 && (a.fearTimer || 0) <= 0) {
-          taintEnemyWithFear(a, b.fearSource, b.fearTimer);
+          if (taintEnemyWithFear(a, b.fearSource, b.fearTimer) && b.fearToEdge) {
+            a.fearToEdge = true;
+          }
         }
 
         // Disco dance contagion: any other zombie that touches a dancing zombie also starts dancing for 30s
@@ -3961,22 +4771,29 @@ function stepWorldPhysics(dt) {
           startEnemyDance(a);
         }
       }
+      if (a.isBossPart && b.isBossPart && a.bossId === b.bossId && (a.attached || b.attached)) {
+        continue;
+      }
       if (eDist < minDist && eDist > 0.001) {
         const overlap = (minDist - eDist) * 0.5;
         const enx = edx / eDist;
         const eny = edy / eDist;
         const aStationary =
+          (a.isBossPart && (a.attached || (a.bossBlinkTimer || 0) > 0)) ||
           (a.danceTimer || 0) > 0 ||
           (a.webTimer || 0) > 0 ||
-          earthquakeTimer > 0 ||
-          earthquakeKnockdownTimer > 0 ||
-          (a.knockdownTimer || 0) > 0;
+          (!a.isBossPart &&
+            (earthquakeTimer > 0 ||
+              earthquakeKnockdownTimer > 0 ||
+              (a.knockdownTimer || 0) > 0));
         const bStationary =
+          (b.isBossPart && (b.attached || (b.bossBlinkTimer || 0) > 0)) ||
           (b.danceTimer || 0) > 0 ||
           (b.webTimer || 0) > 0 ||
-          earthquakeTimer > 0 ||
-          earthquakeKnockdownTimer > 0 ||
-          (b.knockdownTimer || 0) > 0;
+          (!b.isBossPart &&
+            (earthquakeTimer > 0 ||
+              earthquakeKnockdownTimer > 0 ||
+              (b.knockdownTimer || 0) > 0));
         if (aStationary && bStationary) {
           // Both fallen or dancing in place: do not slide them around
         } else if (aStationary && !bStationary) {
@@ -3992,6 +4809,13 @@ function stepWorldPhysics(dt) {
           b.y += eny * overlap;
         }
       }
+    }
+  }
+
+  for (let i = 0; i < enemies.length; i++) {
+    const en = enemies[i];
+    if (en.isBossPart && en.bossPartType === 'palm' && (en.bossBlinkTimer || 0) <= 0) {
+      syncBossHandAttachedSegments(en);
     }
   }
 
@@ -4845,6 +5669,9 @@ server.on('upgrade', (req, socket) => {
       } else if (msg.type === 'cheat') {
         player.lastActivityTime = Date.now();
         spawnCheatPowerups();
+      } else if (msg.type === 'boss_cheat') {
+        player.lastActivityTime = Date.now();
+        spawnBossHand();
       } else if (msg.type === 'reset') {
         player.lastActivityTime = Date.now();
         resetGameWorld();
@@ -4942,6 +5769,17 @@ function buildGameStatePayload() {
   const serializedEnemies = enemies.map((e) => ({
     id: e.id,
     variant: e.variant,
+    isBossPart: Boolean(e.isBossPart),
+    bossId: e.bossId || null,
+    bossPartType: e.bossPartType || null,
+    digitIndex: typeof e.digitIndex === 'number' ? e.digitIndex : -1,
+    segmentIndex: typeof e.segmentIndex === 'number' ? e.segmentIndex : 0,
+    isThumb: Boolean(e.isThumb),
+    hasRing: Boolean(e.hasRing),
+    fingerSpreadPhase: +(e.fingerSpreadPhase || 0).toFixed(3),
+    attached: e.attached !== undefined ? Boolean(e.attached) : true,
+    bossBlinkTimer: +(e.bossBlinkTimer || 0).toFixed(2),
+    fearToEdge: Boolean(e.fearToEdge),
     x: +e.x.toFixed(1),
     y: +e.y.toFixed(1),
     vx: +e.vx.toFixed(1),
@@ -5174,6 +6012,20 @@ module.exports = {
   MOTORCYCLE_SPAWN_INTERVAL,
   MOTORCYCLE_SPEED_MULT,
   MOTORCYCLE_TURN_RATE,
+  BOSS_KILL_INTERVAL,
+  BOSS_QUAKE_DELAY,
+  BOSS_DEFEAT_SEGMENT_THRESHOLD,
+  BOSS_BLINK_DURATION,
+  BOSS_PALM_RADIUS,
+  BOSS_SEGMENT_RADIUS,
+  BOSS_SEGMENT_BASE_HP,
+  BOSS_SPEED_MULT,
+  BOSS_DETACHED_SPEED_MULT,
+  BOSS_DETACH_HP_RATIO,
+  BOSS_FINGER_SPREAD_RATE,
+  BOSS_DEFEAT_POWERUP_COUNT,
+  BOSS_DIGIT_ANGLE_OFFSETS,
+  BOSS_DIGIT_SEGMENT_COUNTS,
   HIT_STOP_DURATION,
   HIT_STOP_DAMAGE_THRESHOLD,
   HIT_STOP_BIG_SHAKE_THRESHOLD,
@@ -5195,6 +6047,7 @@ module.exports = {
   enemies,
   blackCircles,
   laidDownMotorcycles,
+  activeBossHands,
   players,
   leaderboardRecords,
   getLeaderboardFilePath,
@@ -5210,6 +6063,9 @@ module.exports = {
     teamKills,
     lastMobSpawnMilestone,
     lastMotorcycleSpawnMilestone,
+    lastBossSpawnMilestone,
+    bossStartQuakeTimer,
+    activeBossHands,
     laidDownMotorcycles,
     victoryInfo,
     pendingEvents,
@@ -5233,9 +6089,18 @@ module.exports = {
     }
     if ('roundRestartTimer' in patch) roundRestartTimer = patch.roundRestartTimer;
     if ('roundState' in patch) roundState = patch.roundState;
-    if ('teamKills' in patch) teamKills = patch.teamKills;
+    if ('teamKills' in patch) {
+      teamKills = patch.teamKills;
+      if (patch.teamKills === 0 && !('lastBossSpawnMilestone' in patch)) {
+        lastBossSpawnMilestone = 0;
+        bossStartQuakeTimer = 0;
+        activeBossHands.clear();
+      }
+    }
     if ('lastMobSpawnMilestone' in patch) lastMobSpawnMilestone = patch.lastMobSpawnMilestone;
     if ('lastMotorcycleSpawnMilestone' in patch) lastMotorcycleSpawnMilestone = patch.lastMotorcycleSpawnMilestone;
+    if ('lastBossSpawnMilestone' in patch) lastBossSpawnMilestone = patch.lastBossSpawnMilestone;
+    if ('bossStartQuakeTimer' in patch) bossStartQuakeTimer = patch.bossStartQuakeTimer;
     if ('laidDownMotorcycles' in patch) {
       laidDownMotorcycles.length = 0;
       laidDownMotorcycles.push(...patch.laidDownMotorcycles);
@@ -5277,6 +6142,19 @@ module.exports = {
   checkMotorcycleSpawn,
   checkMotorcycleDismount,
   spawnMotorcycleWreck,
+  getNearestMapEdgeDirection,
+  triggerEarthquake,
+  getBossFingerSpread,
+  getBossSegmentAttachedPose,
+  syncBossHandAttachedSegments,
+  spawnBossHand,
+  checkBossSpawn,
+  isBossActive,
+  resolveBossTargetSegment,
+  checkBossSegmentDetach,
+  spawnBossDefeatPowerups,
+  triggerBossDefeated,
+  canEnemyBeWebbed,
   startEnemyDance,
   taintEnemyWithFear,
   igniteEnemy,

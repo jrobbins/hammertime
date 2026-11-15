@@ -2207,3 +2207,315 @@ describe('Robot Warriors (Server-Controlled Bots) & Mode Cycling', () => {
     assert.equal(dieEv.playerId, 'joiner_1');
   });
 });
+
+describe('Boss-Monster Mode (Giant Floating Hand every 200 kills)', () => {
+  it('triggers boss-monster mode every 200 kills, fears regular zombies to map edges, and triggers an earthquake 5s later', () => {
+    resetTestWorld();
+    const p = addTestPlayer('boss_hunter', 2000, 2000);
+
+    // Place regular zombies near each of the 4 map edges
+    const zLeft = addTestEnemy(300, 2000, 100);
+    const zRight = addTestEnemy(3700, 2000, 100);
+    const zTop = addTestEnemy(2000, 250, 100);
+    const zBottom = addTestEnemy(2000, 3750, 100);
+
+    // Advance teamKills to 199 and defeat one more enemy to reach 200
+    srv.setState({ teamKills: 199, lastBossSpawnMilestone: 0 });
+    const victim = addTestEnemy(2100, 2000, 50);
+    srv.defeatEnemy(srv.enemies.indexOf(victim), p);
+
+    assert.equal(srv.getState().teamKills, 200);
+    assert.equal(srv.getState().lastBossSpawnMilestone, 200);
+    assert.equal(srv.activeBossHands.size, 1, 'Boss hand should spawn at 200 kills');
+    assert.equal(srv.getState().bossStartQuakeTimer, 5.0, '5-second earthquake timer should start');
+
+    // Regular zombies should be in fear state running for the nearest map edge
+    assert.ok(zLeft.fearTimer > 0 && zLeft.fearToEdge, 'Left zombie should flee toward edge');
+    assert.ok(zLeft.vx < 0, 'Left zombie should run toward left edge (vx < 0)');
+    assert.ok(zRight.fearTimer > 0 && zRight.fearToEdge && zRight.vx > 0, 'Right zombie should run toward right edge');
+    assert.ok(zTop.fearTimer > 0 && zTop.fearToEdge && zTop.vy < 0, 'Top zombie should run toward top edge');
+    assert.ok(zBottom.fearTimer > 0 && zBottom.fearToEdge && zBottom.vy > 0, 'Bottom zombie should run toward bottom edge');
+
+    // Step 4.9 seconds: earthquake should not have triggered yet
+    srv.stepWorldPhysics(4.9);
+    assert.equal(srv.getState().earthquakeTimer, 0, 'Earthquake should not trigger before 5 seconds');
+
+    // Step another 0.2 seconds (total 5.1s): earthquake triggers!
+    srv.stepWorldPhysics(0.2);
+    assert.ok(srv.getState().earthquakeTimer > 0, 'Earthquake should be triggered 5 seconds after boss mode starts');
+    assert.ok(zLeft.knockdownTimer > 0, 'Regular zombies should be knocked down by the earthquake');
+  });
+
+  it('spawns a giant floating hand with 1 palm, 4 fingers (3 segments each) and 1 thumb (2 segments) that move together and deal contact damage', () => {
+    resetTestWorld();
+    const p = addTestPlayer('boss_target', 2000, 2000);
+
+    const bossHand = srv.spawnBossHand(1100, 2000);
+    assert.ok(bossHand, 'spawnBossHand should return bossHand instance');
+    assert.equal(bossHand.palm.bossPartType, 'palm');
+    assert.equal(bossHand.palm.radius, 165, 'Palm should be 3x as large (radius 165 = 3 * 55)');
+    assert.equal(srv.BOSS_SEGMENT_RADIUS, 72, 'Finger segment radius should be 3x as large (72 = 3 * 24)');
+    assert.equal(srv.BOSS_SPEED_MULT, 1.2, 'Boss hand should move 2x as fast (1.2 = 2 * 0.6)');
+    assert.equal(bossHand.segments.length, 14, '4 fingers * 3 + 1 thumb * 2 = 14 segments');
+
+    const thumbSegs = bossHand.segments.filter((s) => s.isThumb);
+    const fingerSegs = bossHand.segments.filter((s) => !s.isThumb);
+    assert.equal(thumbSegs.length, 2, 'Thumb should have 2 segments');
+    assert.equal(fingerSegs.length, 12, '4 fingers should have 12 segments total');
+    assert.equal(thumbSegs[0].radius, 78, 'Thumb segment radius should be 3x as large (78 = 3 * 26)');
+    assert.equal(fingerSegs[0].radius, 72, 'Finger segment radius should be 3x as large (72 = 3 * 24)');
+
+    // Verify ring is placed on the third finger (digitIndex === 3, segmentIndex === 1)
+    const ringSegs = bossHand.segments.filter((s) => s.hasRing);
+    assert.equal(ringSegs.length, 1, 'Exactly one segment should have the ring');
+    assert.equal(ringSegs[0].digitIndex, 3, 'Ring should be on the third finger (digitIndex 3)');
+    assert.equal(ringSegs[0].segmentIndex, 1, 'Ring should be on the base segment of the third finger');
+
+    for (const seg of bossHand.segments) {
+      assert.equal(seg.attached, true, 'All segments start attached');
+    }
+
+    // Verify finger spreading and aligning: compare index fingertip (digit 1, seg 3) to pinky fingertip (digit 4, seg 3)
+    bossHand.palm.fingerSpreadPhase = -Math.PI / 2; // spread = 0 (aligned together)
+    srv.syncBossHandAttachedSegments(bossHand.palm);
+    const indexTip = bossHand.segments.find((s) => s.digitIndex === 1 && s.segmentIndex === 3);
+    const pinkyTip = bossHand.segments.find((s) => s.digitIndex === 4 && s.segmentIndex === 3);
+    const alignedSpan = Math.hypot(indexTip.x - pinkyTip.x, indexTip.y - pinkyTip.y);
+
+    bossHand.palm.fingerSpreadPhase = Math.PI / 2; // spread = 1 (spread wide apart)
+    srv.syncBossHandAttachedSegments(bossHand.palm);
+    const spreadSpan = Math.hypot(indexTip.x - pinkyTip.x, indexTip.y - pinkyTip.y);
+    assert.ok(
+      spreadSpan > alignedSpan * 1.8,
+      `Fingers should spread apart and align together (spreadSpan=${spreadSpan.toFixed(1)}, alignedSpan=${alignedSpan.toFixed(1)})`
+    );
+
+    // Step physics and verify palm and attached segments move together toward nearest warrior and fingerSpreadPhase advances
+    const startPalmX = bossHand.palm.x;
+    const startPhase = bossHand.palm.fingerSpreadPhase;
+    p.mouseX = p.x;
+    p.mouseY = p.y;
+    for (let i = 0; i < 15; i++) {
+      srv.stepWorldPhysics(0.05);
+    }
+    assert.ok(bossHand.palm.x > startPalmX, 'Palm should pursue warrior (+x)');
+    assert.ok(bossHand.palm.fingerSpreadPhase > startPhase, 'Palm fingerSpreadPhase should slowly advance over time');
+
+    // Verify pose lock: attached segment position matches getBossSegmentAttachedPose
+    for (const seg of bossHand.segments) {
+      const expected = srv.getBossSegmentAttachedPose(bossHand.palm, seg.digitIndex, seg.segmentIndex);
+      assert.ok(Math.hypot(seg.x - expected.x, seg.y - expected.y) < 1e-3, 'Attached segment stays locked to palm pose');
+    }
+
+    // Contact damage: place warrior touching a finger segment
+    const tipSeg = bossHand.segments[13];
+    p.x = tipSeg.x + tipSeg.radius + p.radius - 4;
+    p.y = tipSeg.y;
+    const prevHp = p.hp;
+    tipSeg.contactCooldown = 0;
+    srv.stepWorldPhysics(0.016);
+    assert.ok(p.hp < prevHp, 'Touching any part of the boss hand should deal contact damage to warrior');
+  });
+
+  it('routes damage to the furthest segment from the palm, detaches segments at 75% HP loss (+25% speed), and credits 1 kill per defeated segment', () => {
+    resetTestWorld();
+    const p = addTestPlayer('segment_slayer', 2000, 2000);
+    p.name = 'Sir Lancelot';
+
+    const bossHand = srv.spawnBossHand(1500, 2000);
+    const palm = bossHand.palm;
+
+    // 1. Hitting the palm resolves to a distal tip segment (segmentIndex 3 on a finger)
+    const targetFromPalm = srv.resolveBossTargetSegment(palm);
+    assert.equal(targetFromPalm.bossPartType, 'segment');
+    assert.equal(targetFromPalm.segmentIndex, 3, 'Hitting palm should route damage to a furthest finger tip segment (segmentIndex 3)');
+
+    // 2. Hitting the base segment (segmentIndex 1) of digit 1 routes to the tip segment (segmentIndex 3) of digit 1
+    const digit1Base = bossHand.segments.find((s) => s.digitIndex === 1 && s.segmentIndex === 1);
+    const digit1Mid = bossHand.segments.find((s) => s.digitIndex === 1 && s.segmentIndex === 2);
+    const digit1Tip = bossHand.segments.find((s) => s.digitIndex === 1 && s.segmentIndex === 3);
+    assert.equal(srv.resolveBossTargetSegment(digit1Base), digit1Tip, 'Hitting base of finger routes to tip of that finger');
+
+    // 3. Reduce digit1Tip HP to 25% of maxHp (75% HP lost) -> becomes detached!
+    digit1Tip.hp = Math.floor(digit1Tip.maxHp * 0.25);
+    const detached = srv.checkBossSegmentDetach(digit1Tip);
+    assert.equal(detached, true, 'Segment should detach when it has lost 75% of its hitpoints');
+    assert.equal(digit1Tip.attached, false, 'Segment attached flag should be false');
+
+    // Now that digit1Tip is detached, hitting digit1Base routes to digit1Mid (the furthest still-attached segment on digit 1)
+    assert.equal(
+      srv.resolveBossTargetSegment(digit1Base),
+      digit1Mid,
+      'Once tip is detached, hitting finger base routes to middle segment'
+    );
+    // Hitting the detached segment directly damages the detached segment itself
+    assert.equal(
+      srv.resolveBossTargetSegment(digit1Tip),
+      digit1Tip,
+      'Hitting a detached segment directly damages that detached segment'
+    );
+
+    // 4. Detached segment moves independently of the palm at a 25% faster speed
+    digit1Tip.x = 1200;
+    digit1Tip.y = 1800;
+    digit1Tip.vx = 0;
+    digit1Tip.vy = 0;
+    palm.x = 1200;
+    palm.y = 2200;
+    palm.vx = 0;
+    palm.vy = 0;
+    p.x = 2500;
+    p.y = 2000;
+    p.mouseX = p.x;
+    p.mouseY = p.y;
+    srv.stepWorldPhysics(0.05);
+    const palmSpeed = Math.hypot(palm.vx, palm.vy);
+    const detachedSpeed = Math.hypot(digit1Tip.vx, digit1Tip.vy);
+    assert.ok(
+      Math.abs(detachedSpeed / palmSpeed - 1.25) < 0.05,
+      `Detached segment should move 25% faster than the hand (got ratio ${(detachedSpeed / palmSpeed).toFixed(3)})`
+    );
+
+    // 5. Defeating a segment counts as 1 kill for the player and leaderboard
+    const killsBefore = p.kills;
+    const teamKillsBefore = srv.getState().teamKills;
+    srv.defeatEnemy(srv.enemies.indexOf(digit1Tip), p);
+    assert.equal(p.kills, killsBefore + 1, 'Defeating a segment should increment player kills by 1');
+    assert.equal(srv.getState().teamKills, teamKillsBefore + 1, 'Defeating a segment should increment teamKills by 1');
+    const lbTop = srv.getTopLeaderboard();
+    assert.ok(lbTop.some((e) => e.name === 'Sir Lancelot' && e.kills === p.kills), 'Segment kill should be recorded on leaderboard');
+  });
+
+  it('enforces boss immunities: no earthquake knockdown, no disco dance, can burn, and only detached segments can be webbed', () => {
+    resetTestWorld();
+    const p = addTestPlayer('status_tester', 2000, 2000);
+
+    const bossHand = srv.spawnBossHand(1600, 2000);
+    const palm = bossHand.palm;
+    const attachedSeg = bossHand.segments[0];
+    const detachedSeg = bossHand.segments[1];
+    detachedSeg.attached = false;
+
+    // 1. Earthquake cannot knock down any part of the hand
+    srv.triggerEarthquake(1600, 2000);
+    srv.stepWorldPhysics(0.05);
+    assert.equal(palm.knockdownTimer, 0, 'Palm cannot be knocked down by earthquake');
+    assert.equal(attachedSeg.knockdownTimer, 0, 'Attached segment cannot be knocked down by earthquake');
+    assert.equal(detachedSeg.knockdownTimer, 0, 'Detached segment cannot be knocked down by earthquake');
+    assert.ok(Math.hypot(palm.vx, palm.vy) > 0, 'Boss hand keeps moving during an earthquake');
+
+    // 2. Disco ball cannot make any part of the hand dance
+    assert.equal(srv.startEnemyDance(palm), false, 'Palm cannot dance');
+    assert.equal(srv.startEnemyDance(attachedSeg), false, 'Attached segment cannot dance');
+    assert.equal(srv.startEnemyDance(detachedSeg), false, 'Detached segment cannot dance');
+    assert.equal(palm.danceTimer, 0);
+    assert.equal(attachedSeg.danceTimer, 0);
+    assert.equal(detachedSeg.danceTimer, 0);
+
+    // 3. Parts of the hand CAN be set on fire
+    assert.equal(srv.igniteEnemy(palm), true, 'Palm can be set on fire');
+    assert.equal(srv.igniteEnemy(attachedSeg), true, 'Attached segment can be set on fire');
+    assert.equal(srv.igniteEnemy(detachedSeg), true, 'Detached segment can be set on fire');
+    assert.ok(palm.burnTimer > 0 && attachedSeg.burnTimer > 0 && detachedSeg.burnTimer > 0);
+
+    // 4. Spider web: attached segment and palm cannot be webbed; detached segment CAN be webbed
+    assert.equal(srv.canEnemyBeWebbed(palm), false, 'Palm cannot be webbed');
+    assert.equal(srv.canEnemyBeWebbed(attachedSeg), false, 'Attached segment cannot be webbed');
+    assert.equal(srv.canEnemyBeWebbed(detachedSeg), true, 'Detached segment can be webbed');
+
+    // Test spider hammer strike on attached vs detached segment
+    p.hammer.isSpider = true;
+    p.hammer.spiderTimer = 30;
+    p.hammer.x = attachedSeg.x - attachedSeg.radius - p.hammer.radius + 4;
+    p.hammer.y = attachedSeg.y;
+    p.hammer.vx = 500;
+    p.hammer.vy = 0;
+    srv.updatePlayerBroadphaseBounds(p);
+    srv.stepWorldPhysics(0.016);
+    assert.equal(attachedSeg.webTimer, 0, 'Spider hammer should not web an attached segment');
+
+    p.hammer.x = detachedSeg.x - detachedSeg.radius - p.hammer.radius + 4;
+    p.hammer.y = detachedSeg.y;
+    p.hammer.vx = 500;
+    p.hammer.vy = 0;
+    srv.updatePlayerBroadphaseBounds(p);
+    srv.stepWorldPhysics(0.016);
+    assert.ok(detachedSeg.webTimer > 0, 'Spider hammer should web a detached segment');
+  });
+
+  it('triggers boss-defeated event when 8 segments are defeated, blinks remaining parts for 3s, triggers earthquake, and removes all remaining parts', () => {
+    resetTestWorld();
+    const p = addTestPlayer('boss_finisher', 2000, 2000);
+
+    const bossHand = srv.spawnBossHand(1500, 2000);
+    // Clear opening quake timer and pickups so we can isolate the defeat earthquake and powerup drop
+    srv.blackCircles.length = 0;
+    srv.setState({ bossStartQuakeTimer: 0, earthquakeTimer: 0, pendingEvents: [] });
+
+    // Defeat 7 segments: boss should NOT be defeated yet, and finger segments should NOT leave powerups
+    for (let i = 0; i < 7; i++) {
+      const seg = bossHand.segments[i];
+      srv.defeatEnemy(srv.enemies.indexOf(seg), p);
+    }
+    assert.equal(bossHand.defeatedSegments, 7);
+    assert.equal(bossHand.defeatedTriggered, false, 'Boss should not be defeated at 7 segments');
+    assert.equal(srv.blackCircles.length, 0, 'Defeating individual finger segments should not drop powerups');
+
+    // Defeat the 8th segment -> triggers boss-defeated and drops 24 powerups!
+    const seg8 = bossHand.segments[7];
+    srv.defeatEnemy(srv.enemies.indexOf(seg8), p);
+    assert.equal(bossHand.defeatedSegments, 8);
+    assert.equal(bossHand.defeatedTriggered, true, 'Boss should trigger defeat at 8 defeated segments');
+    assert.equal(bossHand.blinkTimer, 3.0, 'Remaining parts should blink for 3 seconds');
+    assert.equal(srv.blackCircles.length, 24, 'Defeating the boss hand should leave 24 powerups');
+
+    const defeatEv = srv.getState().pendingEvents.find((ev) => ev.type === 'boss_defeated');
+    assert.ok(defeatEv, 'Should emit boss_defeated event when 8 segments are defeated');
+
+    // All remaining parts should have bossBlinkTimer = 3.0
+    const remainingParts = srv.enemies.filter((e) => e.bossId === bossHand.bossId);
+    assert.equal(remainingParts.length, 1 + 6, '1 palm + 6 remaining segments should still be in enemies during blink');
+    for (const part of remainingParts) {
+      assert.equal(part.bossBlinkTimer, 3.0, 'Each remaining boss part should have 3s blink timer');
+    }
+
+    // Step 2.5s: still blinking, not yet removed, no earthquake yet
+    srv.stepWorldPhysics(2.5);
+    assert.equal(srv.getState().earthquakeTimer, 0, 'Earthquake should not fire before 3s blink finishes');
+    assert.equal(
+      srv.enemies.filter((e) => e.bossId === bossHand.bossId).length,
+      7,
+      'Remaining parts should still be visible at 2.5s'
+    );
+
+    // Step another 0.6s (total 3.1s): earthquake triggers and all remaining parts disappear!
+    srv.stepWorldPhysics(0.6);
+    assert.ok(srv.getState().earthquakeTimer > 0, 'Earthquake should trigger after 3s blink completes');
+    assert.equal(
+      srv.enemies.filter((e) => e.bossId === bossHand.bossId).length,
+      0,
+      'All remaining parts of the boss hand should disappear after 3s blink'
+    );
+    assert.equal(srv.activeBossHands.has(bossHand.bossId), false, 'Boss hand should be removed from activeBossHands');
+  });
+
+  it('triggers boss-monster mode immediately when client sends boss_cheat over WebSocket', () => {
+    resetTestWorld();
+    const mockSocket = new EventEmitter();
+    mockSocket.write = () => {};
+    mockSocket.end = () => {};
+    mockSocket.setNoDelay = () => {};
+
+    srv.server.emit(
+      'upgrade',
+      { headers: { 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==' } },
+      mockSocket,
+      Buffer.alloc(0)
+    );
+
+    assert.equal(srv.activeBossHands.size, 0);
+    mockSocket.emit('data', srv.encodeWsFrame(JSON.stringify({ type: 'boss_cheat' })));
+    assert.equal(srv.activeBossHands.size, 1, 'Sending boss_cheat over WebSocket should immediately spawn boss hand');
+    assert.equal(srv.getState().bossStartQuakeTimer, 5.0, 'Should start 5s opening earthquake countdown');
+  });
+});

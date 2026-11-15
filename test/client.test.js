@@ -439,8 +439,11 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     const eElephant = api.enemies[0];
     eElephant.hp = 100;
     eElephant.maxHp = 100;
+    eElephant.radius = 19;
+    eElephant.burnTimer = 0;
     eElephant.contactDamage = 6;
     eElephant.contactCooldown = 0;
+    eElephant.chainHitCooldown = 1.0;
     eElephant.knockdownTimer = 0;
     eElephant.danceTimer = 0;
     eElephant.webTimer = 0;
@@ -3346,5 +3349,169 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       const dist = Math.hypot(pk.x - 1800, pk.y - 2200);
       assert.ok(Math.abs(dist - api.constants.STARTING_POWERUP_RING_RADIUS) <= 2);
     }
+  });
+
+  it('implements Boss-Monster Mode on client: 200-kill trigger, fleeing zombies + 5s quake, 15-part hand, furthest-segment damage routing, detachment at 75% HP loss, immunities, 8-segment defeat blink, and 2.5D rendering', () => {
+    const api = loadClientGame().api;
+    api.initGame();
+    api.enemies.length = 0;
+    api.warrior.x = 2000;
+    api.warrior.y = 2000;
+
+    // Spawn a regular zombie near left edge and defeat an enemy at 199 kills -> reaches 200 kills!
+    api.spawnEnemy(false);
+    const regularZ = api.enemies[0];
+    regularZ.x = 250;
+    regularZ.y = 2000;
+
+    api.spawnEnemy(false);
+    const victimZ = api.enemies[1];
+    api.setState({ kills: 199, teamKills: 199, lastBossSpawnMilestone: 0 });
+    api.defeatEnemy(1);
+
+    assert.equal(api.getState().kills, 200);
+    assert.equal(api.activeBossHands.size, 1, 'Boss hand should spawn at 200 kills in client mode');
+    assert.equal(api.getState().bossStartQuakeTimer, 5.0, '5-second earthquake countdown should start');
+    assert.ok(regularZ.fearTimer > 0 && regularZ.fearToEdge && regularZ.vx < 0, 'Regular zombie should flee toward nearest edge');
+
+    const bossHand = Array.from(api.activeBossHands.values())[0];
+    assert.equal(bossHand.palm.bossPartType, 'palm');
+    assert.equal(bossHand.palm.radius, 165, 'Client boss palm radius should be 3x (165)');
+    assert.equal(api.constants.BOSS_SEGMENT_RADIUS, 72, 'Client boss segment radius should be 3x (72)');
+    assert.equal(api.constants.BOSS_SPEED_MULT, 1.2, 'Client boss speed mult should be 2x (1.2)');
+    assert.equal(bossHand.segments.length, 14, 'Hand should have 14 finger/thumb segments');
+
+    // Verify third finger ring segment (digitIndex === 3, segmentIndex === 1)
+    const ringSeg = bossHand.segments.find((s) => s.digitIndex === 3 && s.segmentIndex === 1);
+    assert.ok(ringSeg && ringSeg.hasRing, 'Third finger base segment should have hasRing = true');
+
+    // Verify finger spreading and aligning on client
+    bossHand.palm.fingerSpreadPhase = -Math.PI / 2;
+    api.syncBossHandAttachedSegments(bossHand.palm);
+    const idxTip = bossHand.segments.find((s) => s.digitIndex === 1 && s.segmentIndex === 3);
+    const pnkTip = bossHand.segments.find((s) => s.digitIndex === 4 && s.segmentIndex === 3);
+    const alignedDist = Math.hypot(idxTip.x - pnkTip.x, idxTip.y - pnkTip.y);
+
+    bossHand.palm.fingerSpreadPhase = Math.PI / 2;
+    api.syncBossHandAttachedSegments(bossHand.palm);
+    const spreadDist = Math.hypot(idxTip.x - pnkTip.x, idxTip.y - pnkTip.y);
+    assert.ok(spreadDist > alignedDist * 1.8, 'Client fingers should spread apart and align together');
+
+    // Step 5.1s -> earthquake triggers, regular zombie knocked down, boss parts NOT knocked down
+    api.stepPhysics(5.1);
+    assert.ok(api.getState().earthquakeTimer > 0, 'Earthquake should trigger after 5 seconds');
+    assert.equal(bossHand.palm.knockdownTimer, 0, 'Boss palm is immune to earthquake knockdown');
+    assert.equal(bossHand.segments[0].knockdownTimer, 0, 'Boss segments are immune to earthquake knockdown');
+
+    // Immunities & status effects
+    assert.equal(api.startEnemyDance(bossHand.palm), false, 'Boss palm cannot dance');
+    assert.equal(api.startEnemyDance(bossHand.segments[0]), false, 'Boss segment cannot dance');
+    assert.equal(api.igniteEnemy(bossHand.palm), true, 'Boss palm can burn');
+    assert.equal(api.canEnemyBeWebbed(bossHand.palm), false, 'Boss palm cannot be webbed');
+    assert.equal(api.canEnemyBeWebbed(bossHand.segments[0]), false, 'Attached segment cannot be webbed');
+
+    // Damage routing & detachment at 75% HP loss
+    const digit2Base = bossHand.segments.find((s) => s.digitIndex === 2 && s.segmentIndex === 1);
+    const digit2Tip = bossHand.segments.find((s) => s.digitIndex === 2 && s.segmentIndex === 3);
+    assert.equal(api.resolveBossTargetSegment(digit2Base), digit2Tip);
+
+    digit2Tip.hp = Math.floor(digit2Tip.maxHp * 0.25);
+    assert.equal(api.checkBossSegmentDetach(digit2Tip), true, 'Segment should detach at <= 25% HP');
+    assert.equal(digit2Tip.attached, false);
+    assert.equal(api.canEnemyBeWebbed(digit2Tip), true, 'Detached segment can be webbed');
+    digit2Tip.webTimer = 10;
+
+    // Render all boss hand states (palm, attached, ring finger, detached, burning, webbed, blinking) without error
+    assert.doesNotThrow(() => {
+      api.drawEnemy(bossHand.palm);
+      api.drawEnemy(digit2Base);
+      api.drawEnemy(ringSeg);
+      api.drawEnemy(digit2Tip);
+    });
+
+    // Clear pickups before defeating segments: verify finger segments do not leave powerups, and defeating 8 leaves 24 powerups
+    api.blackCircles.length = 0;
+    for (let i = 0; i < 7; i++) {
+      const seg = bossHand.segments[i];
+      const idx = api.enemies.indexOf(seg);
+      if (idx !== -1) {
+        api.defeatEnemy(idx);
+      }
+    }
+    assert.equal(api.blackCircles.length, 0, 'Defeating finger segments individually should not leave powerups');
+
+    // Defeat the 8th segment -> triggers 3s blink and leaves 24 powerups!
+    const seg8Idx = api.enemies.indexOf(bossHand.segments[7]);
+    if (seg8Idx !== -1) {
+      api.defeatEnemy(seg8Idx);
+    }
+    assert.equal(bossHand.defeatedTriggered, true, 'Defeating 8 segments triggers boss defeated sequence');
+    assert.equal(bossHand.blinkTimer, 3.0);
+    assert.equal(api.blackCircles.length, 24, 'Defeating the boss hand should leave 24 powerups');
+    assert.doesNotThrow(() => {
+      api.drawEnemy(bossHand.palm);
+    });
+
+    api.setState({ earthquakeTimer: 0 });
+    api.stepPhysics(3.1);
+    assert.ok(api.getState().earthquakeTimer > 0, 'Earthquake triggers after 3s boss blink');
+    assert.equal(
+      api.enemies.filter((e) => e.bossId === bossHand.bossId).length,
+      0,
+      'All remaining boss parts disappear after 3s blink'
+    );
+  });
+
+  it('triggers boss-monster mode immediately when user types B-O-S-S cheat code during gameplay', () => {
+    const sandbox = loadClientGame();
+    const { api, window, elements } = sandbox;
+
+    // 1. Typing "boss" while enter modal dialog is showing should NOT trigger boss
+    assert.equal(api.isDialogShowing(), true);
+    for (const char of 'boss') {
+      window.dispatchEvent({ type: 'keydown', key: char });
+    }
+    assert.equal(api.activeBossHands.size, 0, 'Typing boss while dialog is open should not spawn boss');
+
+    // 2. Enter game & close dialogs
+    elements.get('enter-modal').classList.add('hidden');
+    elements.get('game-over-modal').classList.add('hidden');
+    elements.get('victory-modal').classList.add('hidden');
+    api.setState({ isMultiplayer: false, hasEnteredGame: true });
+    assert.equal(api.isDialogShowing(), false);
+
+    // 3. Typing "boss" while focused in an INPUT element should NOT trigger boss
+    for (const char of 'boss') {
+      window.dispatchEvent({ type: 'keydown', key: char, target: { tagName: 'INPUT' } });
+    }
+    assert.equal(api.activeBossHands.size, 0, 'Typing boss inside an input should not spawn boss');
+
+    // 4. Typing "B-O-S-S" during active standalone gameplay immediately triggers the boss!
+    for (const char of 'BoSs') {
+      window.dispatchEvent({ type: 'keydown', key: char });
+    }
+    assert.equal(api.activeBossHands.size, 1, 'Typing B-O-S-S should immediately spawn the boss hand');
+    assert.equal(api.getState().bossStartQuakeTimer, 5.0, 'Should start 5s earthquake countdown');
+    const bossParts = api.enemies.filter((e) => e.isBossPart);
+    assert.equal(bossParts.length, 15, 'Should spawn 1 palm + 14 segments = 15 boss parts');
+
+    // 5. In multiplayer mode, typing "boss" sends { type: "boss_cheat" } over WebSocket
+    api.connectMultiplayer();
+    const ws = api.getState().ws;
+    ws.readyState = 1;
+    ws.emit('open', {});
+    api.setState({ isMultiplayer: true });
+    for (const char of 'boss') {
+      window.dispatchEvent({ type: 'keydown', key: char });
+    }
+    const sentBossCheat = ws.sent.some((msg) => {
+      try {
+        const parsed = JSON.parse(msg);
+        return parsed.type === 'boss_cheat';
+      } catch (_e) {
+        return false;
+      }
+    });
+    assert.ok(sentBossCheat, 'Multiplayer client should send { type: "boss_cheat" } over WebSocket when B-O-S-S is typed');
   });
 });

@@ -184,6 +184,27 @@
   const HIT_STOP_BIG_SHAKE_THRESHOLD = 425;
   const MULTI_KILL_WINDOW = 0.35;
 
+  // --- Boss-Monster Mode (Giant Floating Hand) Constants & State ---
+  const BOSS_KILL_INTERVAL = 200;
+  const BOSS_QUAKE_DELAY = 5.0;
+  const BOSS_DEFEAT_SEGMENT_THRESHOLD = 8;
+  const BOSS_BLINK_DURATION = 3.0;
+  const BOSS_PALM_RADIUS = 165;
+  const BOSS_SEGMENT_RADIUS = 72;
+  const BOSS_SEGMENT_BASE_HP = 300;
+  const BOSS_SPEED_MULT = 1.2;
+  const BOSS_DETACHED_SPEED_MULT = 1.25;
+  const BOSS_DETACH_HP_RATIO = 0.25;
+  const BOSS_FINGER_SPREAD_RATE = 0.8;
+  const BOSS_DEFEAT_POWERUP_COUNT = 24;
+  const BOSS_DIGIT_ANGLE_OFFSETS = [-0.95, -0.42, -0.08, 0.26, 0.60] as const;
+  const BOSS_DIGIT_SEGMENT_COUNTS = [2, 3, 3, 3, 3] as const;
+
+  let lastBossSpawnMilestone = 0;
+  let bossStartQuakeTimer = 0;
+  let nextBossId = 1;
+  const activeBossHands = new Map<number, any>();
+
   const ALL_LIMBS = ['left_arm', 'right_arm', 'left_leg', 'right_leg', 'head'] as const;
   type LimbType = (typeof ALL_LIMBS)[number];
 
@@ -2645,6 +2666,7 @@
           earthquakeTimer = EARTHQUAKE_DURATION;
           localKnockdownTimer = EARTHQUAKE_DURATION + ZOMBIE_KNOCKDOWN_RECOVERY;
           for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
+            if (enemies[eIdx].isBossPart) continue;
             enemies[eIdx].knockdownTimer = ZOMBIE_KNOCKDOWN_RECOVERY;
             enemies[eIdx].vx = 0;
             enemies[eIdx].vy = 0;
@@ -2688,6 +2710,7 @@
         earthquakeTimer = EARTHQUAKE_DURATION;
         localKnockdownTimer = EARTHQUAKE_DURATION + ZOMBIE_KNOCKDOWN_RECOVERY;
         for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
+          if (enemies[eIdx].isBossPart) continue;
           enemies[eIdx].knockdownTimer = ZOMBIE_KNOCKDOWN_RECOVERY;
           enemies[eIdx].vx = 0;
           enemies[eIdx].vy = 0;
@@ -2696,6 +2719,14 @@
         addShockwave(ev.x, ev.y, 520, '236, 201, 75');
         addShockwave(ev.x, ev.y, 320, '214, 158, 46');
         addParticles(ev.x, ev.y, '#ecc94b', 36, 60, 340, 4.4);
+      } else if (ev.type === 'boss_spawn') {
+        playFearSound();
+        addShockwave(ev.x, ev.y, 460, '183, 148, 244');
+        addParticles(ev.x, ev.y, '#b794f4', 36, 60, 340, 4.4);
+      } else if (ev.type === 'boss_defeated') {
+        playExplosionSound();
+        addShockwave(ev.x, ev.y, 520, '246, 224, 94');
+        addParticles(ev.x, ev.y, '#fbd38d', 40, 70, 380, 4.6);
       } else if (ev.type === 'fear_wave') {
         playFearSound();
         const r = ev.radius || FEAR_INITIAL_RADIUS;
@@ -3456,14 +3487,27 @@
               prevE.danceTimer = inc.danceTimer || 0;
               prevE.danceImmuneTimer = inc.danceImmuneTimer || 0;
               prevE.webTimer = inc.webTimer || 0;
-              const incKnockdown = Math.max(
-                inc.knockdownTimer || 0,
-                earthquakeTimer > 0
-                  ? ZOMBIE_KNOCKDOWN_RECOVERY
-                  : localKnockdownTimer > 0
-                  ? localKnockdownTimer
-                  : 0
-              );
+              prevE.isBossPart = Boolean(inc.isBossPart);
+              if (inc.bossId != null) prevE.bossId = inc.bossId;
+              if (inc.bossPartType) prevE.bossPartType = inc.bossPartType;
+              if (inc.digitIndex != null) prevE.digitIndex = inc.digitIndex;
+              if (inc.segmentIndex != null) prevE.segmentIndex = inc.segmentIndex;
+              if (inc.isThumb != null) prevE.isThumb = inc.isThumb;
+              if (inc.hasRing != null) prevE.hasRing = Boolean(inc.hasRing);
+              if (inc.fingerSpreadPhase != null) prevE.fingerSpreadPhase = inc.fingerSpreadPhase;
+              if (inc.attached != null) prevE.attached = inc.attached;
+              prevE.bossBlinkTimer = inc.bossBlinkTimer || 0;
+              prevE.fearToEdge = Boolean(inc.fearToEdge);
+              const incKnockdown = inc.isBossPart
+                ? 0
+                : Math.max(
+                    inc.knockdownTimer || 0,
+                    earthquakeTimer > 0
+                      ? ZOMBIE_KNOCKDOWN_RECOVERY
+                      : localKnockdownTimer > 0
+                      ? localKnockdownTimer
+                      : 0
+                  );
               prevE.knockdownTimer = incKnockdown;
               if (incKnockdown > 0) {
                 prevE.vx = 0;
@@ -3505,14 +3549,16 @@
               }
               enemies.push(prevE);
             } else {
-              const newKnockdown = Math.max(
-                inc.knockdownTimer || 0,
-                earthquakeTimer > 0
-                  ? ZOMBIE_KNOCKDOWN_RECOVERY
-                  : localKnockdownTimer > 0
-                  ? localKnockdownTimer
-                  : 0
-              );
+              const newKnockdown = inc.isBossPart
+                ? 0
+                : Math.max(
+                    inc.knockdownTimer || 0,
+                    earthquakeTimer > 0
+                      ? ZOMBIE_KNOCKDOWN_RECOVERY
+                      : localKnockdownTimer > 0
+                      ? localKnockdownTimer
+                      : 0
+                  );
               enemies.push({
                 ...inc,
                 vx: newKnockdown > 0 ? 0 : inc.vx || 0,
@@ -3852,6 +3898,24 @@
     );
   }
 
+  function triggerBossCheat() {
+    const openState = typeof WebSocket !== 'undefined' ? WebSocket.OPEN : 1;
+    let bossHand = null;
+    if (isMultiplayer && ws && ws.readyState === openState) {
+      ws.send(JSON.stringify({ type: 'boss_cheat' }));
+    } else {
+      bossHand = spawnBossHand();
+    }
+    addFloatingText(
+      warrior.x,
+      warrior.y - warrior.radius - 20,
+      'BOSS CHEAT ACTIVATED!',
+      '#d6bcfa',
+      1.5
+    );
+    return bossHand;
+  }
+
   function spawnEnemyGhost(
     x: number,
     y: number,
@@ -3921,7 +3985,7 @@
   }
 
   function checkEnemyLimbLoss(e: any, hitVx: number = 0, hitVy: number = 0) {
-    if (!e) return;
+    if (!e || e.isBossPart) return;
     checkMotorcycleDismount(e);
     if (!e.lostLimbs) e.lostLimbs = [];
     if (e.hp <= 0) return;
@@ -4113,13 +4177,20 @@
   }
 
   function defeatEnemy(
-    index: number,
+    indexOrEnemy: any,
     killerHammer: any = null,
     strikeHvx: number = 0,
     strikeHvy: number = 0
   ) {
+    const index = typeof indexOrEnemy === 'number' ? indexOrEnemy : enemies.indexOf(indexOrEnemy);
+    if (index < 0 || index >= enemies.length) return;
     const e = enemies[index];
     if (!e) return;
+    if (e.isBossPart && e.bossPartType === 'palm') {
+      // Palm itself cannot be defeated directly; damage always routes to finger/thumb segments
+      e.hp = Math.max(1, e.maxHp || 999999);
+      return;
+    }
     if (e.variant === 'motorcycle') {
       spawnMotorcycleWreck(e.x, e.y, e.angle || 0, Math.round((e.radius || 21) * MOTORCYCLE_WRECK_SCALE));
     }
@@ -4156,14 +4227,32 @@
       e.mass || 1.2
     );
 
-    const pickupType = rollRandomPickupType();
-    addPickupToWorld({
-      x: e.x,
-      y: e.y,
-      pulse: 0,
-      type: pickupType,
-    });
+    // Boss finger and thumb segments do not drop individual powerups;
+    // instead, defeating the hand drops BOSS_DEFEAT_POWERUP_COUNT (24) powerups at once.
+    if (!e.isBossPart) {
+      const pickupType = rollRandomPickupType();
+      addPickupToWorld({
+        x: e.x,
+        y: e.y,
+        pulse: 0,
+        type: pickupType,
+      });
+    }
     enemies.splice(index, 1);
+
+    if (e.isBossPart && e.bossPartType === 'segment' && e.bossId) {
+      const bh = activeBossHands.get(e.bossId);
+      if (bh) {
+        bh.defeatedSegments = (bh.defeatedSegments || 0) + 1;
+        if (bh.defeatedSegments >= BOSS_DEFEAT_SEGMENT_THRESHOLD && !bh.defeatedTriggered) {
+          triggerBossDefeated(bh);
+        }
+      }
+    }
+
+    if (!isMultiplayer) {
+      checkBossSpawn();
+    }
 
     if (!isMultiplayer && roundState === 'playing' && kills > VICTORY_KILL_TARGET) {
       roundState = 'victory';
@@ -4211,8 +4300,10 @@
       camera.shake = Math.min(22, camera.shake + 14);
     }
 
+    const hitBossSegments = new Set<any>();
     for (let j = enemies.length - 1; j >= 0; j--) {
       const target = enemies[j];
+      if (target.isBossPart && (target.bossBlinkTimer || 0) > 0) continue;
       const bdx = target.x - ex;
       const bdy = target.y - ey;
       const bDist = Math.hypot(bdx, bdy);
@@ -4224,21 +4315,31 @@
         const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
 
         const targetKnockedDown =
-          earthquakeTimer > 0 || localKnockdownTimer > 0 || (target.knockdownTimer || 0) > 0;
+          !target.isBossPart &&
+          (earthquakeTimer > 0 || localKnockdownTimer > 0 || (target.knockdownTimer || 0) > 0);
         if (targetKnockedDown) {
           target.vx = 0;
           target.vy = 0;
-        } else {
+        } else if (!target.isBossPart || target.attached === false || target.bossPartType === 'palm') {
           target.vx += (blastImpulse / target.mass) * bnx;
           target.vy += (blastImpulse / target.mass) * bny;
         }
-        target.hp -= blastDamage;
-        target.hurtFlash = 0.32;
-        checkEnemyLimbLoss(
-          target,
-          (blastImpulse / target.mass) * bnx * 0.5,
-          (blastImpulse / target.mass) * bny * 0.5
-        );
+        const dmgTarget = target.isBossPart ? resolveBossTargetSegment(target) : target;
+        if (dmgTarget && (!target.isBossPart || !hitBossSegments.has(dmgTarget))) {
+          if (target.isBossPart) hitBossSegments.add(dmgTarget);
+          dmgTarget.hp -= blastDamage;
+          dmgTarget.hurtFlash = 0.32;
+          target.hurtFlash = 0.32;
+          if (dmgTarget.isBossPart) {
+            checkBossSegmentDetach(dmgTarget);
+          } else {
+            checkEnemyLimbLoss(
+              dmgTarget,
+              (blastImpulse / target.mass) * bnx * 0.5,
+              (blastImpulse / target.mass) * bny * 0.5
+            );
+          }
+        }
 
         const isJackBlast =
           (sourceHammer && (sourceHammer.jackolanternTimer || 0) > 0) ||
@@ -4250,9 +4351,15 @@
         ) {
           if (isJackBlast) {
             target.fireproofTimer = 0;
+            if (dmgTarget && dmgTarget !== target) dmgTarget.fireproofTimer = 0;
           }
           if (!igniteEnemy(target) && isJackBlast) {
             target.burnTimer = ZOMBIE_BURN_DURATION;
+          }
+          if (dmgTarget && dmgTarget !== target) {
+            if (!igniteEnemy(dmgTarget) && isJackBlast) {
+              dmgTarget.burnTimer = ZOMBIE_BURN_DURATION;
+            }
           }
         }
 
@@ -4264,9 +4371,10 @@
           triggerHitStop(HIT_STOP_DURATION, bnx, bny, blastDamage);
         }
 
+        const floatTarget = dmgTarget || target;
         addFloatingText(
-          target.x,
-          target.y - target.radius - 10,
+          floatTarget.x,
+          floatTarget.y - floatTarget.radius - 10,
           `-${blastDamage}`,
           isThor ? '#90cdf4' : '#f6ad55',
           isThor ? 1.25 : 1.35
@@ -4459,6 +4567,7 @@
   }
 
   function startEnemyDance(e) {
+    if (!e || e.isBossPart) return false;
     if ((e.danceTimer || 0) > 0 || (e.danceImmuneTimer || 0) > 0) return false;
     e.danceTimer = ZOMBIE_DANCE_DURATION;
     e.vx = 0;
@@ -4471,6 +4580,7 @@
   }
 
   function taintEnemyWithFear(e, duration = FEAR_DURATION) {
+    if (!e || e.isBossPart) return false;
     if ((e.fearTimer || 0) > 0 && duration <= e.fearTimer) return false;
     e.fearTimer = duration;
     const isKnockedDown =
@@ -4492,12 +4602,471 @@
   }
 
   function igniteEnemy(e) {
+    if (!e) return false;
     if (e.burnTimer > 0 || e.fireproofTimer > 0) return false;
     e.burnTimer = ZOMBIE_BURN_DURATION;
     e.burnTickAccum = 0;
     addParticles(e.x, e.y, '#ff6b35', 10, 35, 150, 3.6);
     addParticles(e.x, e.y, '#f6e05e', 6, 25, 110, 2.8);
     return true;
+  }
+
+  function canEnemyBeWebbed(e: any) {
+    if (!e) return false;
+    if (e.isBossPart) {
+      return e.bossPartType === 'segment' && e.attached === false;
+    }
+    return true;
+  }
+
+  function getNearestMapEdgeDirection(x: number, y: number) {
+    const dLeft = x;
+    const dRight = WORLD_WIDTH - x;
+    const dTop = y;
+    const dBottom = WORLD_HEIGHT - y;
+    const minDist = Math.min(dLeft, dRight, dTop, dBottom);
+    if (minDist === dLeft) return { dx: -1, dy: 0 };
+    if (minDist === dRight) return { dx: 1, dy: 0 };
+    if (minDist === dTop) return { dx: 0, dy: -1 };
+    return { dx: 0, dy: 1 };
+  }
+
+  function triggerEarthquake(x = warrior.x, y = warrior.y) {
+    earthquakeTimer = EARTHQUAKE_DURATION;
+    localKnockdownTimer = EARTHQUAKE_DURATION + ZOMBIE_KNOCKDOWN_RECOVERY;
+    for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
+      const e = enemies[eIdx];
+      if (e.isBossPart) continue;
+      e.knockdownTimer = ZOMBIE_KNOCKDOWN_RECOVERY;
+      e.vx = 0;
+      e.vy = 0;
+    }
+    playEarthquakeSound();
+    addShockwave(x, y, 520, '236, 201, 75');
+    addShockwave(x, y, 320, '214, 158, 46');
+    addParticles(x, y, '#ecc94b', 36, 60, 340, 4.4);
+  }
+
+  function getBossFingerSpread(palm: any): number {
+    const phase =
+      palm && typeof palm.fingerSpreadPhase === 'number'
+        ? palm.fingerSpreadPhase
+        : palm && typeof palm.walkPhase === 'number'
+        ? palm.walkPhase
+        : 0;
+    return 0.5 + 0.5 * Math.sin(phase);
+  }
+
+  function getBossSegmentAttachedPose(
+    palm: any,
+    digitIndex: number,
+    segmentIndex: number,
+    segRadius: number = digitIndex === 0 ? BOSS_SEGMENT_RADIUS + 6 : BOSS_SEGMENT_RADIUS
+  ) {
+    const baseOffset = BOSS_DIGIT_ANGLE_OFFSETS[digitIndex] ?? 0;
+    const palmAngle = palm.angle || 0;
+    const palmR = palm.radius || BOSS_PALM_RADIUS;
+    const spread = getBossFingerSpread(palm);
+
+    let knuckleOffset: number;
+    let dirOffset: number;
+    if (digitIndex === 0) {
+      // Thumb tucks inward when aligned (spread = 0) and splays outward when spread (spread = 1)
+      knuckleOffset = -0.62 + (baseOffset - -0.62) * (0.35 + 0.80 * spread);
+      dirOffset = -0.35 + (baseOffset - -0.35) * (0.20 + 0.95 * spread);
+    } else {
+      // 4 fingers align parallel side-by-side when spread = 0 and fan out wide when spread = 1
+      const fingerCenterOffset = 0.09;
+      knuckleOffset =
+        fingerCenterOffset + (baseOffset - fingerCenterOffset) * (0.48 + 0.67 * spread);
+      dirOffset =
+        fingerCenterOffset + (baseOffset - fingerCenterOffset) * (0.05 + 1.10 * spread);
+    }
+
+    const knuckleAngle = palmAngle + knuckleOffset;
+    const digitAngle = palmAngle + dirOffset;
+    const baseDist = palmR + segRadius * 0.75;
+    const baseX = palm.x + Math.cos(knuckleAngle) * baseDist;
+    const baseY = palm.y + Math.sin(knuckleAngle) * baseDist;
+    const stepDist = segRadius * 1.85;
+    const reach = (segmentIndex - 1) * stepDist;
+    return {
+      x: baseX + Math.cos(digitAngle) * reach,
+      y: baseY + Math.sin(digitAngle) * reach,
+      angle: digitAngle,
+    };
+  }
+
+  function syncBossHandAttachedSegments(palm: any) {
+    if (!palm || !palm.bossId) return;
+    const bossHand = activeBossHands.get(palm.bossId);
+    if (!bossHand || !Array.isArray(bossHand.segments)) return;
+    for (let i = 0; i < bossHand.segments.length; i++) {
+      const seg = bossHand.segments[i];
+      if (!seg || seg.hp <= 0 || !seg.attached) continue;
+      const pose = getBossSegmentAttachedPose(palm, seg.digitIndex, seg.segmentIndex, seg.radius || BOSS_SEGMENT_RADIUS);
+      seg.x = pose.x;
+      seg.y = pose.y;
+      seg.angle = pose.angle;
+      seg.vx = palm.vx || 0;
+      seg.vy = palm.vy || 0;
+    }
+  }
+
+  function spawnBossHand(atX?: number, atY?: number) {
+    const bossId = nextBossId++;
+
+    // 1. All regular zombies enter the fear state and run for the edges of the map
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i];
+      if (e.isBossPart) continue;
+      e.fearTimer = Math.max(e.fearTimer || 0, FEAR_DURATION);
+      e.fearToEdge = true;
+      const isKnockedDown =
+        earthquakeTimer > 0 || localKnockdownTimer > 0 || (e.knockdownTimer || 0) > 0;
+      if (!isKnockedDown) {
+        const edgeDir = getNearestMapEdgeDirection(e.x, e.y);
+        const burstSpeed = (e.moveForce / e.traction) * FEAR_SPEED_MULT * 0.85;
+        e.angle = Math.atan2(edgeDir.dy, edgeDir.dx);
+        e.vx = edgeDir.dx * burstSpeed;
+        e.vy = edgeDir.dy * burstSpeed;
+      }
+    }
+
+    // 2. 5 seconds later an earthquake is triggered
+    bossStartQuakeTimer = BOSS_QUAKE_DELAY;
+
+    // 3. Determine spawn position for the giant floating hand
+    let x = atX;
+    let y = atY;
+    if (typeof x !== 'number' || typeof y !== 'number') {
+      let attempts = 0;
+      const touchesStoneColumn = (px: number, py: number) => {
+        for (let i = 0; i < stoneColumns.length; i++) {
+          const col = stoneColumns[i];
+          if (Math.hypot(px - col.x, py - col.y) < col.radius + BOSS_PALM_RADIUS + 40) {
+            return true;
+          }
+        }
+        return false;
+      };
+      do {
+        const spawnAng = Math.random() * Math.PI * 2;
+        const spawnDist = 420 + Math.random() * 180;
+        x = Math.max(160, Math.min(WORLD_WIDTH - 160, warrior.x + Math.cos(spawnAng) * spawnDist));
+        y = Math.max(160, Math.min(WORLD_HEIGHT - 160, warrior.y + Math.sin(spawnAng) * spawnDist));
+        attempts++;
+      } while (
+        (Math.hypot(x - warrior.x, y - warrior.y) < 320 || touchesStoneColumn(x, y)) &&
+        attempts < 30
+      );
+    }
+
+    const strength = getMonsterStrength();
+    const baseMoveForce = Math.round(210 * BOSS_SPEED_MULT * Math.pow(strength, 0.25));
+    const segMaxHp = Math.max(120, Math.round(BOSS_SEGMENT_BASE_HP * Math.pow(strength, 0.35)));
+    const initialAngle = Math.atan2(warrior.y - y, warrior.x - x);
+
+    const palm: any = {
+      id: Math.floor(Math.random() * 1e9) + bossId * 100,
+      variant: 'boss_palm',
+      isBossPart: true,
+      bossId,
+      bossPartType: 'palm',
+      attached: true,
+      x,
+      y,
+      vx: 0,
+      vy: 0,
+      angle: initialAngle,
+      radius: BOSS_PALM_RADIUS,
+      mass: 6.5,
+      hp: segMaxHp * 14,
+      maxHp: segMaxHp * 14,
+      lostLimbs: [] as string[],
+      moveForce: baseMoveForce,
+      traction: 4.5,
+      contactDamage: 14,
+      contactPush: 380,
+      skinColor: '#7c6f9f',
+      coatColor: '#4a3d6b',
+      hitCooldown: 0,
+      chainHitCooldown: 0,
+      contactCooldown: 0,
+      hurtFlash: 0,
+      burnTimer: 0,
+      fireproofTimer: 0,
+      burnTickAccum: 0,
+      fearTimer: 0,
+      danceTimer: 0,
+      danceImmuneTimer: 0,
+      webTimer: 0,
+      knockdownTimer: 0,
+      bossBlinkTimer: 0,
+      fingerSpreadPhase: 0,
+      walkPhase: 0,
+    };
+
+    const segments: any[] = [];
+    for (let d = 0; d < BOSS_DIGIT_SEGMENT_COUNTS.length; d++) {
+      const segCount = BOSS_DIGIT_SEGMENT_COUNTS[d];
+      const isThumb = d === 0;
+      for (let s = 1; s <= segCount; s++) {
+        const segRadius = isThumb ? BOSS_SEGMENT_RADIUS + 6 : BOSS_SEGMENT_RADIUS;
+        const pose = getBossSegmentAttachedPose(palm, d, s, segRadius);
+        const seg: any = {
+          id: palm.id + d * 10 + s,
+          variant: 'boss_segment',
+          isBossPart: true,
+          bossId,
+          bossPartType: 'segment',
+          digitIndex: d,
+          segmentIndex: s,
+          isThumb,
+          hasRing: d === 3 && s === 1,
+          attached: true,
+          x: pose.x,
+          y: pose.y,
+          vx: 0,
+          vy: 0,
+          angle: pose.angle,
+          radius: segRadius,
+          mass: 2.2,
+          hp: segMaxHp,
+          maxHp: segMaxHp,
+          lostLimbs: [] as string[],
+          moveForce: baseMoveForce,
+          traction: 4.5,
+          contactDamage: 10,
+          contactPush: 300,
+          skinColor: s === segCount ? '#9283b8' : '#7c6f9f',
+          coatColor: '#4a3d6b',
+          hitCooldown: 0,
+          chainHitCooldown: 0,
+          contactCooldown: 0,
+          hurtFlash: 0,
+          burnTimer: 0,
+          fireproofTimer: 0,
+          burnTickAccum: 0,
+          fearTimer: 0,
+          danceTimer: 0,
+          danceImmuneTimer: 0,
+          webTimer: 0,
+          knockdownTimer: 0,
+          bossBlinkTimer: 0,
+          walkPhase: (d * 0.7 + s * 0.4) % (Math.PI * 2),
+        };
+        segments.push(seg);
+        enemies.push(seg);
+      }
+    }
+
+    // Push palm AFTER segments so the reverse physics loop (enemies.length - 1 down to 0)
+    // updates the palm first and syncs all attached segments in the same tick!
+    enemies.push(palm);
+
+    const bossHand = {
+      bossId,
+      palm,
+      segments,
+      defeatedSegments: 0,
+      blinkTimer: 0,
+      defeatedTriggered: false,
+    };
+    activeBossHands.set(bossId, bossHand);
+
+    playFearSound();
+    addShockwave(x, y, 460, '183, 148, 244');
+    addParticles(x, y, '#b794f4', 36, 60, 340, 4.4);
+    addFloatingText(
+      warrior.x,
+      warrior.y - warrior.radius - 28,
+      'BOSS HAND AWAKENS! ZOMBIES FLEE!',
+      '#b794f4',
+      1.35
+    );
+
+    return bossHand;
+  }
+
+  function checkBossSpawn() {
+    const milestone = Math.floor(teamKills / BOSS_KILL_INTERVAL) * BOSS_KILL_INTERVAL;
+    if (milestone >= BOSS_KILL_INTERVAL && milestone > lastBossSpawnMilestone) {
+      lastBossSpawnMilestone = milestone;
+      return spawnBossHand();
+    }
+    return null;
+  }
+
+  function isBossActive() {
+    for (const bh of activeBossHands.values()) {
+      if (!bh.defeatedTriggered || bh.blinkTimer > 0) return true;
+    }
+    return false;
+  }
+
+  function resolveBossTargetSegment(hitPart: any) {
+    if (!hitPart || !hitPart.isBossPart) return hitPart;
+    const bossHand = activeBossHands.get(hitPart.bossId);
+    if (!bossHand) return hitPart;
+
+    // If a warrior hits a segment that is already detached and alive, damage applies to it directly
+    if (hitPart.bossPartType === 'segment' && !hitPart.attached && hitPart.hp > 0) {
+      return hitPart;
+    }
+
+    // If a warrior hits an attached finger/thumb segment, prefer the furthest attached segment on that same digit
+    if (hitPart.bossPartType === 'segment' && typeof hitPart.digitIndex === 'number') {
+      let bestOnDigit: any = null;
+      for (let i = 0; i < bossHand.segments.length; i++) {
+        const seg = bossHand.segments[i];
+        if (seg.hp > 0 && seg.attached && seg.digitIndex === hitPart.digitIndex) {
+          if (!bestOnDigit || seg.segmentIndex > bestOnDigit.segmentIndex) {
+            bestOnDigit = seg;
+          }
+        }
+      }
+      if (bestOnDigit) return bestOnDigit;
+    }
+
+    // Otherwise, find the remaining attached segment across the hand that is furthest from the palm
+    let bestAttached: any = null;
+    let bestAttachedDist = -1;
+    for (let i = 0; i < bossHand.segments.length; i++) {
+      const seg = bossHand.segments[i];
+      if (seg.hp > 0 && seg.attached) {
+        const d = Math.hypot(seg.x - bossHand.palm.x, seg.y - bossHand.palm.y);
+        if (
+          !bestAttached ||
+          seg.segmentIndex > bestAttached.segmentIndex ||
+          (seg.segmentIndex === bestAttached.segmentIndex && d > bestAttachedDist)
+        ) {
+          bestAttached = seg;
+          bestAttachedDist = d;
+        }
+      }
+    }
+    if (bestAttached) return bestAttached;
+
+    // Fallback: if all remaining segments are detached, pick the alive segment furthest from the palm
+    let bestAlive: any = null;
+    let bestAliveDist = -1;
+    for (let i = 0; i < bossHand.segments.length; i++) {
+      const seg = bossHand.segments[i];
+      if (seg.hp > 0) {
+        const d = Math.hypot(seg.x - bossHand.palm.x, seg.y - bossHand.palm.y);
+        if (
+          !bestAlive ||
+          seg.segmentIndex > bestAlive.segmentIndex ||
+          (seg.segmentIndex === bestAlive.segmentIndex && d > bestAliveDist)
+        ) {
+          bestAlive = seg;
+          bestAliveDist = d;
+        }
+      }
+    }
+    return bestAlive || hitPart;
+  }
+
+  function checkBossSegmentDetach(seg: any) {
+    if (!seg || !seg.isBossPart || seg.bossPartType !== 'segment') return false;
+    if (!seg.attached || seg.hp <= 0) return false;
+    if (seg.hp <= seg.maxHp * BOSS_DETACH_HP_RATIO) {
+      seg.attached = false;
+      addParticles(seg.x, seg.y, '#b794f4', 12, 35, 160, 3.2);
+      addFloatingText(seg.x, seg.y - seg.radius - 10, 'SEGMENT DETACHED!', '#d6bcfa', 1.05);
+      // Also detach any outer segments on the same digit beyond this segment so they don't float in mid-air
+      const bossHand = activeBossHands.get(seg.bossId);
+      if (bossHand) {
+        for (let i = 0; i < bossHand.segments.length; i++) {
+          const other = bossHand.segments[i];
+          if (
+            other.hp > 0 &&
+            other.attached &&
+            other.digitIndex === seg.digitIndex &&
+            other.segmentIndex > seg.segmentIndex
+          ) {
+            other.attached = false;
+          }
+        }
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function spawnBossDefeatPowerups(cx: number, cy: number, count: number = BOSS_DEFEAT_POWERUP_COUNT) {
+    const spawned: any[] = [];
+    const innerCount = Math.min(8, count);
+    const outerCount = Math.max(0, count - innerCount);
+
+    for (let i = 0; i < innerCount; i++) {
+      const angle = (i / innerCount) * Math.PI * 2;
+      const r = 90;
+      const x = Math.max(40, Math.min(WORLD_WIDTH - 40, Math.round(cx + Math.cos(angle) * r)));
+      const y = Math.max(40, Math.min(WORLD_HEIGHT - 40, Math.round(cy + Math.sin(angle) * r)));
+      const pickup = {
+        x,
+        y,
+        pulse: 0,
+        type: rollRandomPickupType(),
+      };
+      addPickupToWorld(pickup);
+      spawned.push(pickup);
+    }
+
+    for (let i = 0; i < outerCount; i++) {
+      const angle = (i / outerCount) * Math.PI * 2 + Math.PI / outerCount;
+      const r = 185;
+      const x = Math.max(40, Math.min(WORLD_WIDTH - 40, Math.round(cx + Math.cos(angle) * r)));
+      const y = Math.max(40, Math.min(WORLD_HEIGHT - 40, Math.round(cy + Math.sin(angle) * r)));
+      const pickup = {
+        x,
+        y,
+        pulse: 0,
+        type: rollRandomPickupType(),
+      };
+      addPickupToWorld(pickup);
+      spawned.push(pickup);
+    }
+
+    return spawned;
+  }
+
+  function triggerBossDefeated(bossHand: any) {
+    if (!bossHand || bossHand.defeatedTriggered) return;
+    bossHand.defeatedTriggered = true;
+    bossHand.blinkTimer = BOSS_BLINK_DURATION;
+    if (bossHand.palm) {
+      bossHand.palm.bossBlinkTimer = BOSS_BLINK_DURATION;
+      bossHand.palm.vx = 0;
+      bossHand.palm.vy = 0;
+    }
+    for (let i = 0; i < bossHand.segments.length; i++) {
+      const seg = bossHand.segments[i];
+      if (seg.hp > 0) {
+        seg.bossBlinkTimer = BOSS_BLINK_DURATION;
+        seg.vx = 0;
+        seg.vy = 0;
+      }
+    }
+    const dropX = bossHand.palm ? bossHand.palm.x : warrior.x;
+    const dropY = bossHand.palm ? bossHand.palm.y : warrior.y;
+    spawnBossDefeatPowerups(dropX, dropY, BOSS_DEFEAT_POWERUP_COUNT);
+    playExplosionSound();
+    addShockwave(
+      bossHand.palm ? bossHand.palm.x : WORLD_WIDTH / 2,
+      bossHand.palm ? bossHand.palm.y : WORLD_HEIGHT / 2,
+      520,
+      '246, 224, 94'
+    );
+    addFloatingText(
+      bossHand.palm ? bossHand.palm.x : warrior.x,
+      (bossHand.palm ? bossHand.palm.y : warrior.y) - 40,
+      'BOSS HAND DEFEATED!',
+      '#fbd38d',
+      1.45
+    );
   }
 
   function updateVisualQuality(rawDt) {
@@ -4731,8 +5300,10 @@
       addParticles(gx, gy, levelColors[level] || '#a7f3d0', 12 + level * 4, 80, 240 + level * 40, 2.8 + level * 0.3);
     }
 
+    const hitBossSegments = new Set<any>();
     for (let j = enemies.length - 1; j >= 0; j--) {
       const target = enemies[j];
+      if (target.isBossPart && (target.bossBlinkTimer || 0) > 0) continue;
       const bdx = target.x - gx;
       const bdy = target.y - gy;
       const bDist = Math.hypot(bdx, bdy);
@@ -4744,32 +5315,48 @@
         const bny = bDist > 0.001 ? bdy / bDist : Math.sin(Math.random() * Math.PI * 2);
 
         const targetKnockedDown =
-          earthquakeTimer > 0 || localKnockdownTimer > 0 || (target.knockdownTimer || 0) > 0;
+          !target.isBossPart &&
+          (earthquakeTimer > 0 || localKnockdownTimer > 0 || (target.knockdownTimer || 0) > 0);
         if (targetKnockedDown) {
           target.vx = 0;
           target.vy = 0;
-        } else {
+        } else if (!target.isBossPart || target.attached === false || target.bossPartType === 'palm') {
           target.vx += (gustImpulse / target.mass) * bnx;
           target.vy += (gustImpulse / target.mass) * bny;
         }
-        target.hp -= gustDamage;
-        target.hurtFlash = 0.28;
-        checkEnemyLimbLoss(
-          target,
-          (gustImpulse / target.mass) * bnx * 0.5,
-          (gustImpulse / target.mass) * bny * 0.5
-        );
+        const dmgTarget = target.isBossPart ? resolveBossTargetSegment(target) : target;
+        if (dmgTarget && (!target.isBossPart || !hitBossSegments.has(dmgTarget))) {
+          if (target.isBossPart) hitBossSegments.add(dmgTarget);
+          dmgTarget.hp -= gustDamage;
+          dmgTarget.hurtFlash = 0.28;
+          target.hurtFlash = 0.28;
+          if (dmgTarget.isBossPart) {
+            checkBossSegmentDetach(dmgTarget);
+          } else {
+            checkEnemyLimbLoss(
+              dmgTarget,
+              (gustImpulse / target.mass) * bnx * 0.5,
+              (gustImpulse / target.mass) * bny * 0.5
+            );
+          }
+        }
 
         if (isFlaming) {
           if (isJackGust) {
             target.fireproofTimer = 0;
+            if (dmgTarget && dmgTarget !== target) dmgTarget.fireproofTimer = 0;
           }
           if (igniteEnemy(target)) {
-            if (target.hp <= 0) {
+            if (!target.isBossPart && target.hp <= 0) {
               target.hp = Math.max(18, Math.round(target.maxHp * 0.3));
             }
           } else if (isJackGust) {
             target.burnTimer = ZOMBIE_BURN_DURATION;
+          }
+          if (dmgTarget && dmgTarget !== target) {
+            if (!igniteEnemy(dmgTarget) && isJackGust) {
+              dmgTarget.burnTimer = ZOMBIE_BURN_DURATION;
+            }
           }
         }
 
@@ -4781,7 +5368,8 @@
           triggerHitStop(HIT_STOP_DURATION, bnx, bny, gustDamage);
         }
 
-        addFloatingText(target.x, target.y - target.radius - 8, `-${gustDamage}`, isFlaming ? '#ff6b35' : (levelColors[level] || '#a7f3d0'), 1.05 + level * 0.1);
+        const floatTarget = dmgTarget || target;
+        addFloatingText(floatTarget.x, floatTarget.y - floatTarget.radius - 8, `-${gustDamage}`, isFlaming ? '#ff6b35' : (levelColors[level] || '#a7f3d0'), 1.05 + level * 0.1);
       }
     }
   }
@@ -4835,13 +5423,21 @@
 
       for (let eIdx = enemies.length - 1; eIdx >= 0; eIdx--) {
         const e = enemies[eIdx];
+        if (!e || (e.isBossPart && (e.bossBlinkTimer || 0) > 0)) continue;
         const dist = distPointToSegment(e.x, e.y, cl.x1, cl.y1, cl.x2, cl.y2);
         if (dist <= e.radius + 18) {
           if (e.hitCooldown <= 0) {
-            e.hp -= CLOTHESLINE_BEAM_DAMAGE;
+            const dmgTarget = e.isBossPart ? resolveBossTargetSegment(e) : e;
+            dmgTarget.hp -= CLOTHESLINE_BEAM_DAMAGE;
             e.hitCooldown = 0.12;
+            dmgTarget.hitCooldown = 0.12;
             e.hurtFlash = 0.28;
-            checkEnemyLimbLoss(e, 0, 0);
+            dmgTarget.hurtFlash = 0.28;
+            if (dmgTarget.isBossPart) {
+              checkBossSegmentDetach(dmgTarget);
+            } else {
+              checkEnemyLimbLoss(dmgTarget, 0, 0);
+            }
             if (CLOTHESLINE_BEAM_DAMAGE > maxDamageBlow) {
               maxDamageBlow = CLOTHESLINE_BEAM_DAMAGE;
             }
@@ -4851,9 +5447,15 @@
               triggerHitStop(HIT_STOP_DURATION, -cldy, cldx, CLOTHESLINE_BEAM_DAMAGE);
             }
             addParticles(e.x, e.y, '#38bdf8', 12, 100, 280, 2.5);
-            addFloatingText(e.x, e.y - e.radius - 12, `-${CLOTHESLINE_BEAM_DAMAGE}`, '#38bdf8', 1.35);
-            if (e.hp <= 0) {
-              defeatEnemy(eIdx, null, 0, 0);
+            addFloatingText(dmgTarget.x, dmgTarget.y - dmgTarget.radius - 12, `-${CLOTHESLINE_BEAM_DAMAGE}`, '#38bdf8', 1.35);
+            if (dmgTarget.hp <= 0) {
+              const dmgIdx = enemies.indexOf(dmgTarget);
+              if (dmgIdx !== -1) {
+                defeatEnemy(dmgIdx, null, 0, 0);
+                if (dmgIdx < eIdx) {
+                  eIdx--;
+                }
+              }
             }
           }
         }
@@ -5047,6 +5649,9 @@
     elapsedGameTime = 0;
     earthquakeTimer = 0;
     localKnockdownTimer = 0;
+    lastBossSpawnMilestone = 0;
+    bossStartQuakeTimer = 0;
+    activeBossHands.clear();
 
     for (let i = 0; i < INITIAL_ENEMY_COUNT; i++) {
       spawnEnemy(false);
@@ -5830,16 +6435,29 @@
     for (let i = 0; i < enemies.length; i++) {
       const e = enemies[i];
       if (!e) continue;
-      if (earthquakeTimer > 0) {
+      if (e.isBossPart) {
+        e.knockdownTimer = 0;
+        e.danceTimer = 0;
+        if (e.bossPartType !== 'segment' || e.attached !== false) {
+          e.webTimer = 0;
+        }
+        if ((e.bossBlinkTimer || 0) > 0) {
+          e.bossBlinkTimer = Math.max(0, e.bossBlinkTimer - frameDt);
+        } else if (e.bossPartType === 'palm') {
+          e.fingerSpreadPhase = (e.fingerSpreadPhase || 0) + frameDt * BOSS_FINGER_SPREAD_RATE;
+        }
+      } else if (earthquakeTimer > 0) {
         e.knockdownTimer = Math.max(e.knockdownTimer || 0, ZOMBIE_KNOCKDOWN_RECOVERY);
       } else if (e.knockdownTimer > 0) {
         e.knockdownTimer = Math.max(0, e.knockdownTimer - frameDt);
       }
       const isKnockedDown =
-        earthquakeTimer > 0 || localKnockdownTimer > 0 || (e.knockdownTimer || 0) > 0;
+        !e.isBossPart &&
+        (earthquakeTimer > 0 || localKnockdownTimer > 0 || (e.knockdownTimer || 0) > 0);
       const isStationary =
-        (e.danceTimer || 0) > 0 ||
-        (e.webTimer || 0) > 0 ||
+        (e.bossBlinkTimer || 0) > 0 ||
+        (!e.isBossPart && (e.danceTimer || 0) > 0) ||
+        (canEnemyBeWebbed(e) && (e.webTimer || 0) > 0) ||
         isKnockedDown;
       if (isKnockedDown) {
         e.vx = 0;
@@ -5883,6 +6501,54 @@
       localKnockdownTimer = Math.max(0, localKnockdownTimer - dt);
     }
 
+    // Boss opening earthquake countdown (5 seconds after boss-monster mode begins)
+    if (bossStartQuakeTimer > 0) {
+      bossStartQuakeTimer -= dt;
+      if (bossStartQuakeTimer <= 0.0001) {
+        bossStartQuakeTimer = 0;
+        triggerEarthquake(warrior.x, warrior.y);
+      }
+    }
+
+    // Boss defeat 3-second blink countdown -> earthquake -> remove remaining parts
+    for (const [bossId, bh] of activeBossHands.entries()) {
+      if (bh.defeatedTriggered && bh.blinkTimer > 0) {
+        bh.blinkTimer -= dt;
+        if (bh.palm) {
+          bh.palm.bossBlinkTimer = Math.max(0, bh.blinkTimer);
+        }
+        for (let s = 0; s < bh.segments.length; s++) {
+          if (bh.segments[s].hp > 0) {
+            bh.segments[s].bossBlinkTimer = Math.max(0, bh.blinkTimer);
+          }
+        }
+        if (bh.blinkTimer <= 0.0001) {
+          bh.blinkTimer = 0;
+          triggerEarthquake(
+            bh.palm ? bh.palm.x : warrior.x,
+            bh.palm ? bh.palm.y : warrior.y
+          );
+          for (let eIdx = enemies.length - 1; eIdx >= 0; eIdx--) {
+            if (enemies[eIdx].bossId === bossId) {
+              const part = enemies[eIdx];
+              spawnEnemyGhost(
+                part.x,
+                part.y,
+                part.radius,
+                part.skinColor || '#7c6f9f',
+                0,
+                0,
+                part.angle || 0,
+                part.mass || 2.0
+              );
+              enemies.splice(eIdx, 1);
+            }
+          }
+          activeBossHands.delete(bossId);
+        }
+      }
+    }
+
     if (warrior.bulldozerTimer > 0) {
       warrior.bulldozerTimer = Math.max(0, warrior.bulldozerTimer - dt);
       if (warrior.bulldozerTimer <= 0) {
@@ -5906,18 +6572,38 @@
     // 5. Update Enemies & Collisions (Hammers, Chains, and Warrior)
     for (let i = enemies.length - 1; i >= 0; i--) {
       const e = enemies[i];
+      if (!e) continue;
       if (e.hitCooldown > 0) e.hitCooldown = Math.max(0, e.hitCooldown - dt);
       if (e.chainHitCooldown > 0) e.chainHitCooldown = Math.max(0, e.chainHitCooldown - dt);
       if (e.contactCooldown > 0) e.contactCooldown = Math.max(0, e.contactCooldown - dt);
       if (e.hurtFlash > 0) e.hurtFlash = Math.max(0, e.hurtFlash - dt);
 
-      if (earthquakeTimer > 0) {
+      const isBlinkingBoss = Boolean(e.isBossPart && (e.bossBlinkTimer || 0) > 0);
+      if (isBlinkingBoss) {
+        e.vx = 0;
+        e.vy = 0;
+        if (e.bossPartType === 'palm') {
+          syncBossHandAttachedSegments(e);
+        }
+        continue;
+      }
+
+      // Boss immunities: no part of the hand can be knocked down by an earthquake or made to dance by a disco ball;
+      // only detached segments can be caught in a spider web.
+      if (e.isBossPart) {
+        e.knockdownTimer = 0;
+        e.danceTimer = 0;
+        if (!canEnemyBeWebbed(e)) {
+          e.webTimer = 0;
+        }
+      } else if (earthquakeTimer > 0) {
         e.knockdownTimer = Math.max(e.knockdownTimer || 0, ZOMBIE_KNOCKDOWN_RECOVERY);
       } else if (e.knockdownTimer > 0) {
         e.knockdownTimer = Math.max(0, e.knockdownTimer - dt);
       }
       const isKnockedDown =
-        earthquakeTimer > 0 || localKnockdownTimer > 0 || (e.knockdownTimer || 0) > 0;
+        !e.isBossPart &&
+        (earthquakeTimer > 0 || localKnockdownTimer > 0 || (e.knockdownTimer || 0) > 0);
       if (isKnockedDown) {
         e.vx = 0;
         e.vy = 0;
@@ -5927,8 +6613,15 @@
       if (e.burnTimer > 0) {
         const stepBurn = Math.min(dt, e.burnTimer);
         e.burnTimer -= stepBurn;
-        e.hp -= ZOMBIE_BURN_DPS * stepBurn;
-        checkEnemyLimbLoss(e, 0, 0);
+        const burnTarget = e.isBossPart ? resolveBossTargetSegment(e) : e;
+        if (burnTarget) {
+          burnTarget.hp -= ZOMBIE_BURN_DPS * stepBurn;
+          if (burnTarget.isBossPart) {
+            checkBossSegmentDetach(burnTarget);
+          } else {
+            checkEnemyLimbLoss(burnTarget, 0, 0);
+          }
+        }
         e.burnTickAccum = (e.burnTickAccum || 0) + stepBurn;
 
         if (e.burnTickAccum >= 1.0) {
@@ -5948,9 +6641,17 @@
           e.fireproofTimer = ZOMBIE_FIREPROOF_DURATION;
         }
 
-        if (e.hp <= 0) {
-          defeatEnemy(i);
-          continue;
+        if (burnTarget && burnTarget.hp <= 0) {
+          const burnTargetIdx = enemies.indexOf(burnTarget);
+          if (burnTargetIdx !== -1) {
+            defeatEnemy(burnTargetIdx);
+            if (burnTarget === e) {
+              continue;
+            }
+            if (burnTargetIdx < i) {
+              i--;
+            }
+          }
         }
       } else if (e.fireproofTimer > 0) {
         e.fireproofTimer = Math.max(0, e.fireproofTimer - dt);
@@ -5958,11 +6659,14 @@
 
       if (e.fearTimer > 0) {
         e.fearTimer = Math.max(0, e.fearTimer - dt);
+        if (e.fearTimer <= 0) {
+          e.fearToEdge = false;
+        }
       }
-      const isFeared = (e.fearTimer || 0) > 0;
+      const isFeared = !e.isBossPart && (e.fearTimer || 0) > 0;
 
       // Disco dancing state (30s dancing in place -> 45s immune to dancing)
-      if (e.danceTimer > 0) {
+      if (!e.isBossPart && e.danceTimer > 0) {
         e.danceTimer -= dt;
         if (e.danceTimer <= 0.0001) {
           e.danceTimer = 0;
@@ -5971,142 +6675,168 @@
       } else if (e.danceImmuneTimer > 0) {
         e.danceImmuneTimer = Math.max(0, e.danceImmuneTimer - dt);
       }
-      const isDancing = (e.danceTimer || 0) > 0;
+      const isDancing = !e.isBossPart && (e.danceTimer || 0) > 0;
 
       // Spider webbing state (30s wrapped in white lines and unable to move)
       if (e.webTimer > 0) {
-        e.webTimer = Math.max(0, e.webTimer - dt);
+        if (!canEnemyBeWebbed(e)) {
+          e.webTimer = 0;
+        } else {
+          e.webTimer = Math.max(0, e.webTimer - dt);
+        }
       }
-      const isWebbed = (e.webTimer || 0) > 0;
+      const isWebbed = canEnemyBeWebbed(e) && (e.webTimer || 0) > 0;
 
-      // Speed multiplier: 4x when fleeing in fear, 3x when flaming, 1/2x when fire-proof
-      let speedMult = e.burnTimer > 0 ? 3.0 : e.fireproofTimer > 0 ? 0.5 : 1.0;
-      if (isFeared) {
-        speedMult = Math.max(speedMult, FEAR_SPEED_MULT);
-      }
-      const lostLegsCount = (e.lostLimbs || []).filter((l: string) => l === 'left_leg' || l === 'right_leg').length;
-      if (lostLegsCount === 1) {
-        speedMult *= 0.75;
-      } else if (lostLegsCount >= 2) {
-        speedMult *= 0.45;
-      }
+      const isAttachedBossSegment = Boolean(
+        e.isBossPart && e.bossPartType === 'segment' && e.attached
+      );
 
-      // Move toward warrior (or away from warrior at 4x speed when tainted with fear, or stand in place when dancing)
-      const toWarriorX = warrior.x - e.x;
-      const toWarriorY = warrior.y - e.y;
-      const distToWarrior = Math.sqrt(toWarriorX * toWarriorX + toWarriorY * toWarriorY);
-      if (isKnockedDown) {
-        e.vx = 0;
-        e.vy = 0;
-      } else if (isWebbed) {
-        if (e.hitCooldown <= 0 && e.chainHitCooldown <= 0) {
+      if (!isAttachedBossSegment) {
+        // Speed multiplier: 4x when fleeing in fear, 3x when flaming, 1/2x when fire-proof
+        let speedMult = e.burnTimer > 0 ? 3.0 : e.fireproofTimer > 0 ? 0.5 : 1.0;
+        if (e.isBossPart && e.bossPartType === 'segment' && !e.attached) {
+          // Detached segment moves independently of the rest of the hand at a 25% faster speed
+          speedMult *= BOSS_DETACHED_SPEED_MULT;
+        }
+        if (isFeared) {
+          speedMult = Math.max(speedMult, FEAR_SPEED_MULT);
+        }
+        const lostLegsCount = (e.lostLimbs || []).filter((l: string) => l === 'left_leg' || l === 'right_leg').length;
+        if (lostLegsCount === 1) {
+          speedMult *= 0.75;
+        } else if (lostLegsCount >= 2) {
+          speedMult *= 0.45;
+        }
+
+        // Move toward warrior (or away from warrior at 4x speed when tainted with fear, or stand in place when dancing)
+        const toWarriorX = warrior.x - e.x;
+        const toWarriorY = warrior.y - e.y;
+        const distToWarrior = Math.sqrt(toWarriorX * toWarriorX + toWarriorY * toWarriorY);
+        if (isKnockedDown) {
           e.vx = 0;
           e.vy = 0;
-        } else {
-          const webDamp = Math.exp(-e.traction * 8.0 * dt);
-          e.vx *= webDamp;
-          e.vy *= webDamp;
-        }
-      } else if (isDancing) {
-        e.vx = 0;
-        e.vy = 0;
-      } else if (Array.isArray(e.lostLimbs) && e.lostLimbs.includes('head')) {
-        // A zombie that has lost its head should wander in circles rather than following a warrior
-        e.wanderAngle = (typeof e.wanderAngle === 'number' ? e.wanderAngle : e.angle || 0) + dt * 2.0;
-        let dirX = Math.cos(e.wanderAngle);
-        let dirY = Math.sin(e.wanderAngle);
-        const wallMargin = e.radius + 60;
-        if ((e.x < wallMargin && dirX < 0) || (e.x > WORLD_WIDTH - wallMargin && dirX > 0)) {
-          e.wanderAngle = Math.PI - e.wanderAngle;
-          dirX = Math.cos(e.wanderAngle);
-          dirY = Math.sin(e.wanderAngle);
-        }
-        if ((e.y < wallMargin && dirY < 0) || (e.y > WORLD_HEIGHT - wallMargin && dirY > 0)) {
-          e.wanderAngle = -e.wanderAngle;
-          dirX = Math.cos(e.wanderAngle);
-          dirY = Math.sin(e.wanderAngle);
-        }
-        e.angle = Math.atan2(dirY, dirX);
-        e.vx += dirX * e.moveForce * speedMult * dt;
-        e.vy += dirY * e.moveForce * speedMult * dt;
-      } else if (distToWarrior > 0.001) {
-        if (isFeared) {
-          let dirX = -toWarriorX / distToWarrior;
-          let dirY = -toWarriorY / distToWarrior;
-          const wallMargin = e.radius + 90;
-          if (
-            (e.x < wallMargin && dirX < 0) ||
-            (e.x > WORLD_WIDTH - wallMargin && dirX > 0)
-          ) {
-            dirY += (e.y < WORLD_HEIGHT / 2 ? 1 : -1) * 0.85;
-            dirX *= 0.25;
+        } else if (isWebbed) {
+          if (e.hitCooldown <= 0 && e.chainHitCooldown <= 0) {
+            e.vx = 0;
+            e.vy = 0;
+          } else {
+            const webDamp = Math.exp(-e.traction * 8.0 * dt);
+            e.vx *= webDamp;
+            e.vy *= webDamp;
           }
-          if (
-            (e.y < wallMargin && dirY < 0) ||
-            (e.y > WORLD_HEIGHT - wallMargin && dirY > 0)
-          ) {
-            dirX += (e.x < WORLD_WIDTH / 2 ? 1 : -1) * 0.85;
-            dirY *= 0.25;
+        } else if (isDancing) {
+          e.vx = 0;
+          e.vy = 0;
+        } else if (Array.isArray(e.lostLimbs) && e.lostLimbs.includes('head')) {
+          // A zombie that has lost its head should wander in circles rather than following a warrior
+          e.wanderAngle = (typeof e.wanderAngle === 'number' ? e.wanderAngle : e.angle || 0) + dt * 2.0;
+          let dirX = Math.cos(e.wanderAngle);
+          let dirY = Math.sin(e.wanderAngle);
+          const wallMargin = e.radius + 60;
+          if ((e.x < wallMargin && dirX < 0) || (e.x > WORLD_WIDTH - wallMargin && dirX > 0)) {
+            e.wanderAngle = Math.PI - e.wanderAngle;
+            dirX = Math.cos(e.wanderAngle);
+            dirY = Math.sin(e.wanderAngle);
           }
-          const norm = Math.sqrt(dirX * dirX + dirY * dirY) || 1;
-          dirX /= norm;
-          dirY /= norm;
-
+          if ((e.y < wallMargin && dirY < 0) || (e.y > WORLD_HEIGHT - wallMargin && dirY > 0)) {
+            e.wanderAngle = -e.wanderAngle;
+            dirX = Math.cos(e.wanderAngle);
+            dirY = Math.sin(e.wanderAngle);
+          }
           e.angle = Math.atan2(dirY, dirX);
           e.vx += dirX * e.moveForce * speedMult * dt;
           e.vy += dirY * e.moveForce * speedMult * dt;
-        } else {
-          const dirX = toWarriorX / distToWarrior;
-          const dirY = toWarriorY / distToWarrior;
-          e.angle = Math.atan2(dirY, dirX);
-          e.vx += dirX * e.moveForce * speedMult * dt;
-          e.vy += dirY * e.moveForce * speedMult * dt;
+        } else if (distToWarrior > 0.001) {
+          if (isFeared && e.fearToEdge) {
+            const edgeDir = getNearestMapEdgeDirection(e.x, e.y);
+            e.angle = Math.atan2(edgeDir.dy, edgeDir.dx);
+            e.vx += edgeDir.dx * e.moveForce * speedMult * dt;
+            e.vy += edgeDir.dy * e.moveForce * speedMult * dt;
+          } else if (isFeared) {
+            let dirX = -toWarriorX / distToWarrior;
+            let dirY = -toWarriorY / distToWarrior;
+            const wallMargin = e.radius + 90;
+            if (
+              (e.x < wallMargin && dirX < 0) ||
+              (e.x > WORLD_WIDTH - wallMargin && dirX > 0)
+            ) {
+              dirY += (e.y < WORLD_HEIGHT / 2 ? 1 : -1) * 0.85;
+              dirX *= 0.25;
+            }
+            if (
+              (e.y < wallMargin && dirY < 0) ||
+              (e.y > WORLD_HEIGHT - wallMargin && dirY > 0)
+            ) {
+              dirX += (e.x < WORLD_WIDTH / 2 ? 1 : -1) * 0.85;
+              dirY *= 0.25;
+            }
+            const norm = Math.sqrt(dirX * dirX + dirY * dirY) || 1;
+            dirX /= norm;
+            dirY /= norm;
+
+            e.angle = Math.atan2(dirY, dirX);
+            e.vx += dirX * e.moveForce * speedMult * dt;
+            e.vy += dirY * e.moveForce * speedMult * dt;
+          } else {
+            const dirX = toWarriorX / distToWarrior;
+            const dirY = toWarriorY / distToWarrior;
+            e.angle = Math.atan2(dirY, dirX);
+            e.vx += dirX * e.moveForce * speedMult * dt;
+            e.vy += dirY * e.moveForce * speedMult * dt;
+          }
+        }
+
+        // Apply enemy ground traction
+        if (!isKnockedDown && !isWebbed) {
+          const enemyDamp = Math.exp(-(isDancing ? e.traction * 8.0 : e.traction) * dt);
+          e.vx *= enemyDamp;
+          e.vy *= enemyDamp;
+        }
+
+        e.x += e.vx * dt;
+        e.y += e.vy * dt;
+        if (isDancing && !isKnockedDown && !isWebbed) {
+          e.walkPhase += dt * 11.5;
+        } else if (!isKnockedDown && !isWebbed) {
+          const legHopRate = lostLegsCount === 1 ? 0.12 : lostLegsCount >= 2 ? 0.07 : 0.09;
+          e.walkPhase += Math.sqrt(e.vx * e.vx + e.vy * e.vy) * dt * legHopRate;
+        }
+
+        // Clamp enemy inside world
+        const ePadClamp = e.radius + 20;
+        e.x = Math.max(ePadClamp, Math.min(WORLD_WIDTH - ePadClamp, e.x));
+        e.y = Math.max(ePadClamp, Math.min(WORLD_HEIGHT - ePadClamp, e.y));
+
+        // Collide enemy with the 4 immovable stone columns
+        for (let cIdx = 0; cIdx < stoneColumns.length; cIdx++) {
+          const col = stoneColumns[cIdx];
+          const minEnemyColDist = e.radius + col.radius;
+          const cdx = e.x - col.x;
+          if (cdx <= -minEnemyColDist || cdx >= minEnemyColDist) continue;
+          const cdy = e.y - col.y;
+          if (cdy <= -minEnemyColDist || cdy >= minEnemyColDist) continue;
+          const cDistSq = cdx * cdx + cdy * cdy;
+          if (cDistSq < minEnemyColDist * minEnemyColDist && cDistSq > 1e-8) {
+            const cDist = Math.sqrt(cDistSq);
+            const nx = cdx / cDist;
+            const ny = cdy / cDist;
+            e.x = col.x + nx * minEnemyColDist;
+            e.y = col.y + ny * minEnemyColDist;
+            const vn = e.vx * nx + e.vy * ny;
+            if (vn < 0) {
+              e.vx -= vn * nx;
+              e.vy -= vn * ny;
+            }
+          }
         }
       }
 
-      // Apply enemy ground traction
-      if (!isKnockedDown && !isWebbed) {
-        const enemyDamp = Math.exp(-(isDancing ? e.traction * 8.0 : e.traction) * dt);
-        e.vx *= enemyDamp;
-        e.vy *= enemyDamp;
+      if (e.isBossPart && e.bossPartType === 'palm') {
+        e.fingerSpreadPhase = (e.fingerSpreadPhase || 0) + dt * BOSS_FINGER_SPREAD_RATE;
+        syncBossHandAttachedSegments(e);
       }
 
-      e.x += e.vx * dt;
-      e.y += e.vy * dt;
-      if (isDancing && !isKnockedDown && !isWebbed) {
-        e.walkPhase += dt * 11.5;
-      } else if (!isKnockedDown && !isWebbed) {
-        const legHopRate = lostLegsCount === 1 ? 0.12 : lostLegsCount >= 2 ? 0.07 : 0.09;
-        e.walkPhase += Math.sqrt(e.vx * e.vx + e.vy * e.vy) * dt * legHopRate;
-      }
-
-      // Clamp enemy inside world
       const ePad = e.radius + 20;
-      e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, e.x));
-      e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, e.y));
-
-      // Collide enemy with the 4 immovable stone columns
-      for (let cIdx = 0; cIdx < stoneColumns.length; cIdx++) {
-        const col = stoneColumns[cIdx];
-        const minEnemyColDist = e.radius + col.radius;
-        const cdx = e.x - col.x;
-        if (cdx <= -minEnemyColDist || cdx >= minEnemyColDist) continue;
-        const cdy = e.y - col.y;
-        if (cdy <= -minEnemyColDist || cdy >= minEnemyColDist) continue;
-        const cDistSq = cdx * cdx + cdy * cdy;
-        if (cDistSq < minEnemyColDist * minEnemyColDist && cDistSq > 1e-8) {
-          const cDist = Math.sqrt(cDistSq);
-          const nx = cdx / cDist;
-          const ny = cdy / cDist;
-          e.x = col.x + nx * minEnemyColDist;
-          e.y = col.y + ny * minEnemyColDist;
-          const vn = e.vx * nx + e.vy * ny;
-          if (vn < 0) {
-            e.vx -= vn * nx;
-            e.vy -= vn * ny;
-          }
-        }
-      }
 
       // Broadphase reject: skip hammer, chain, and warrior collision checks if enemy is outside warrior's reach AABB
       if (
@@ -6152,8 +6882,10 @@
               const totalInvMass = 1 / h.mass + 1 / e.mass;
               h.x -= nx * overlap * ((1 / h.mass) / totalInvMass);
               h.y -= ny * overlap * ((1 / h.mass) / totalInvMass);
-              e.x += nx * overlap * ((1 / e.mass) / totalInvMass);
-              e.y += ny * overlap * ((1 / e.mass) / totalInvMass);
+              if (!isAttachedBossSegment) {
+                e.x += nx * overlap * ((1 / e.mass) / totalInvMass);
+                e.y += ny * overlap * ((1 / e.mass) / totalInvMass);
+              }
 
               const isJackOLantern = (h.jackolanternTimer || 0) > 0;
               let hadFlame = isJackOLantern || (h.flameCharges > 0) || ((h.flameTimer || 0) > 0);
@@ -6175,7 +6907,7 @@
                 }
               }
 
-              if (h.isSpider) {
+              if (h.isSpider && canEnemyBeWebbed(e)) {
                 const wasFreshlyWebbed = (e.webTimer || 0) > ZOMBIE_WEB_DURATION - 0.45;
                 e.webTimer = ZOMBIE_WEB_DURATION;
                 if (!wasFreshlyWebbed) {
@@ -6206,6 +6938,7 @@
               const rvx = h.vx - e.vx;
               const rvy = h.vy - e.vy;
               const velAlongNormal = rvx * nx + rvy * ny;
+              const dmgTarget = e.isBossPart ? resolveBossTargetSegment(e) : e;
 
               if (velAlongNormal > 0) {
                 const impulse =
@@ -6213,15 +6946,23 @@
 
                 h.vx -= (impulse / h.mass) * nx;
                 h.vy -= (impulse / h.mass) * ny;
-                e.vx += (impulse / e.mass) * nx;
-                e.vy += (impulse / e.mass) * ny;
+                if (!isAttachedBossSegment) {
+                  e.vx += (impulse / e.mass) * nx;
+                  e.vy += (impulse / e.mass) * ny;
+                }
 
                 if (e.hitCooldown <= 0 && impulse > 8) {
                   const damage = Math.max(1, Math.round(impulse * DAMAGE_PER_IMPULSE));
-                  e.hp -= damage;
-                  checkEnemyLimbLoss(e, strikeHvx, strikeHvy);
+                  dmgTarget.hp -= damage;
+                  if (dmgTarget.isBossPart) {
+                    checkBossSegmentDetach(dmgTarget);
+                  } else {
+                    checkEnemyLimbLoss(dmgTarget, strikeHvx, strikeHvy);
+                  }
                   e.hitCooldown = 0.09;
+                  dmgTarget.hitCooldown = 0.09;
                   e.hurtFlash = 0.18;
+                  dmgTarget.hurtFlash = 0.18;
                   playImpactSound(damage, false);
 
                   if (damage > maxDamageBlow) {
@@ -6244,7 +6985,7 @@
 
                   const dmgColor = damage >= 50 ? '#fbd38d' : '#ffffff';
                   const dmgScale = damage >= 50 ? 1.25 : 1.0;
-                  addFloatingText(e.x, e.y - e.radius - 6, `-${damage}`, dmgColor, dmgScale);
+                  addFloatingText(dmgTarget.x, dmgTarget.y - dmgTarget.radius - 6, `-${damage}`, dmgColor, dmgScale);
 
                   if ((h.whirlwindLevel || 0) > 0 || h.isWhirlwind) {
                     triggerWhirlwindGust(h.x, h.y, warrior, h, { isFlaming: hadFlame || justIgnited });
@@ -6259,15 +7000,25 @@
                 e.hitCooldown = 0.09;
               }
 
-              if (justIgnited && !detonatedBomb && e.hp <= 0) {
-                e.hp = Math.max(18, Math.round(e.maxHp * 0.3));
-                checkEnemyLimbLoss(e, 0, 0);
+              if (!e.isBossPart && justIgnited && !detonatedBomb && dmgTarget.hp <= 0) {
+                dmgTarget.hp = Math.max(18, Math.round(dmgTarget.maxHp * 0.3));
+                checkEnemyLimbLoss(dmgTarget, 0, 0);
               }
 
-              if (e.hp <= 0) {
-                defeatEnemy(i, h, strikeHvx, strikeHvy);
-                enemyDefeated = true;
-                break;
+              if (dmgTarget.hp <= 0) {
+                if (dmgTarget === e) {
+                  defeatEnemy(i, h, strikeHvx, strikeHvy);
+                  enemyDefeated = true;
+                  break;
+                } else {
+                  const dmgIdx = enemies.indexOf(dmgTarget);
+                  if (dmgIdx !== -1) {
+                    defeatEnemy(dmgIdx, h, strikeHvx, strikeHvy);
+                    if (dmgIdx < i) {
+                      i--;
+                    }
+                  }
+                }
               }
             }
           }
@@ -6352,8 +7103,10 @@
               nB.y -= cny * cOverlap * 0.82 * t;
             }
 
-            e.x += cnx * cOverlap * 0.18;
-            e.y += cny * cOverlap * 0.18;
+            if (!isAttachedBossSegment) {
+              e.x += cnx * cOverlap * 0.18;
+              e.y += cny * cOverlap * 0.18;
+            }
 
             const chainVx = nA.vx + (nB.vx - nA.vx) * t;
             const chainVy = nA.vy + (nB.vy - nA.vy) * t;
@@ -6367,8 +7120,10 @@
                 ((1 + HAMMER_ENEMY_RESTITUTION) * cVelAlongNormal) / totalInvMass;
               const chainImpulse = hammerEquivImpulse * CHAIN_MOMENTUM_FACTOR;
 
-              e.vx += (chainImpulse / e.mass) * cnx;
-              e.vy += (chainImpulse / e.mass) * cny;
+              if (!isAttachedBossSegment) {
+                e.vx += (chainImpulse / e.mass) * cnx;
+                e.vy += (chainImpulse / e.mass) * cny;
+              }
 
               const deltaV = cVelAlongNormal * (1 + HAMMER_ENEMY_RESTITUTION);
               nA.vx -= deltaV * (1 - t) * cnx;
@@ -6399,10 +7154,17 @@
                   1,
                   Math.round(hammerEquivImpulse * DAMAGE_PER_IMPULSE * CHAIN_DAMAGE_FACTOR)
                 );
-                e.hp -= chainDamage;
-                checkEnemyLimbLoss(e, cnx * hammerEquivImpulse * 0.2, cny * hammerEquivImpulse * 0.2);
+                const dmgTarget = e.isBossPart ? resolveBossTargetSegment(e) : e;
+                dmgTarget.hp -= chainDamage;
+                if (dmgTarget.isBossPart) {
+                  checkBossSegmentDetach(dmgTarget);
+                } else {
+                  checkEnemyLimbLoss(dmgTarget, cnx * hammerEquivImpulse * 0.2, cny * hammerEquivImpulse * 0.2);
+                }
                 e.chainHitCooldown = 0.09;
+                dmgTarget.chainHitCooldown = 0.09;
                 e.hurtFlash = 0.14;
+                dmgTarget.hurtFlash = 0.14;
                 playImpactSound(chainDamage, true);
 
                 if (chainDamage > maxDamageBlow) {
@@ -6415,17 +7177,27 @@
 
                 addParticles(closestPointX, closestPointY, '#cbd5e0', 5, 40, 160, 2.5);
                 addFloatingText(
-                  e.x,
-                  e.y - e.radius - 6,
+                  dmgTarget.x,
+                  dmgTarget.y - dmgTarget.radius - 6,
                   `-${chainDamage}`,
                   '#cbd5e0',
                   0.92
                 );
 
-                if (e.hp <= 0) {
-                  defeatEnemy(i);
-                  enemyDefeated = true;
-                  break;
+                if (dmgTarget.hp <= 0) {
+                  if (dmgTarget === e) {
+                    defeatEnemy(i);
+                    enemyDefeated = true;
+                    break;
+                  } else {
+                    const dmgIdx = enemies.indexOf(dmgTarget);
+                    if (dmgIdx !== -1) {
+                      defeatEnemy(dmgIdx);
+                      if (dmgIdx < i) {
+                        i--;
+                      }
+                    }
+                  }
                 }
               }
             }
@@ -6451,18 +7223,27 @@
           const enx = -wdx / wDist;
           const eny = -wdy / wDist;
           const pushSpeed = Math.max(110, Math.hypot(warrior.vx || 0, warrior.vy || 0) * 0.85 + 95) * 2;
-          e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, warrior.x + enx * (minWarriorEnemyDist + 10)));
-          e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, warrior.y + eny * (minWarriorEnemyDist + 10)));
-          e.vx = enx * pushSpeed;
-          e.vy = eny * pushSpeed;
+          if (!isAttachedBossSegment) {
+            e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, warrior.x + enx * (minWarriorEnemyDist + 10)));
+            e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, warrior.y + eny * (minWarriorEnemyDist + 10)));
+            e.vx = enx * pushSpeed;
+            e.vy = eny * pushSpeed;
+          }
           e.hitCooldown = Math.max(e.hitCooldown || 0, 0.12);
 
           if (e.contactCooldown <= 0) {
             const crushDmg = BULLDOZER_DAMAGE;
-            e.hp -= crushDmg;
+            const dmgTarget = e.isBossPart ? resolveBossTargetSegment(e) : e;
+            dmgTarget.hp -= crushDmg;
             e.contactCooldown = 0.18;
+            dmgTarget.contactCooldown = 0.18;
             e.hurtFlash = 0.22;
-            checkEnemyLimbLoss(e, enx * pushSpeed, eny * pushSpeed);
+            dmgTarget.hurtFlash = 0.22;
+            if (dmgTarget.isBossPart) {
+              checkBossSegmentDetach(dmgTarget);
+            } else {
+              checkEnemyLimbLoss(dmgTarget, enx * pushSpeed, eny * pushSpeed);
+            }
 
             if (crushDmg > maxDamageBlow) {
               maxDamageBlow = crushDmg;
@@ -6471,10 +7252,20 @@
               triggerHitStop(HIT_STOP_DURATION, enx, eny, crushDmg);
             }
             playImpactSound(crushDmg, false);
-            addFloatingText(e.x, e.y - e.radius - 10, `-${crushDmg}`, '#ecc94b', 1.2);
+            addFloatingText(dmgTarget.x, dmgTarget.y - dmgTarget.radius - 10, `-${crushDmg}`, '#ecc94b', 1.2);
             addParticles(e.x, e.y, '#ecc94b', 10, 40, 180, 3.2);
-            if (e.hp <= 0) {
-              defeatEnemy(i);
+            if (dmgTarget.hp <= 0) {
+              if (dmgTarget === e) {
+                defeatEnemy(i);
+              } else {
+                const dmgIdx = enemies.indexOf(dmgTarget);
+                if (dmgIdx !== -1) {
+                  defeatEnemy(dmgIdx);
+                  if (dmgIdx < i) {
+                    i--;
+                  }
+                }
+              }
             }
           }
           continue;
@@ -6489,10 +7280,12 @@
           const enx = -wnx;
           const eny = -wny;
           const elephantPushSpeed = Math.max(180, Math.hypot(warrior.vx || 0, warrior.vy || 0) * 1.1 + 150);
-          e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, warrior.x + enx * (minWarriorEnemyDist + 6)));
-          e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, warrior.y + eny * (minWarriorEnemyDist + 6)));
-          e.vx = enx * elephantPushSpeed;
-          e.vy = eny * elephantPushSpeed;
+          if (!isAttachedBossSegment) {
+            e.x = Math.max(ePad, Math.min(WORLD_WIDTH - ePad, warrior.x + enx * (minWarriorEnemyDist + 6)));
+            e.y = Math.max(ePad, Math.min(WORLD_HEIGHT - ePad, warrior.y + eny * (minWarriorEnemyDist + 6)));
+            e.vx = enx * elephantPushSpeed;
+            e.vy = eny * elephantPushSpeed;
+          }
           warrior.vx += wnx * e.contactPush * dt * 3.0;
           warrior.vy += wny * e.contactPush * dt * 3.0;
 
@@ -6536,26 +7329,43 @@
             }
 
             const trampleDmg = ELEPHANT_DAMAGE;
-            e.hp -= trampleDmg;
+            const dmgTarget = e.isBossPart ? resolveBossTargetSegment(e) : e;
+            dmgTarget.hp -= trampleDmg;
             e.contactCooldown = 0.55;
+            dmgTarget.contactCooldown = 0.55;
             e.hurtFlash = 0.22;
-            checkEnemyLimbLoss(e, enx * elephantPushSpeed, eny * elephantPushSpeed);
+            dmgTarget.hurtFlash = 0.22;
+            if (dmgTarget.isBossPart) {
+              checkBossSegmentDetach(dmgTarget);
+            } else {
+              checkEnemyLimbLoss(dmgTarget, enx * elephantPushSpeed, eny * elephantPushSpeed);
+            }
 
             if (trampleDmg > maxDamageBlow) {
               maxDamageBlow = trampleDmg;
             }
             playImpactSound(trampleDmg, false);
-            addFloatingText(e.x, e.y - e.radius - 10, `-${trampleDmg}`, '#fbd38d', 1.15);
+            addFloatingText(dmgTarget.x, dmgTarget.y - dmgTarget.radius - 10, `-${trampleDmg}`, '#fbd38d', 1.15);
             addParticles(e.x, e.y, '#fbd38d', 8, 35, 150, 2.8);
-            if (e.hp <= 0) {
-              defeatEnemy(i);
+            if (dmgTarget.hp <= 0) {
+              if (dmgTarget === e) {
+                defeatEnemy(i);
+              } else {
+                const dmgIdx = enemies.indexOf(dmgTarget);
+                if (dmgIdx !== -1) {
+                  defeatEnemy(dmgIdx);
+                  if (dmgIdx < i) {
+                    i--;
+                  }
+                }
+              }
             }
           }
           continue;
         }
 
-        // Separate overlap (if zombie is dancing in place, webbed, or knocked down, keep the zombie stationary)
-        if (isDancing || isKnockedDown || isWebbed) {
+        // Separate overlap (if zombie is dancing in place, webbed, knocked down, or an attached boss segment, keep it stationary)
+        if (isDancing || isKnockedDown || isWebbed || isAttachedBossSegment) {
           warrior.x += wnx * wOverlap;
           warrior.y += wny * wOverlap;
         } else {
@@ -6651,6 +7461,13 @@
       const a = enemies[i];
       for (let j = i + 1; j < enemies.length; j++) {
         const b = enemies[j];
+        // Do not separate attached parts of the same boss hand from one another
+        const sameBossAttached =
+          a.isBossPart &&
+          b.isBossPart &&
+          a.bossId === b.bossId &&
+          (a.bossPartType === 'palm' || a.attached) &&
+          (b.bossPartType === 'palm' || b.attached);
         const minDist = a.radius + b.radius;
         const touchDist = minDist + 2;
         const edx = b.x - a.x;
@@ -6668,35 +7485,37 @@
           }
 
           // Fear contagion: a feared zombie taints any zombie it touches with fear
-          if ((a.fearTimer || 0) > 0 && (b.fearTimer || 0) <= 0) {
-            taintEnemyWithFear(b, a.fearTimer);
-          } else if ((b.fearTimer || 0) > 0 && (a.fearTimer || 0) <= 0) {
-            taintEnemyWithFear(a, b.fearTimer);
+          if ((a.fearTimer || 0) > 0 && (b.fearTimer || 0) <= 0 && !b.isBossPart) {
+            if (taintEnemyWithFear(b, a.fearTimer) && a.fearToEdge) {
+              b.fearToEdge = true;
+            }
+          } else if ((b.fearTimer || 0) > 0 && (a.fearTimer || 0) <= 0 && !a.isBossPart) {
+            if (taintEnemyWithFear(a, b.fearTimer) && b.fearToEdge) {
+              a.fearToEdge = true;
+            }
           }
 
           // Disco dance contagion: any other zombie that touches a dancing zombie also starts dancing for 30s
-          if ((a.danceTimer || 0) > 0 && (b.danceTimer || 0) <= 0 && (b.danceImmuneTimer || 0) <= 0) {
+          if ((a.danceTimer || 0) > 0 && (b.danceTimer || 0) <= 0 && (b.danceImmuneTimer || 0) <= 0 && !b.isBossPart) {
             startEnemyDance(b);
-          } else if ((b.danceTimer || 0) > 0 && (a.danceTimer || 0) <= 0 && (a.danceImmuneTimer || 0) <= 0) {
+          } else if ((b.danceTimer || 0) > 0 && (a.danceTimer || 0) <= 0 && (a.danceImmuneTimer || 0) <= 0 && !a.isBossPart) {
             startEnemyDance(a);
           }
         }
-        if (eDist < minDist && eDist > 0.001) {
+        if (!sameBossAttached && eDist < minDist && eDist > 0.001) {
           const overlap = (minDist - eDist) * 0.5;
           const enx = edx / eDist;
           const eny = edy / eDist;
           const aStationary =
-            (a.danceTimer || 0) > 0 ||
-            (a.webTimer || 0) > 0 ||
-            earthquakeTimer > 0 ||
-            localKnockdownTimer > 0 ||
-            (a.knockdownTimer || 0) > 0;
+            (a.isBossPart && (a.bossPartType === 'palm' || a.attached || (a.bossBlinkTimer || 0) > 0)) ||
+            (!a.isBossPart && (a.danceTimer || 0) > 0) ||
+            (canEnemyBeWebbed(a) && (a.webTimer || 0) > 0) ||
+            (!a.isBossPart && (earthquakeTimer > 0 || localKnockdownTimer > 0 || (a.knockdownTimer || 0) > 0));
           const bStationary =
-            (b.danceTimer || 0) > 0 ||
-            (b.webTimer || 0) > 0 ||
-            earthquakeTimer > 0 ||
-            localKnockdownTimer > 0 ||
-            (b.knockdownTimer || 0) > 0;
+            (b.isBossPart && (b.bossPartType === 'palm' || b.attached || (b.bossBlinkTimer || 0) > 0)) ||
+            (!b.isBossPart && (b.danceTimer || 0) > 0) ||
+            (canEnemyBeWebbed(b) && (b.webTimer || 0) > 0) ||
+            (!b.isBossPart && (earthquakeTimer > 0 || localKnockdownTimer > 0 || (b.knockdownTimer || 0) > 0));
           if (aStationary && bStationary) {
             // Both fallen or dancing in place: do not slide them around
           } else if (aStationary && !bStationary) {
@@ -6810,6 +7629,7 @@
           earthquakeTimer = EARTHQUAKE_DURATION;
           localKnockdownTimer = EARTHQUAKE_DURATION + ZOMBIE_KNOCKDOWN_RECOVERY;
           for (let eIdx = 0; eIdx < enemies.length; eIdx++) {
+            if (enemies[eIdx].isBossPart) continue;
             enemies[eIdx].knockdownTimer = ZOMBIE_KNOCKDOWN_RECOVERY;
             enemies[eIdx].vx = 0;
             enemies[eIdx].vy = 0;
@@ -11377,7 +12197,246 @@
     ctx.restore();
   }
 
+  function drawBossHandPart(e: any) {
+    const sx = e.x;
+    const sy = e.y * TILT_Y;
+    const nowSec = performance.now() * 0.001;
+    const isBlinking = (e.bossBlinkTimer || 0) > 0;
+    const blinkHide = isBlinking && Math.floor(nowSec * 14) % 2 === 1;
+    const hoverLift = 26 + Math.sin(nowSec * 3.2 + (e.walkPhase || 0)) * 5;
+    const isBurning = (e.burnTimer || 0) > 0;
+    const isWebbed = canEnemyBeWebbed(e) && (e.webTimer || 0) > 0;
+
+    ctx.save();
+    ctx.translate(sx, sy);
+
+    // 1. Floating shadow on the grass below the hovering hand part
+    ctx.fillStyle = isBlinking ? 'rgba(0, 0, 0, 0.18)' : 'rgba(0, 0, 0, 0.36)';
+    ctx.beginPath();
+    ctx.ellipse(0, 4, e.radius * 0.95, e.radius * TILT_Y * 0.85, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    if (blinkHide) {
+      ctx.globalAlpha = 0.22;
+    }
+
+    // Translate up by hoverLift for the floating 2.5D hand part
+    ctx.translate(0, -hoverLift);
+
+    if (isBurning) {
+      const pulseR = e.radius * (1.22 + Math.sin(nowSec * 16 + (e.walkPhase || 0)) * 0.08);
+      ctx.strokeStyle = '#ff6b35';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, pulseR, pulseR * TILT_Y, 0, 0, Math.PI * 2);
+      ctx.stroke();
+
+      for (let b = 0; b < 3; b++) {
+        const bPhase = nowSec * 15 + b * 1.6 + (e.walkPhase || 0);
+        const bx = (b - 1) * e.radius * 0.55;
+        const bh = 18 + Math.sin(bPhase) * 6;
+        ctx.fillStyle = 'rgba(255, 107, 53, 0.82)';
+        ctx.beginPath();
+        ctx.moveTo(bx - 6, 0);
+        ctx.quadraticCurveTo(bx, -bh, bx + 6, 0);
+        ctx.closePath();
+        ctx.fill();
+      }
+    }
+
+    const screenAngle = Math.atan2(Math.sin(e.angle || 0) * TILT_Y, Math.cos(e.angle || 0));
+    ctx.save();
+    ctx.rotate(screenAngle);
+
+    const baseFill =
+      e.hurtFlash > 0
+        ? '#ffffff'
+        : isBlinking
+        ? '#fef08a'
+        : isBurning
+        ? '#dd6b20'
+        : e.skinColor || '#7c6f9f';
+    const shadeFill =
+      e.hurtFlash > 0
+        ? '#e2e8f0'
+        : isBlinking
+        ? '#ecc94b'
+        : e.coatColor || '#4a3d6b';
+
+    if (e.bossPartType === 'palm') {
+      // Giant floating palm body
+      ctx.fillStyle = shadeFill;
+      ctx.beginPath();
+      ctx.ellipse(-4, 5, e.radius * 0.96, e.radius * 0.82, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = baseFill;
+      ctx.strokeStyle = '#2d2342';
+      ctx.lineWidth = 3.0;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, e.radius * 0.95, e.radius * 0.80, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Wrist cuff / severed spectral gauntlet cuff at back of palm
+      ctx.fillStyle = '#322659';
+      ctx.beginPath();
+      ctx.ellipse(-e.radius * 0.78, 0, e.radius * 0.24, e.radius * 0.52, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // Raised knuckles & tendons along the front arc of the palm
+      const spread = getBossFingerSpread(e);
+      ctx.strokeStyle = 'rgba(45, 35, 66, 0.65)';
+      ctx.lineWidth = Math.max(2.4, e.radius * 0.035);
+      for (let d = 0; d < BOSS_DIGIT_ANGLE_OFFSETS.length; d++) {
+        const baseOff = BOSS_DIGIT_ANGLE_OFFSETS[d];
+        const aOff =
+          d === 0
+            ? -0.62 + (baseOff - -0.62) * (0.35 + 0.80 * spread)
+            : 0.09 + (baseOff - 0.09) * (0.48 + 0.67 * spread);
+        const kx = Math.cos(aOff) * (e.radius * 0.78);
+        const ky = Math.sin(aOff) * (e.radius * 0.68);
+        ctx.beginPath();
+        ctx.moveTo(-e.radius * 0.35, ky * 0.3);
+        ctx.lineTo(kx, ky);
+        ctx.stroke();
+
+        ctx.fillStyle = '#9f7aea';
+        ctx.beginPath();
+        ctx.arc(kx, ky, Math.max(6.5, e.radius * 0.11), 0, Math.PI * 2);
+        ctx.fill();
+      }
+    } else {
+      // Finger or thumb segment (phalanx)
+      const segLen = e.radius * 1.15;
+      const segHalfW = (e.isThumb ? e.radius * 0.72 : e.radius * 0.62);
+
+      // Lower 3D thickness
+      ctx.fillStyle = shadeFill;
+      ctx.beginPath();
+      ctx.ellipse(0, 4, segLen, segHalfW, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Phalanx main capsule
+      ctx.fillStyle = baseFill;
+      ctx.strokeStyle = '#2d2342';
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.ellipse(0, 0, segLen, segHalfW, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+
+      // If detached, draw exposed glowing bone joint at the proximal base
+      if (!e.attached) {
+        ctx.fillStyle = '#e9d8fd';
+        ctx.strokeStyle = '#6b46c1';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.arc(-segLen * 0.78, 0, segHalfW * 0.55, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+      }
+
+      // Knuckle crease lines
+      ctx.strokeStyle = 'rgba(45, 35, 66, 0.55)';
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(-segLen * 0.3, -segHalfW * 0.65);
+      ctx.lineTo(-segLen * 0.3, segHalfW * 0.65);
+      ctx.stroke();
+
+      // Golden ring with gemstone on the third finger (ring finger, digitIndex === 3, segmentIndex === 1)
+      if (e.hasRing || (e.digitIndex === 3 && e.segmentIndex === 1)) {
+        const ringX = segLen * 0.05;
+        const bandHalfThick = Math.max(4, segLen * 0.14);
+        const bandHalfSpan = segHalfW * 1.04;
+
+        // Gold ring band wrapping around the finger segment
+        ctx.fillStyle = '#ecc94b';
+        ctx.strokeStyle = '#975a16';
+        ctx.lineWidth = Math.max(1.8, e.radius * 0.035);
+        ctx.beginPath();
+        ctx.ellipse(ringX, 0, bandHalfThick, bandHalfSpan, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Inner metallic sheen on the gold band
+        ctx.fillStyle = '#fefcbf';
+        ctx.beginPath();
+        ctx.ellipse(ringX - bandHalfThick * 0.25, -bandHalfSpan * 0.3, bandHalfThick * 0.45, bandHalfSpan * 0.45, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Crimson ruby gemstone setting on top of the ring
+        const gemR = Math.max(5, e.radius * 0.19);
+        ctx.fillStyle = '#e53e3e';
+        ctx.strokeStyle = '#742a2a';
+        ctx.lineWidth = Math.max(1.5, e.radius * 0.028);
+        ctx.beginPath();
+        ctx.arc(ringX, -segHalfW * 0.18, gemR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Gemstone specular highlight
+        ctx.fillStyle = '#fed7d7';
+        ctx.beginPath();
+        ctx.arc(ringX - gemR * 0.28, -segHalfW * 0.18 - gemR * 0.28, gemR * 0.35, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Distal tip segment gets a wicked dark fingernail / claw
+      const maxSegForDigit = BOSS_DIGIT_SEGMENT_COUNTS[e.digitIndex] || 3;
+      if (e.segmentIndex === maxSegForDigit) {
+        ctx.fillStyle = '#1a202c';
+        ctx.strokeStyle = '#cbd5e0';
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(segLen * 0.45, -segHalfW * 0.58);
+        ctx.quadraticCurveTo(segLen * 1.35, 0, segLen * 0.45, segHalfW * 0.58);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      }
+    }
+
+    ctx.restore();
+
+    // Spider web cocoon on a webbed detached segment
+    if (isWebbed) {
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.92)';
+      ctx.lineWidth = 2.0;
+      ctx.beginPath();
+      for (let w = -2; w <= 2; w++) {
+        const wy = w * (e.radius * 0.28);
+        ctx.moveTo(-e.radius * 0.85, wy - 3);
+        ctx.lineTo(e.radius * 0.85, wy + 3);
+      }
+      ctx.stroke();
+    }
+
+    ctx.restore();
+
+    // Floating health bar above damaged segments
+    if (e.bossPartType === 'segment' && e.hp < e.maxHp && e.hp > 0) {
+      const barW = e.radius * 2.0;
+      const barH = 5;
+      const bx = sx - barW / 2;
+      const by = sy - hoverLift - e.radius - 12;
+
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.72)';
+      ctx.fillRect(bx - 1, by - 1, barW + 2, barH + 2);
+
+      const hpRatio = Math.max(0, e.hp / e.maxHp);
+      ctx.fillStyle = !e.attached ? '#d6bcfa' : hpRatio > 0.4 ? '#9f7aea' : '#f6ad55';
+      ctx.fillRect(bx, by, barW * hpRatio, barH);
+    }
+  }
+
   function drawEnemy(e) {
+    if (e && e.isBossPart) {
+      drawBossHandPart(e);
+      return;
+    }
     const sx = e.x;
     const sy = e.y * TILT_Y;
     const dirX = Math.cos(e.angle);
@@ -13234,8 +14293,9 @@
     });
   }
 
-  // --- Cheat Code Detection ("cheat") ---
+  // --- Cheat Code Detection ("cheat" and "boss") ---
   const CHEAT_WORD = 'cheat';
+  const BOSS_CHEAT_WORD = 'boss';
   let cheatCodeBuffer = '';
 
   function handleCheatKeyDown(e: KeyboardEvent) {
@@ -13254,10 +14314,14 @@
       return;
     }
     if (e && typeof e.key === 'string' && e.key.length === 1) {
-      cheatCodeBuffer = (cheatCodeBuffer + e.key.toLowerCase()).slice(-CHEAT_WORD.length);
-      if (cheatCodeBuffer === CHEAT_WORD) {
+      const maxLen = Math.max(CHEAT_WORD.length, BOSS_CHEAT_WORD.length);
+      cheatCodeBuffer = (cheatCodeBuffer + e.key.toLowerCase()).slice(-maxLen);
+      if (cheatCodeBuffer.endsWith(CHEAT_WORD)) {
         cheatCodeBuffer = '';
         triggerCheat();
+      } else if (cheatCodeBuffer.endsWith(BOSS_CHEAT_WORD)) {
+        cheatCodeBuffer = '';
+        triggerBossCheat();
       }
     }
   }
@@ -13472,10 +14536,25 @@
         HIT_STOP_DAMAGE_THRESHOLD,
         HIT_STOP_BIG_SHAKE_THRESHOLD,
         MULTI_KILL_WINDOW,
+        BOSS_KILL_INTERVAL,
+        BOSS_QUAKE_DELAY,
+        BOSS_DEFEAT_SEGMENT_THRESHOLD,
+        BOSS_BLINK_DURATION,
+        BOSS_PALM_RADIUS,
+        BOSS_SEGMENT_RADIUS,
+        BOSS_SEGMENT_BASE_HP,
+        BOSS_SPEED_MULT,
+        BOSS_DETACHED_SPEED_MULT,
+        BOSS_DETACH_HP_RATIO,
+        BOSS_FINGER_SPREAD_RATE,
+        BOSS_DEFEAT_POWERUP_COUNT,
+        BOSS_DIGIT_ANGLE_OFFSETS,
+        BOSS_DIGIT_SEGMENT_COUNTS,
       },
       warrior,
       hammer,
       enemies,
+      activeBossHands,
       blackCircles,
       stoneColumns,
       particles,
@@ -13501,6 +14580,8 @@
         maxDamageBlow,
         earthquakeTimer,
         localKnockdownTimer,
+        lastBossSpawnMilestone,
+        bossStartQuakeTimer,
         gameTime,
         leaderboard,
         ws,
@@ -13524,11 +14605,27 @@
           hasSyncedInitialServerState = patch.hasSyncedInitialServerState;
         if ('localPlayerId' in patch) localPlayerId = patch.localPlayerId;
         if ('roundState' in patch) roundState = patch.roundState;
-        if ('teamKills' in patch) teamKills = patch.teamKills;
-        if ('kills' in patch) kills = patch.kills;
+        if ('teamKills' in patch) {
+          teamKills = patch.teamKills;
+          if (patch.teamKills === 0 && !('lastBossSpawnMilestone' in patch)) {
+            lastBossSpawnMilestone = 0;
+            bossStartQuakeTimer = 0;
+            activeBossHands.clear();
+          }
+        }
+        if ('kills' in patch) {
+          kills = patch.kills;
+          if (patch.kills === 0 && !('lastBossSpawnMilestone' in patch)) {
+            lastBossSpawnMilestone = 0;
+            bossStartQuakeTimer = 0;
+            activeBossHands.clear();
+          }
+        }
         if ('maxDamageBlow' in patch) maxDamageBlow = patch.maxDamageBlow;
         if ('earthquakeTimer' in patch) earthquakeTimer = patch.earthquakeTimer;
         if ('localKnockdownTimer' in patch) localKnockdownTimer = patch.localKnockdownTimer;
+        if ('lastBossSpawnMilestone' in patch) lastBossSpawnMilestone = patch.lastBossSpawnMilestone;
+        if ('bossStartQuakeTimer' in patch) bossStartQuakeTimer = patch.bossStartQuakeTimer;
         if ('gameTime' in patch) gameTime = patch.gameTime;
         if ('leaderboard' in patch) leaderboard = patch.leaderboard;
         if ('avgFrameMs' in patch) avgFrameMs = patch.avgFrameMs;
@@ -13629,6 +14726,7 @@
       spawnStartingPowerupsForPlayer,
       spawnCheatPowerups,
       triggerCheat,
+      triggerBossCheat,
       handleCheatKeyDown,
       defeatEnemy,
       checkEnemyLimbLoss,
@@ -13665,6 +14763,20 @@
       startEnemyDance,
       taintEnemyWithFear,
       igniteEnemy,
+      canEnemyBeWebbed,
+      getNearestMapEdgeDirection,
+      triggerEarthquake,
+      getBossFingerSpread,
+      getBossSegmentAttachedPose,
+      syncBossHandAttachedSegments,
+      spawnBossHand,
+      checkBossSpawn,
+      isBossActive,
+      resolveBossTargetSegment,
+      checkBossSegmentDetach,
+      spawnBossDefeatPowerups,
+      triggerBossDefeated,
+      drawBossHandPart,
       triggerHammerExplosion,
       getChainRestLength,
       initHammerChainNodes,
