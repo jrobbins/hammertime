@@ -306,6 +306,14 @@ function spawnBotWarrior(): any {
   bot.hammer = bot.hammers[0];
   bot.chainNodes = bot.hammer.chainNodes;
   players.set(bot.id, bot);
+  pendingEvents.push({
+    type: 'player_join',
+    playerId: bot.id,
+    name: bot.name,
+    isBot: true,
+    x: Math.round(bot.x),
+    y: Math.round(bot.y),
+  });
   return bot;
 }
 
@@ -661,11 +669,19 @@ function applyDamageToPlayer(p, damage) {
     p.mountHp = Math.max(0, p.mountHp - damage);
     p.hurtFlash = 0.25;
     if (p.mountHp <= 0) {
+      const lostMountType = p.mountType;
       const lostMount = p.mountType.toUpperCase();
       p.mountType = null;
       p.mountHp = 0;
       p.mountMaxHp = 0;
       p.radius = 20;
+      pendingEvents.push({
+        type: 'mount_lost',
+        playerId: p.id,
+        mountType: lostMountType,
+        x: Math.round(p.x),
+        y: Math.round(p.y),
+      });
       pendingEvents.push({
         type: 'floating_text',
         x: Math.round(p.x),
@@ -677,10 +693,20 @@ function applyDamageToPlayer(p, damage) {
     }
     return false;
   }
+  const wasAlive = p.alive !== false;
   p.hp = Math.max(0, p.hp - damage);
   p.hurtFlash = 0.25;
   if (p.hp <= 0) {
     p.alive = false;
+    if (wasAlive) {
+      pendingEvents.push({
+        type: 'player_die',
+        playerId: p.id,
+        name: p.name,
+        x: Math.round(p.x),
+        y: Math.round(p.y),
+      });
+    }
     return true;
   }
   return false;
@@ -1048,6 +1074,13 @@ function createPlayer(id, ws) {
   resetPlayerForNewRound(p);
   if (ws && !p.isBot) {
     spawnStartingPowerupsForPlayer(p);
+    pendingEvents.push({
+      type: 'player_join',
+      playerId: p.id,
+      name: p.name,
+      x: Math.round(p.x),
+      y: Math.round(p.y),
+    });
   }
   return p;
 }
@@ -2926,7 +2959,7 @@ function stepPlayerPhysics(p, dt) {
         color = '#ff6b35';
       }
 
-      pendingEvents.push({
+      const pickupEvent: any = {
         type: 'pickup',
         playerId: p.id,
         x: Math.round(c.x),
@@ -2935,7 +2968,11 @@ function stepPlayerPhysics(p, dt) {
         playerY: Math.round(p.y - p.radius - 16),
         label,
         color,
-      });
+      };
+      if (pType === 'horse' || pType === 'tortoise' || pType === 'elephant') {
+        pickupEvent.mountType = pType;
+      }
+      pendingEvents.push(pickupEvent);
 
       blackCircles.splice(i, 1);
       if ((p.bulldozerTimer || 0) > 0) {

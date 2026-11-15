@@ -895,13 +895,17 @@
    * - elephant: deep majestic brass trumpet flourish
    * - motorcycle: revving starter ignition / throttle blip
    */
-  function playMountClaimSound(mountType: string) {
+  function playMountClaimSound(mountType: string = 'horse') {
     const ctxAudio = ensureAudioContext();
     if (!ctxAudio) return;
 
     const now = ctxAudio.currentTime;
+    const resolvedType =
+      mountType === 'tortoise' || mountType === 'elephant' || mountType === 'motorcycle'
+        ? mountType
+        : 'horse';
 
-    if (mountType === 'horse') {
+    if (resolvedType === 'horse') {
       const osc1 = ctxAudio.createOscillator();
       const osc2 = ctxAudio.createOscillator();
       const gain = ctxAudio.createGain();
@@ -929,8 +933,8 @@
       osc2.start(now);
       osc1.stop(now + dur + 0.01);
       osc2.stop(now + dur + 0.01);
-      return { mountType, duration: dur, peakGain: 0.14 };
-    } else if (mountType === 'tortoise') {
+      return { mountType: mountType || 'horse', duration: dur, peakGain: 0.14 };
+    } else if (resolvedType === 'tortoise') {
       const osc = ctxAudio.createOscillator();
       const gain = ctxAudio.createGain();
       const dur = 0.35;
@@ -948,8 +952,8 @@
 
       osc.start(now);
       osc.stop(now + dur + 0.01);
-      return { mountType, duration: dur, peakGain: 0.15 };
-    } else if (mountType === 'elephant') {
+      return { mountType: 'tortoise', duration: dur, peakGain: 0.15 };
+    } else if (resolvedType === 'elephant') {
       const osc1 = ctxAudio.createOscillator();
       const osc2 = ctxAudio.createOscillator();
       const gain = ctxAudio.createGain();
@@ -977,8 +981,8 @@
       osc2.start(now);
       osc1.stop(now + dur + 0.01);
       osc2.stop(now + dur + 0.01);
-      return { mountType, duration: dur, peakGain: 0.15 };
-    } else if (mountType === 'motorcycle') {
+      return { mountType: 'elephant', duration: dur, peakGain: 0.15 };
+    } else if (resolvedType === 'motorcycle') {
       const osc = ctxAudio.createOscillator();
       const subOsc = ctxAudio.createOscillator();
       const gain = ctxAudio.createGain();
@@ -1006,8 +1010,236 @@
       subOsc.start(now);
       osc.stop(now + dur + 0.01);
       subOsc.stop(now + dur + 0.01);
-      return { mountType, duration: dur, peakGain: 0.16 };
+      return { mountType: 'motorcycle', duration: dur, peakGain: 0.16 };
     }
+  }
+
+  function playMountGainSound(mountType: string = 'horse') {
+    return playMountClaimSound(mountType);
+  }
+
+  /**
+   * Plays a distinct descending dismount/loss sound when a warrior loses their mount:
+   * - horse: descending distressed whinny and heavy thud
+   * - tortoise: heavy cracking stone-shell drop
+   * - elephant: deep descending brass groan and stomp
+   * - motorcycle: sputtering engine stall and power-down whine
+   */
+  function playMountLostSound(mountType: string = 'horse') {
+    const ctxAudio = ensureAudioContext();
+    if (!ctxAudio) return;
+
+    const now = ctxAudio.currentTime;
+    const resolvedType =
+      mountType === 'tortoise' || mountType === 'elephant' || mountType === 'motorcycle'
+        ? mountType
+        : 'horse';
+
+    if (resolvedType === 'horse') {
+      const osc1 = ctxAudio.createOscillator();
+      const osc2 = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      const dur = 0.32;
+
+      osc1.type = 'sawtooth';
+      osc2.type = 'triangle';
+      osc1.frequency.setValueAtTime(520, now);
+      osc1.frequency.linearRampToValueAtTime(240, now + 0.14);
+      osc1.frequency.exponentialRampToValueAtTime(110, now + dur);
+
+      osc2.frequency.setValueAtTime(360, now);
+      osc2.frequency.linearRampToValueAtTime(165, now + 0.14);
+      osc2.frequency.exponentialRampToValueAtTime(75, now + dur);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(0.15, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctxAudio.destination);
+
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + dur + 0.01);
+      osc2.stop(now + dur + 0.01);
+      return { mountType: mountType || 'horse', duration: dur, peakGain: 0.15 };
+    } else if (resolvedType === 'tortoise') {
+      const osc1 = ctxAudio.createOscillator();
+      const osc2 = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      const dur = 0.36;
+
+      osc1.type = 'triangle';
+      osc2.type = 'square';
+      osc1.frequency.setValueAtTime(150, now);
+      osc1.frequency.exponentialRampToValueAtTime(42, now + dur);
+
+      osc2.frequency.setValueAtTime(95, now);
+      osc2.frequency.exponentialRampToValueAtTime(30, now + dur);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(0.15, now + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctxAudio.destination);
+
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + dur + 0.01);
+      osc2.stop(now + dur + 0.01);
+      return { mountType: 'tortoise', duration: dur, peakGain: 0.15 };
+    } else if (resolvedType === 'elephant') {
+      const osc1 = ctxAudio.createOscillator();
+      const osc2 = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      const dur = 0.4;
+
+      osc1.type = 'sawtooth';
+      osc2.type = 'sine';
+      osc1.frequency.setValueAtTime(290, now);
+      osc1.frequency.linearRampToValueAtTime(140, now + 0.18);
+      osc1.frequency.exponentialRampToValueAtTime(68, now + dur);
+
+      osc2.frequency.setValueAtTime(195, now);
+      osc2.frequency.linearRampToValueAtTime(95, now + 0.18);
+      osc2.frequency.exponentialRampToValueAtTime(45, now + dur);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(0.16, now + 0.025);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctxAudio.destination);
+
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + dur + 0.01);
+      osc2.stop(now + dur + 0.01);
+      return { mountType: 'elephant', duration: dur, peakGain: 0.16 };
+    } else if (resolvedType === 'motorcycle') {
+      const osc1 = ctxAudio.createOscillator();
+      const osc2 = ctxAudio.createOscillator();
+      const gain = ctxAudio.createGain();
+      const dur = 0.34;
+
+      osc1.type = 'sawtooth';
+      osc2.type = 'square';
+      osc1.frequency.setValueAtTime(190, now);
+      osc1.frequency.linearRampToValueAtTime(85, now + 0.14);
+      osc1.frequency.exponentialRampToValueAtTime(34, now + dur);
+
+      osc2.frequency.setValueAtTime(95, now);
+      osc2.frequency.linearRampToValueAtTime(42, now + 0.14);
+      osc2.frequency.exponentialRampToValueAtTime(20, now + dur);
+
+      gain.gain.setValueAtTime(0.001, now);
+      gain.gain.linearRampToValueAtTime(0.16, now + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+      osc1.connect(gain);
+      osc2.connect(gain);
+      gain.connect(ctxAudio.destination);
+
+      osc1.start(now);
+      osc2.start(now);
+      osc1.stop(now + dur + 0.01);
+      osc2.stop(now + dur + 0.01);
+      return { mountType: 'motorcycle', duration: dur, peakGain: 0.16 };
+    }
+  }
+
+  function playMountLoseSound(mountType: string = 'horse') {
+    return playMountLostSound(mountType);
+  }
+
+  /**
+   * Plays a heroic ascending war-horn fanfare when a warrior joins the game.
+   */
+  function playWarriorJoinSound() {
+    const ctxAudio = ensureAudioContext();
+    if (!ctxAudio) return;
+
+    const now = ctxAudio.currentTime;
+    const dur = 0.36;
+    const osc1 = ctxAudio.createOscillator();
+    const osc2 = ctxAudio.createOscillator();
+    const gain = ctxAudio.createGain();
+
+    osc1.type = 'sawtooth';
+    osc2.type = 'triangle';
+
+    osc1.frequency.setValueAtTime(220, now);
+    osc1.frequency.linearRampToValueAtTime(330, now + 0.12);
+    osc1.frequency.exponentialRampToValueAtTime(440, now + dur);
+
+    osc2.frequency.setValueAtTime(330, now);
+    osc2.frequency.linearRampToValueAtTime(440, now + 0.12);
+    osc2.frequency.exponentialRampToValueAtTime(660, now + dur);
+
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.15, now + 0.025);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+    osc1.connect(gain);
+    osc2.connect(gain);
+    gain.connect(ctxAudio.destination);
+
+    osc1.start(now);
+    osc2.start(now);
+    osc1.stop(now + dur + 0.01);
+    osc2.stop(now + dur + 0.01);
+    return { duration: dur, peakGain: 0.15 };
+  }
+
+  function playPlayerJoinSound() {
+    return playWarriorJoinSound();
+  }
+
+  /**
+   * Plays a solemn, dramatic descending chord when a warrior dies.
+   */
+  function playWarriorDeathSound() {
+    const ctxAudio = ensureAudioContext();
+    if (!ctxAudio) return;
+
+    const now = ctxAudio.currentTime;
+    const dur = 0.45;
+    const osc1 = ctxAudio.createOscillator();
+    const osc2 = ctxAudio.createOscillator();
+    const gain = ctxAudio.createGain();
+
+    osc1.type = 'sawtooth';
+    osc2.type = 'triangle';
+
+    osc1.frequency.setValueAtTime(260, now);
+    osc1.frequency.linearRampToValueAtTime(140, now + 0.18);
+    osc1.frequency.exponentialRampToValueAtTime(65, now + dur);
+
+    osc2.frequency.setValueAtTime(195, now);
+    osc2.frequency.linearRampToValueAtTime(105, now + 0.18);
+    osc2.frequency.exponentialRampToValueAtTime(48, now + dur);
+
+    gain.gain.setValueAtTime(0.001, now);
+    gain.gain.linearRampToValueAtTime(0.18, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + dur);
+
+    osc1.connect(gain);
+    osc2.connect(gain);
+    gain.connect(ctxAudio.destination);
+
+    osc1.start(now);
+    osc2.start(now);
+    osc1.stop(now + dur + 0.01);
+    osc2.stop(now + dur + 0.01);
+    return { duration: dur, peakGain: 0.18 };
+  }
+
+  function playPlayerDeathSound() {
+    return playWarriorDeathSound();
   }
 
   /**
@@ -2382,14 +2614,22 @@
         playCollectLinkSound();
         addFloatingText(ev.playerX, ev.playerY, ev.label, ev.color || '#f6e05e', 1.12);
         addParticles(ev.x, ev.y, ev.color || '#f6e05e', 10, 30, 120, 3);
-        if (ev.label && ev.label.includes('WARHORSE') && (!ev.playerId || ev.playerId === localPlayerId)) {
-          playMountClaimSound('horse');
-        } else if (ev.label && ev.label.includes('GIANT TORTOISE') && (!ev.playerId || ev.playerId === localPlayerId)) {
-          playMountClaimSound('tortoise');
-        } else if (ev.label && ev.label.includes('WAR ELEPHANT') && (!ev.playerId || ev.playerId === localPlayerId)) {
-          playMountClaimSound('elephant');
-        } else if (ev.label && ev.label.includes('MOTORCYCLE') && (!ev.playerId || ev.playerId === localPlayerId)) {
-          playMountClaimSound('motorcycle');
+        const isLocalOrVisible =
+          !ev.playerId ||
+          ev.playerId === localPlayerId ||
+          isWorldPointVisible(ev.x, ev.y, cullMargin);
+        if (isLocalOrVisible) {
+          if (ev.mountType) {
+            playMountClaimSound(ev.mountType);
+          } else if (ev.label && ev.label.includes('WARHORSE')) {
+            playMountClaimSound('horse');
+          } else if (ev.label && ev.label.includes('GIANT TORTOISE')) {
+            playMountClaimSound('tortoise');
+          } else if (ev.label && ev.label.includes('WAR ELEPHANT')) {
+            playMountClaimSound('elephant');
+          } else if (ev.label && ev.label.includes('MOTORCYCLE')) {
+            playMountClaimSound('motorcycle');
+          }
         }
         if (ev.label && ev.label.includes('EARTHQUAKE')) {
           earthquakeTimer = EARTHQUAKE_DURATION;
@@ -2541,6 +2781,18 @@
         }
         addParticles(ev.x, ev.y, '#ecc94b', 24, 45, 180, 3.8);
         playMountClaimSound('motorcycle');
+      } else if (ev.type === 'mount_gain') {
+        if (!ev.playerId || ev.playerId === localPlayerId || isWorldPointVisible(ev.x, ev.y, cullMargin)) {
+          playMountClaimSound(ev.mountType || 'horse');
+        }
+      } else if (ev.type === 'mount_lost') {
+        if (!ev.playerId || ev.playerId === localPlayerId || isWorldPointVisible(ev.x, ev.y, cullMargin)) {
+          playMountLostSound(ev.mountType || 'horse');
+        }
+      } else if (ev.type === 'player_join') {
+        playWarriorJoinSound();
+      } else if (ev.type === 'player_die') {
+        playWarriorDeathSound();
       } else if (ev.type === 'floating_text') {
         if (!isWorldPointVisible(ev.x, ev.y, cullMargin)) continue;
         addFloatingText(ev.x, ev.y, ev.text, ev.color || '#fff', ev.scale || 1);
@@ -2656,6 +2908,7 @@
     lastUserActivityTime = performance.now();
     hasRecentInput = true;
     ensureAudioContext();
+    playWarriorJoinSound();
     if (enterModal) {
       enterModal.classList.remove('hidden');
       enterModal.setAttribute('aria-hidden', 'false');
@@ -6017,6 +6270,7 @@
           if (warrior.mountType && warrior.mountHp > 0) {
             warrior.mountHp = Math.max(0, warrior.mountHp - e.contactDamage);
             if (warrior.mountHp <= 0) {
+              const lostMountType = warrior.mountType;
               const lostLabel =
                 warrior.mountType === 'elephant'
                   ? 'ELEPHANT LOST!'
@@ -6029,6 +6283,7 @@
               warrior.mountHp = 0;
               warrior.mountMaxHp = 0;
               warrior.radius = 20;
+              playMountLostSound(lostMountType);
               addFloatingText(
                 warrior.x,
                 warrior.y - warrior.radius - 26,
@@ -6062,8 +6317,12 @@
           );
 
           if (warrior.hp <= 0) {
+            const wasAlive = warrior.alive;
             warrior.alive = false;
             localObserverTimer = 0;
+            if (wasAlive) {
+              playWarriorDeathSound();
+            }
           }
         }
       }
@@ -6510,8 +6769,12 @@
   }
 
   function triggerGameOver() {
+    const wasAlive = warrior.alive;
     warrior.alive = false;
     localObserverTimer = 0;
+    if (wasAlive) {
+      playWarriorDeathSound();
+    }
   }
 
   // --- Visual Effects & HUD Update ---
@@ -12771,6 +13034,13 @@
       drawLaidDownMotorcycle,
       updateLaidDownMotorcycles,
       playMountClaimSound,
+      playMountGainSound,
+      playMountLostSound,
+      playMountLoseSound,
+      playWarriorJoinSound,
+      playPlayerJoinSound,
+      playWarriorDeathSound,
+      playPlayerDeathSound,
       playMountLocomotionSound,
       playEnemyMotorcycleEngineSound,
       playMotorcycleCrashSound,

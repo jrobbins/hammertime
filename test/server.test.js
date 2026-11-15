@@ -2089,5 +2089,29 @@ describe('Robot Warriors (Server-Controlled Bots) & Mode Cycling', () => {
       assert.equal(pk.x, expectedX);
       assert.equal(pk.y, expectedY);
     }
+
+    // 4. Emits player_join event when a warrior joins, mount_lost when mount HP reaches 0, and player_die when warrior HP reaches 0
+    const joinEv = srv.getState().pendingEvents.find((ev) => ev.type === 'player_join' && ev.playerId === 'joiner_1');
+    assert.ok(joinEv, 'Should emit player_join event when a warrior joins');
+
+    srv.setState({ pendingEvents: [] });
+    joiningPlayer.mountType = 'horse';
+    joiningPlayer.mountHp = 30;
+    joiningPlayer.mountMaxHp = 100;
+    srv.applyDamageToPlayer(joiningPlayer, 40);
+    assert.equal(joiningPlayer.mountType, null);
+    const mountLostEv = srv.getState().pendingEvents.find((ev) => ev.type === 'mount_lost');
+    assert.ok(mountLostEv, 'Should emit mount_lost event when warrior loses mount');
+    assert.equal(mountLostEv.mountType, 'horse');
+    assert.equal(mountLostEv.playerId, 'joiner_1');
+
+    srv.setState({ pendingEvents: [] });
+    joiningPlayer.hp = 25;
+    const died = srv.applyDamageToPlayer(joiningPlayer, 30);
+    assert.equal(died, true);
+    assert.equal(joiningPlayer.alive, false);
+    const dieEv = srv.getState().pendingEvents.find((ev) => ev.type === 'player_die');
+    assert.ok(dieEv, 'Should emit player_die event when warrior dies');
+    assert.equal(dieEv.playerId, 'joiner_1');
   });
 });

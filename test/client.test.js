@@ -3084,6 +3084,85 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       },
     ]);
     assert.ok(mockOscillators.length >= 2, 'claim_motorcycle event should trigger motorcycle mount claim sound');
+
+    // 8. Mount lost sound effects for all 4 mounts (and default)
+    for (const m of mounts) {
+      mockOscillators = [];
+      mockGains = [];
+      const lostRes = api.playMountLostSound(m);
+      assert.ok(lostRes, `Mount lost sound for ${m} should return audio metadata`);
+      assert.equal(lostRes.mountType, m);
+      assert.ok(lostRes.duration >= 0.25 && lostRes.duration <= 0.45);
+      assert.ok(lostRes.peakGain >= 0.10 && lostRes.peakGain <= 0.20);
+      assert.ok(mockOscillators.length >= 2, `Should construct oscillators for losing ${m}`);
+    }
+
+    // Losing mount in local stepPhysics triggers playMountLostSound
+    api.warrior.alive = true;
+    api.warrior.hp = 100;
+    api.warrior.mountType = 'horse';
+    api.warrior.mountHp = 5;
+    api.warrior.mountMaxHp = 100;
+    api.warrior.x = 2100;
+    api.warrior.y = 2100;
+    api.enemies.length = 0;
+    api.spawnEnemy(false);
+    const dismountEnemy = api.enemies[0];
+    dismountEnemy.x = 2105;
+    dismountEnemy.y = 2100;
+    dismountEnemy.contactCooldown = 0;
+    dismountEnemy.contactDamage = 10;
+    mockOscillators = [];
+    api.stepPhysics(0.016);
+    assert.equal(api.warrior.mountType, null, 'Warrior should lose mount when mountHp drops to 0');
+    assert.ok(mockOscillators.length >= 2, 'Losing mount in stepPhysics should play mount lost sound');
+
+    // Server mount_lost event triggers playMountLostSound
+    mockOscillators = [];
+    api.processServerEvents([
+      {
+        type: 'mount_lost',
+        mountType: 'elephant',
+        x: api.warrior.x,
+        y: api.warrior.y,
+      },
+    ]);
+    assert.ok(mockOscillators.length >= 2, 'mount_lost event should trigger mount lost sound');
+
+    // 9. Warrior join and warrior death sound effects
+    mockOscillators = [];
+    const joinSound = api.playWarriorJoinSound();
+    assert.ok(joinSound, 'Warrior join sound should return metadata');
+    assert.ok(joinSound.duration >= 0.25 && joinSound.duration <= 0.5);
+    assert.ok(mockOscillators.length >= 2, 'Warrior join sound should use oscillators');
+
+    mockOscillators = [];
+    const deathSound = api.playWarriorDeathSound();
+    assert.ok(deathSound, 'Warrior death sound should return metadata');
+    assert.ok(deathSound.duration >= 0.3 && deathSound.duration <= 0.6);
+    assert.ok(mockOscillators.length >= 2, 'Warrior death sound should use oscillators');
+
+    // Server player_join and player_die events trigger their sounds
+    mockOscillators = [];
+    api.processServerEvents([{ type: 'player_join', playerId: 'p2', x: api.warrior.x, y: api.warrior.y }]);
+    assert.ok(mockOscillators.length >= 2, 'player_join event should trigger warrior join sound');
+
+    mockOscillators = [];
+    api.processServerEvents([{ type: 'player_die', playerId: 'p2', x: api.warrior.x, y: api.warrior.y }]);
+    assert.ok(mockOscillators.length >= 2, 'player_die event should trigger warrior death sound');
+
+    // Warrior dying in local stepPhysics triggers warrior death sound
+    api.warrior.alive = true;
+    api.warrior.mountType = null;
+    api.warrior.hp = 5;
+    dismountEnemy.x = api.warrior.x + 5;
+    dismountEnemy.y = api.warrior.y;
+    dismountEnemy.contactCooldown = 0;
+    dismountEnemy.contactDamage = 10;
+    mockOscillators = [];
+    api.stepPhysics(0.016);
+    assert.equal(api.warrior.alive, false, 'Warrior should die when HP drops to 0');
+    assert.ok(mockOscillators.length >= 2, 'Warrior dying in stepPhysics should play warrior death sound');
   });
 
   it('routes WebSocket connections from *.appspot.com to the Cloud Run backend', () => {
