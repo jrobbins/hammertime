@@ -189,8 +189,8 @@
   const BOSS_QUAKE_DELAY = 5.0;
   const BOSS_DEFEAT_SEGMENT_THRESHOLD = 14;
   const BOSS_BLINK_DURATION = 3.0;
-  const BOSS_PALM_RADIUS = 231;
-  const BOSS_SEGMENT_RADIUS = 72;
+  const BOSS_PALM_RADIUS = 185;
+  const BOSS_SEGMENT_RADIUS = 58;
   const BOSS_SEGMENT_BASE_HP = 900;
   const BOSS_SPEED_MULT = 1.2;
   const BOSS_DETACHED_SPEED_MULT = 1.25;
@@ -1510,6 +1510,160 @@
     mouse.screenY = (warrior.y - camera.y) * TILT_Y;
   }
 
+  const KEYBOARD_TARGET_DISTANCE = 220;
+  const KEYBOARD_TURN_ONLY_DISTANCE = 7;
+  const KEYBOARD_TURN_SPEED = 3.6;
+
+  const keyboardState = {
+    active: false,
+    up: false,
+    forward: false,
+    down: false,
+    left: false,
+    right: false,
+    turnDir: 0,
+    vectorX: 0,
+    vectorY: 0,
+    pressedKeys: new Set<string>(),
+  };
+
+  function normalizeMovementKey(key: unknown, code?: unknown): string | null {
+    // Up-arrow or W walks forward; Left/Right arrows and A/D steer left/right; S and Down-arrow are not used
+    if (typeof key === 'string') {
+      const lower = key.toLowerCase();
+      if (lower === 'arrowup' || lower === 'up') return 'arrowup';
+      if (lower === 'arrowleft' || lower === 'left') return 'arrowleft';
+      if (lower === 'arrowright' || lower === 'right') return 'arrowright';
+      if (lower === 'w') return 'w';
+      if (lower === 'a') return 'a';
+      if (lower === 'd') return 'd';
+    }
+    if (typeof code === 'string') {
+      if (code === 'ArrowUp') return 'arrowup';
+      if (code === 'ArrowLeft') return 'arrowleft';
+      if (code === 'ArrowRight') return 'arrowright';
+      if (code === 'KeyW') return 'w';
+      if (code === 'KeyA') return 'a';
+      if (code === 'KeyD') return 'd';
+    }
+    return null;
+  }
+
+  function updateKeyboardTarget(dt = 0) {
+    if (!keyboardState.active) return;
+    if (dt > 0 && keyboardState.turnDir !== 0) {
+      const isMotorcycle = warrior.mountType === 'motorcycle';
+      const keyTurnRate = isMotorcycle ? MOTORCYCLE_TURN_RATE : KEYBOARD_TURN_SPEED;
+      const nextAngle = warrior.angle + keyboardState.turnDir * keyTurnRate * dt;
+      warrior.angle = Math.atan2(Math.sin(nextAngle), Math.cos(nextAngle));
+    }
+    const dirX = Math.cos(warrior.angle);
+    const dirY = Math.sin(warrior.angle);
+    keyboardState.vectorX = dirX;
+    keyboardState.vectorY = dirY;
+
+    const targetDist = keyboardState.up
+      ? KEYBOARD_TARGET_DISTANCE
+      : KEYBOARD_TURN_ONLY_DISTANCE;
+    const warriorScreenX = warrior.x - camera.x;
+    const warriorScreenY = (warrior.y - camera.y) * TILT_Y;
+    mouse.screenX = warriorScreenX + dirX * targetDist;
+    mouse.screenY = warriorScreenY + dirY * targetDist * TILT_Y;
+    lastUserActivityTime = performance.now();
+    hasRecentInput = true;
+  }
+
+  function recomputeKeyboardVector(stopWarriorWhenReleased = true) {
+    const wasActive = keyboardState.active;
+    keyboardState.up =
+      keyboardState.pressedKeys.has('arrowup') || keyboardState.pressedKeys.has('w');
+    keyboardState.forward = keyboardState.up;
+    keyboardState.down = false;
+    keyboardState.left =
+      keyboardState.pressedKeys.has('arrowleft') || keyboardState.pressedKeys.has('a');
+    keyboardState.right =
+      keyboardState.pressedKeys.has('arrowright') || keyboardState.pressedKeys.has('d');
+    keyboardState.turnDir = (keyboardState.right ? 1 : 0) - (keyboardState.left ? 1 : 0);
+
+    if (keyboardState.up || keyboardState.turnDir !== 0) {
+      keyboardState.active = true;
+      updateKeyboardTarget(0);
+    } else {
+      keyboardState.active = false;
+      keyboardState.vectorX = 0;
+      keyboardState.vectorY = 0;
+      if (wasActive && stopWarriorWhenReleased) {
+        mouse.screenX = warrior.x - camera.x;
+        mouse.screenY = (warrior.y - camera.y) * TILT_Y;
+        lastUserActivityTime = performance.now();
+        hasRecentInput = true;
+      }
+    }
+  }
+
+  function resetKeyboardState(stopWarrior = false) {
+    const wasActive = keyboardState.active;
+    keyboardState.pressedKeys.clear();
+    keyboardState.active = false;
+    keyboardState.up = false;
+    keyboardState.forward = false;
+    keyboardState.down = false;
+    keyboardState.left = false;
+    keyboardState.right = false;
+    keyboardState.turnDir = 0;
+    keyboardState.vectorX = 0;
+    keyboardState.vectorY = 0;
+    if (wasActive && stopWarrior) {
+      mouse.screenX = warrior.x - camera.x;
+      mouse.screenY = (warrior.y - camera.y) * TILT_Y;
+      lastUserActivityTime = performance.now();
+      hasRecentInput = true;
+    }
+  }
+
+  function isEditableEventTarget(target: any): boolean {
+    if (!target || typeof target !== 'object') return false;
+    const tag = typeof target.tagName === 'string' ? target.tagName.toUpperCase() : '';
+    return (
+      tag === 'INPUT' ||
+      tag === 'TEXTAREA' ||
+      tag === 'SELECT' ||
+      Boolean(target.isContentEditable)
+    );
+  }
+
+  function handleMovementKeyDown(e: any) {
+    if (!e) return;
+    if (isDialogShowing() || isEditableEventTarget(e.target)) {
+      if (keyboardState.pressedKeys.size > 0) {
+        resetKeyboardState(false);
+      }
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) {
+      return;
+    }
+    const moveKey = normalizeMovementKey(e.key, e.code);
+    if (!moveKey) return;
+
+    if (moveKey.startsWith('arrow') && typeof e.preventDefault === 'function') {
+      e.preventDefault();
+    }
+    ensureAudioContext();
+    keyboardState.pressedKeys.add(moveKey);
+    recomputeKeyboardVector(true);
+  }
+
+  function handleMovementKeyUp(e: any) {
+    if (!e) return;
+    const moveKey = normalizeMovementKey(e.key, e.code);
+    if (!moveKey) return;
+    if (keyboardState.pressedKeys.has(moveKey)) {
+      keyboardState.pressedKeys.delete(moveKey);
+      recomputeKeyboardVector(!isDialogShowing());
+    }
+  }
+
   if (touchWheelEl) {
     touchWheelEl.addEventListener('pointerdown', (e: any) => {
       e.preventDefault();
@@ -1552,7 +1706,7 @@
   }
 
   function handlePointerMove(e: any) {
-    if (touchWheelState.active) return;
+    if (touchWheelState.active || keyboardState.active) return;
     if (typeof e.clientX !== 'number' || typeof e.clientY !== 'number') return;
     if (e.clientX !== mouse.screenX || e.clientY !== mouse.screenY) {
       lastUserActivityTime = performance.now();
@@ -1570,6 +1724,11 @@
 
   window.addEventListener('pointermove', handlePointerMove);
   window.addEventListener('mousemove', handlePointerMove);
+  window.addEventListener('keydown', handleMovementKeyDown);
+  window.addEventListener('keyup', handleMovementKeyUp);
+  window.addEventListener('blur', () => {
+    resetKeyboardState(true);
+  });
 
   // --- Deterministic Scenery Generator for the Grassy Field ---
   const grassPatches = [];
@@ -2860,6 +3019,7 @@
   }
 
   function pauseForIdle(reasonText) {
+    resetKeyboardState(false);
     hasEnteredGame = false;
     isConnecting = false;
     isMultiplayer = false;
@@ -3617,6 +3777,9 @@
   function sendInputToServer(force = false) {
     const openState = win.WebSocket ? win.WebSocket.OPEN : 1;
     if (!hasEnteredGame || !isMultiplayer || !ws || ws.readyState !== openState) return false;
+    if (keyboardState.active) {
+      updateKeyboardTarget(0);
+    }
     const now = performance.now();
     const mouseWorldX = +(camera.x + mouse.screenX).toFixed(1);
     const mouseWorldY = +(camera.y + mouse.screenY / TILT_Y).toFixed(1);
@@ -4661,7 +4824,7 @@
     palm: any,
     digitIndex: number,
     segmentIndex: number,
-    segRadius: number = digitIndex === 0 ? BOSS_SEGMENT_RADIUS + 6 : BOSS_SEGMENT_RADIUS
+    segRadius: number = digitIndex === 0 ? BOSS_SEGMENT_RADIUS + 4 : BOSS_SEGMENT_RADIUS
   ) {
     const baseOffset = BOSS_DIGIT_ANGLE_OFFSETS[digitIndex] ?? 0;
     const palmAngle = palm.angle || 0;
@@ -4788,8 +4951,8 @@
       traction: 4.5,
       contactDamage: 14,
       contactPush: 380,
-      skinColor: '#7c6f9f',
-      coatColor: '#4a3d6b',
+      skinColor: '#bfa59b',
+      coatColor: '#6e5650',
       hitCooldown: 0,
       chainHitCooldown: 0,
       contactCooldown: 0,
@@ -4812,7 +4975,7 @@
       const segCount = BOSS_DIGIT_SEGMENT_COUNTS[d];
       const isThumb = d === 0;
       for (let s = 1; s <= segCount; s++) {
-        const segRadius = isThumb ? BOSS_SEGMENT_RADIUS + 6 : BOSS_SEGMENT_RADIUS;
+        const segRadius = isThumb ? BOSS_SEGMENT_RADIUS + 4 : BOSS_SEGMENT_RADIUS;
         const pose = getBossSegmentAttachedPose(palm, d, s, segRadius);
         const seg: any = {
           id: palm.id + d * 10 + s,
@@ -4839,8 +5002,8 @@
           traction: 4.5,
           contactDamage: 10,
           contactPush: 300,
-          skinColor: s === segCount ? '#9283b8' : '#7c6f9f',
-          coatColor: '#4a3d6b',
+          skinColor: s === segCount ? '#c8b0a6' : '#bfa59b',
+          coatColor: '#6e5650',
           hitCooldown: 0,
           chainHitCooldown: 0,
           contactCooldown: 0,
@@ -4898,11 +5061,36 @@
     return null;
   }
 
-  function isBossActive() {
+  function getActiveBossHandCenter(): { x: number; y: number } | null {
     for (const bh of activeBossHands.values()) {
-      if (!bh.defeatedTriggered || bh.blinkTimer > 0) return true;
+      if (!bh.defeatedTriggered || bh.blinkTimer > 0) {
+        if (bh.palm) {
+          return { x: bh.palm.x, y: bh.palm.y };
+        }
+      }
     }
-    return false;
+    let sumX = 0;
+    let sumY = 0;
+    let count = 0;
+    for (let i = 0; i < enemies.length; i++) {
+      const e = enemies[i];
+      if (e && e.isBossPart) {
+        if (e.bossPartType === 'palm') {
+          return { x: e.x, y: e.y };
+        }
+        sumX += e.x;
+        sumY += e.y;
+        count++;
+      }
+    }
+    if (count > 0) {
+      return { x: sumX / count, y: sumY / count };
+    }
+    return null;
+  }
+
+  function isBossActive() {
+    return getActiveBossHandCenter() !== null;
   }
 
   function resolveBossTargetSegment(hitPart: any) {
@@ -5528,6 +5716,7 @@
 
   // --- Reset / Initialize Game ---
   function initGame() {
+    resetKeyboardState(false);
     if (victoryAutoRestartTimeout !== null) {
       clearTimeout(victoryAutoRestartTimeout);
       victoryAutoRestartTimeout = null;
@@ -5746,6 +5935,10 @@
       : 1.0;
     const totalSpeedMult = warrior.speedMultiplier * mountSpeedMult;
     const totalTractionMult = warrior.tractionMultiplier * mountTractionMult;
+
+    if (keyboardState.active) {
+      updateKeyboardTarget(dt);
+    }
 
     // 1 & 2. Warrior Steering & Movement (Mouse Tracking)
     const targetWorldX = camera.x + mouse.screenX;
@@ -9123,6 +9316,11 @@
     ctx.restore();
     ctx.restore();
 
+    // Spooky Boss Vignette centered on the floating hand when active
+    if (isBossActive()) {
+      drawBossVignette();
+    }
+
     // Active Earthquake Screen Border & Top Status Banner
     if (earthquakeTimer > 0 || localKnockdownTimer > 0) {
       ctx.save();
@@ -12197,6 +12395,83 @@
     ctx.restore();
   }
 
+  function drawBossVignette() {
+    const center = getActiveBossHandCenter();
+    if (!center) return null;
+
+    const nowSec = performance.now() * 0.001;
+    const pulse = Math.sin(nowSec * 2.4);
+    const handScreenX = center.x - camera.x;
+    const handScreenY = (center.y - camera.y) * TILT_Y - 26;
+
+    const dTL = Math.hypot(handScreenX, handScreenY);
+    const dTR = Math.hypot(viewportWidth - handScreenX, handScreenY);
+    const dBL = Math.hypot(handScreenX, viewportHeight - handScreenY);
+    const dBR = Math.hypot(viewportWidth - handScreenX, viewportHeight - handScreenY);
+    const maxCornerDist = Math.max(
+      dTL,
+      dTR,
+      dBL,
+      dBR,
+      Math.hypot(viewportWidth, viewportHeight) * 0.65
+    );
+
+    const innerR = Math.max(85, BOSS_PALM_RADIUS * 1.12 + pulse * 16);
+    const outerR = Math.max(innerR + 240, maxCornerDist * 1.06);
+
+    ctx.save();
+
+    // 1. Primary spooky radial vignette centered on the boss hand to focus attention and darken map edges/corners (25% less dark)
+    const handVig = ctx.createRadialGradient(
+      handScreenX,
+      handScreenY,
+      innerR,
+      handScreenX,
+      handScreenY,
+      outerR
+    );
+    const maxHandAlpha = 0.66; // 0.88 * 0.75
+    handVig.addColorStop(0.0, 'rgba(10, 4, 20, 0)');
+    handVig.addColorStop(0.26, 'rgba(18, 7, 34, 0.12)');
+    handVig.addColorStop(0.56, 'rgba(16, 5, 30, 0.36)');
+    handVig.addColorStop(0.82, 'rgba(8, 2, 18, 0.555)');
+    handVig.addColorStop(1.0, `rgba(3, 1, 8, ${maxHandAlpha})`);
+    ctx.fillStyle = handVig;
+    ctx.fillRect(0, 0, viewportWidth, viewportHeight);
+
+    // 2. Peripheral corner & map-edge shroud with a subtle pulsing necrotic twilight rim (25% less dark)
+    const screenCx = viewportWidth * 0.5;
+    const screenCy = viewportHeight * 0.5;
+    const edgeInnerR = Math.min(viewportWidth, viewportHeight) * 0.34;
+    const edgeOuterR = Math.max(edgeInnerR + 100, Math.hypot(screenCx, screenCy) * 1.04);
+    const edgeVig = ctx.createRadialGradient(
+      screenCx,
+      screenCy,
+      edgeInnerR,
+      screenCx,
+      screenCy,
+      edgeOuterR
+    );
+    const maxEdgeAlpha = 0.4125; // 0.55 * 0.75
+    const dreadAlpha = (0.18 + 0.045 * Math.sin(nowSec * 3.1)).toFixed(3);
+    edgeVig.addColorStop(0.0, 'rgba(0, 0, 0, 0)');
+    edgeVig.addColorStop(0.65, `rgba(28, 6, 38, ${dreadAlpha})`);
+    edgeVig.addColorStop(1.0, `rgba(4, 1, 10, ${maxEdgeAlpha})`);
+    ctx.fillStyle = edgeVig;
+    ctx.fillRect(0, 0, viewportWidth, viewportHeight);
+
+    ctx.restore();
+
+    return {
+      handScreenX,
+      handScreenY,
+      innerR,
+      outerR,
+      maxHandAlpha,
+      maxEdgeAlpha,
+    };
+  }
+
   function drawBossHandPart(e: any) {
     const sx = e.x;
     const sy = e.y * TILT_Y;
@@ -12211,9 +12486,9 @@
     ctx.translate(sx, sy);
 
     // 1. Floating shadow on the grass below the hovering hand part
-    ctx.fillStyle = isBlinking ? 'rgba(0, 0, 0, 0.18)' : 'rgba(0, 0, 0, 0.36)';
+    ctx.fillStyle = isBlinking ? 'rgba(0, 0, 0, 0.18)' : 'rgba(0, 0, 0, 0.38)';
     ctx.beginPath();
-    ctx.ellipse(0, 4, e.radius * 0.95, e.radius * TILT_Y * 0.85, 0, 0, Math.PI * 2);
+    ctx.ellipse(0, 4, e.radius * 0.96, e.radius * TILT_Y * 0.85, 0, 0, Math.PI * 2);
     ctx.fill();
 
     if (blinkHide) {
@@ -12248,6 +12523,14 @@
     ctx.save();
     ctx.rotate(screenAngle);
 
+    const highlightFill =
+      e.hurtFlash > 0
+        ? '#ffffff'
+        : isBlinking
+        ? '#fefcbf'
+        : isBurning
+        ? '#fbd38d'
+        : '#dfd1ca';
     const baseFill =
       e.hurtFlash > 0
         ? '#ffffff'
@@ -12255,102 +12538,295 @@
         ? '#fef08a'
         : isBurning
         ? '#dd6b20'
-        : e.skinColor || '#7c6f9f';
-    const shadeFill =
+        : e.skinColor || '#bfa59b';
+    const midShadowFill =
       e.hurtFlash > 0
         ? '#e2e8f0'
         : isBlinking
         ? '#ecc94b'
-        : e.coatColor || '#4a3d6b';
+        : isBurning
+        ? '#c05621'
+        : '#8c736b';
+    const shadeFill =
+      e.hurtFlash > 0
+        ? '#cbd5e0'
+        : isBlinking
+        ? '#d69e2e'
+        : e.coatColor || '#5c4742';
 
     if (e.bossPartType === 'palm') {
-      // Giant floating palm body
+      const r = e.radius;
+      const tracePalmSilhouette = (ox: number, oy: number) => {
+        ctx.beginPath();
+        // Start at top-back carpal wrist edge (thumb side is -y)
+        ctx.moveTo(ox - r * 0.84, oy - r * 0.44);
+        // Curve outward into the muscular thenar/thumb web prominence (-y)
+        ctx.bezierCurveTo(
+          ox - r * 0.52,
+          oy - r * 0.86,
+          ox + r * 0.08,
+          oy - r * 0.94,
+          ox + r * 0.56,
+          oy - r * 0.74
+        );
+        // Scalloped metacarpal knuckle arch across the front (+x)
+        ctx.bezierCurveTo(
+          ox + r * 0.96,
+          oy - r * 0.48,
+          ox + r * 1.04,
+          oy + r * 0.38,
+          ox + r * 0.62,
+          oy + r * 0.76
+        );
+        // Hypothenar outer edge tapering back to the pinky-side wrist (+y)
+        ctx.bezierCurveTo(
+          ox + r * 0.16,
+          oy + r * 0.86,
+          ox - r * 0.48,
+          oy + r * 0.72,
+          ox - r * 0.84,
+          oy + r * 0.44
+        );
+        // Severed wrist base
+        ctx.bezierCurveTo(
+          ox - r * 0.98,
+          oy + r * 0.22,
+          ox - r * 0.98,
+          oy - r * 0.22,
+          ox - r * 0.84,
+          oy - r * 0.44
+        );
+        ctx.closePath();
+      };
+
+      // 2.5D extruded underside volume of the palm
       ctx.fillStyle = shadeFill;
-      ctx.beginPath();
-      ctx.ellipse(-4, 5, e.radius * 0.96, e.radius * 0.82, 0, 0, Math.PI * 2);
+      tracePalmSilhouette(-5, 7);
       ctx.fill();
 
-      ctx.fillStyle = baseFill;
-      ctx.strokeStyle = '#2d2342';
+      // Main anatomical dorsal hand surface with radial flesh shading
+      const palmGrad = ctx.createRadialGradient(-r * 0.08, -r * 0.12, r * 0.08, 0, 0, r * 0.98);
+      palmGrad.addColorStop(0.0, highlightFill);
+      palmGrad.addColorStop(0.55, baseFill);
+      palmGrad.addColorStop(1.0, midShadowFill);
+      ctx.fillStyle = palmGrad;
+      ctx.strokeStyle = '#2a1e1d';
       ctx.lineWidth = 3.0;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, e.radius * 0.95, e.radius * 0.80, 0, 0, Math.PI * 2);
+      tracePalmSilhouette(0, 0);
       ctx.fill();
       ctx.stroke();
 
-      // Wrist cuff / severed spectral gauntlet cuff at back of palm
-      ctx.fillStyle = '#322659';
+      // Thenar & hypothenar anatomical muscle contour shading
+      ctx.fillStyle = 'rgba(68, 48, 44, 0.22)';
       ctx.beginPath();
-      ctx.ellipse(-e.radius * 0.78, 0, e.radius * 0.24, e.radius * 0.52, 0, 0, Math.PI * 2);
+      ctx.ellipse(-r * 0.12, -r * 0.54, r * 0.36, r * 0.2, -0.25, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.08, r * 0.52, r * 0.42, r * 0.18, 0.18, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Subcutaneous branching dorsal veins across the back of the hand
+      ctx.strokeStyle = 'rgba(78, 56, 98, 0.38)';
+      ctx.lineWidth = Math.max(1.6, r * 0.016);
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-r * 0.58, -r * 0.08);
+      ctx.quadraticCurveTo(-r * 0.18, -r * 0.24, r * 0.28, -r * 0.18);
+      ctx.moveTo(-r * 0.18, -r * 0.2);
+      ctx.quadraticCurveTo(r * 0.05, -r * 0.02, r * 0.36, r * 0.12);
+      ctx.moveTo(-r * 0.52, r * 0.16);
+      ctx.quadraticCurveTo(-r * 0.1, r * 0.28, r * 0.32, r * 0.36);
+      ctx.stroke();
+
+      // Severed wrist cuff, exposed muscle fascia, and dual forearm bones (radius & ulna)
+      ctx.fillStyle = '#2d232e';
+      ctx.strokeStyle = '#1a121b';
+      ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.80, 0, r * 0.18, r * 0.46, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
 
-      // Raised knuckles & tendons along the front arc of the palm
+      // Exposed severed muscle cross-section inside the wrist stump
+      ctx.fillStyle = '#742a2a';
+      ctx.beginPath();
+      ctx.ellipse(-r * 0.83, 0, r * 0.12, r * 0.36, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Radius & Ulna severed bone cross-sections with marrow centers
+      for (const byOff of [-r * 0.14, r * 0.14]) {
+        ctx.fillStyle = '#f7fafc';
+        ctx.strokeStyle = '#a0aec0';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.ellipse(-r * 0.85, byOff, r * 0.065, r * 0.095, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#4a1d1d';
+        ctx.beginPath();
+        ctx.arc(-r * 0.85, byOff, r * 0.03, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Extensor digitorum tendons & sculpted metacarpal knuckles tracking finger spread
       const spread = getBossFingerSpread(e);
-      ctx.strokeStyle = 'rgba(45, 35, 66, 0.65)';
-      ctx.lineWidth = Math.max(2.4, e.radius * 0.035);
       for (let d = 0; d < BOSS_DIGIT_ANGLE_OFFSETS.length; d++) {
         const baseOff = BOSS_DIGIT_ANGLE_OFFSETS[d];
         const aOff =
           d === 0
             ? -0.62 + (baseOff - -0.62) * (0.35 + 0.80 * spread)
             : 0.09 + (baseOff - 0.09) * (0.48 + 0.67 * spread);
-        const kx = Math.cos(aOff) * (e.radius * 0.78);
-        const ky = Math.sin(aOff) * (e.radius * 0.68);
+        const kx = Math.cos(aOff) * (r * 0.78);
+        const ky = Math.sin(aOff) * (r * 0.68);
+        const originX = -r * 0.56;
+        const originY = ky * 0.25;
+
+        // Tendon shadow furrow
+        ctx.strokeStyle = 'rgba(58, 40, 38, 0.55)';
+        ctx.lineWidth = Math.max(3.2, r * 0.042);
         ctx.beginPath();
-        ctx.moveTo(-e.radius * 0.35, ky * 0.3);
-        ctx.lineTo(kx, ky);
+        ctx.moveTo(originX, originY + 1.5);
+        ctx.quadraticCurveTo((originX + kx) * 0.5, (originY + ky) * 0.5 + 1.5, kx, ky + 1.5);
         ctx.stroke();
 
-        ctx.fillStyle = '#9f7aea';
+        // Raised pale extensor tendon cord
+        ctx.strokeStyle = 'rgba(238, 224, 216, 0.62)';
+        ctx.lineWidth = Math.max(1.8, r * 0.022);
         ctx.beginPath();
-        ctx.arc(kx, ky, Math.max(6.5, e.radius * 0.11), 0, Math.PI * 2);
+        ctx.moveTo(originX, originY);
+        ctx.quadraticCurveTo((originX + kx) * 0.5, (originY + ky) * 0.5, kx, ky);
+        ctx.stroke();
+
+        // Sculpted metacarpal knuckle prominence
+        const knR = Math.max(6.5, r * 0.095);
+        ctx.fillStyle = midShadowFill;
+        ctx.beginPath();
+        ctx.ellipse(kx, ky + 1.5, knR * 1.05, knR * 0.88, aOff, 0, Math.PI * 2);
         ctx.fill();
+
+        ctx.fillStyle = highlightFill;
+        ctx.beginPath();
+        ctx.ellipse(kx - 1, ky - 1, knR * 0.75, knR * 0.6, aOff, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Curved dorsal skin-fold creases over the knuckle
+        ctx.strokeStyle = 'rgba(48, 32, 30, 0.58)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(kx, ky, knR * 0.92, aOff - 0.85, aOff + 0.85);
+        ctx.stroke();
       }
     } else {
-      // Finger or thumb segment (phalanx)
+      // Finger or thumb segment (anatomical phalanx)
       const segLen = e.radius * 1.15;
-      const segHalfW = (e.isThumb ? e.radius * 0.72 : e.radius * 0.62);
+      const segHalfW = e.isThumb ? e.radius * 0.72 : e.radius * 0.62;
+      const maxSegForDigit = BOSS_DIGIT_SEGMENT_COUNTS[e.digitIndex] || 3;
+      const isDistalTip = e.segmentIndex === maxSegForDigit;
+      const proxW = segHalfW * 1.04;
+      const waistW = segHalfW * 0.90;
+      const distW = isDistalTip ? segHalfW * 0.76 : segHalfW * 0.94;
 
-      // Lower 3D thickness
+      const tracePhalanxSilhouette = (ox: number, oy: number) => {
+        ctx.beginPath();
+        ctx.moveTo(ox - segLen, oy);
+        // Proximal joint rounding (top)
+        ctx.bezierCurveTo(
+          ox - segLen,
+          oy - proxW * 0.95,
+          ox - segLen * 0.45,
+          oy - proxW,
+          ox,
+          oy - waistW
+        );
+        // Distal shaft taper (top)
+        ctx.bezierCurveTo(
+          ox + segLen * 0.48,
+          oy - distW,
+          ox + segLen,
+          oy - distW * 0.92,
+          ox + segLen,
+          oy
+        );
+        // Distal shaft taper (bottom)
+        ctx.bezierCurveTo(
+          ox + segLen,
+          oy + distW * 0.92,
+          ox + segLen * 0.48,
+          oy + distW,
+          ox,
+          oy + waistW
+        );
+        // Proximal joint rounding (bottom)
+        ctx.bezierCurveTo(
+          ox - segLen * 0.45,
+          oy + proxW,
+          ox - segLen,
+          oy + proxW * 0.95,
+          ox - segLen,
+          oy
+        );
+        ctx.closePath();
+      };
+
+      // 2.5D underside shadow thickness
       ctx.fillStyle = shadeFill;
-      ctx.beginPath();
-      ctx.ellipse(0, 4, segLen, segHalfW, 0, 0, Math.PI * 2);
+      tracePhalanxSilhouette(-2, 5);
       ctx.fill();
 
-      // Phalanx main capsule
-      ctx.fillStyle = baseFill;
-      ctx.strokeStyle = '#2d2342';
+      // Main anatomical phalanx capsule with dorsal shading
+      const segGrad = ctx.createRadialGradient(-segLen * 0.1, -segHalfW * 0.22, segHalfW * 0.1, 0, 0, segLen * 1.05);
+      segGrad.addColorStop(0.0, highlightFill);
+      segGrad.addColorStop(0.58, baseFill);
+      segGrad.addColorStop(1.0, midShadowFill);
+      ctx.fillStyle = segGrad;
+      ctx.strokeStyle = '#2a1e1d';
       ctx.lineWidth = 2.2;
-      ctx.beginPath();
-      ctx.ellipse(0, 0, segLen, segHalfW, 0, 0, Math.PI * 2);
+      tracePhalanxSilhouette(0, 0);
       ctx.fill();
       ctx.stroke();
 
-      // If detached, draw exposed glowing bone joint at the proximal base
+      // Cylindrical dorsal bone-ridge highlight along the phalanx shaft
+      ctx.fillStyle = 'rgba(247, 238, 232, 0.34)';
+      ctx.beginPath();
+      ctx.ellipse(-segLen * 0.05, -segHalfW * 0.22, segLen * 0.62, segHalfW * 0.26, 0, 0, Math.PI * 2);
+      ctx.fill();
+
+      // If detached, draw torn flesh rim and exposed bi-lobed phalanx bone condyle at proximal base
       if (!e.attached) {
-        ctx.fillStyle = '#e9d8fd';
-        ctx.strokeStyle = '#6b46c1';
+        ctx.fillStyle = '#742a2a';
+        ctx.strokeStyle = '#4a1d1d';
         ctx.lineWidth = 1.6;
         ctx.beginPath();
-        ctx.arc(-segLen * 0.78, 0, segHalfW * 0.55, 0, Math.PI * 2);
+        ctx.ellipse(-segLen * 0.82, 0, segHalfW * 0.42, segHalfW * 0.68, 0, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.fillStyle = '#f7fafc';
+        ctx.strokeStyle = '#a0aec0';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.arc(-segLen * 0.88, -segHalfW * 0.22, segHalfW * 0.32, 0, Math.PI * 2);
+        ctx.arc(-segLen * 0.88, segHalfW * 0.22, segHalfW * 0.32, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
       }
 
-      // Knuckle crease lines
-      ctx.strokeStyle = 'rgba(45, 35, 66, 0.55)';
-      ctx.lineWidth = 1.6;
+      // Realistic curved interphalangeal knuckle skin-fold creases
+      ctx.strokeStyle = 'rgba(48, 32, 30, 0.58)';
+      ctx.lineWidth = 1.5;
       ctx.beginPath();
-      ctx.moveTo(-segLen * 0.3, -segHalfW * 0.65);
-      ctx.lineTo(-segLen * 0.3, segHalfW * 0.65);
+      ctx.moveTo(-segLen * 0.38, -segHalfW * 0.68);
+      ctx.quadraticCurveTo(-segLen * 0.28, 0, -segLen * 0.38, segHalfW * 0.68);
+      ctx.moveTo(-segLen * 0.24, -segHalfW * 0.56);
+      ctx.quadraticCurveTo(-segLen * 0.32, 0, -segLen * 0.24, segHalfW * 0.56);
       ctx.stroke();
 
       // Golden ring with gemstone on the third finger (ring finger, digitIndex === 3, segmentIndex === 1)
       if (e.hasRing || (e.digitIndex === 3 && e.segmentIndex === 1)) {
         const ringX = segLen * 0.05;
         const bandHalfThick = Math.max(4, segLen * 0.14);
-        const bandHalfSpan = segHalfW * 1.04;
+        const bandHalfSpan = segHalfW * 1.02;
 
         // Gold ring band wrapping around the finger segment
         ctx.fillStyle = '#ecc94b';
@@ -12364,7 +12840,15 @@
         // Inner metallic sheen on the gold band
         ctx.fillStyle = '#fefcbf';
         ctx.beginPath();
-        ctx.ellipse(ringX - bandHalfThick * 0.25, -bandHalfSpan * 0.3, bandHalfThick * 0.45, bandHalfSpan * 0.45, 0, 0, Math.PI * 2);
+        ctx.ellipse(
+          ringX - bandHalfThick * 0.25,
+          -bandHalfSpan * 0.3,
+          bandHalfThick * 0.45,
+          bandHalfSpan * 0.45,
+          0,
+          0,
+          Math.PI * 2
+        );
         ctx.fill();
 
         // Crimson ruby gemstone setting on top of the ring
@@ -12384,18 +12868,60 @@
         ctx.fill();
       }
 
-      // Distal tip segment gets a wicked dark fingernail / claw
-      const maxSegForDigit = BOSS_DIGIT_SEGMENT_COUNTS[e.digitIndex] || 3;
-      if (e.segmentIndex === maxSegForDigit) {
-        ctx.fillStyle = '#1a202c';
-        ctx.strokeStyle = '#cbd5e0';
-        ctx.lineWidth = 1.2;
+      // Distal tip segment gets a realistic anatomical fingernail bed, lunula, and sharp keratin nail/claw
+      if (isDistalTip) {
+        const nailBaseX = segLen * 0.18;
+        const nailTipX = segLen * 1.24;
+        const nailHalfW = distW * 0.72;
+
+        // Cuticle nail fold shadow
+        ctx.fillStyle = '#3b2826';
         ctx.beginPath();
-        ctx.moveTo(segLen * 0.45, -segHalfW * 0.58);
-        ctx.quadraticCurveTo(segLen * 1.35, 0, segLen * 0.45, segHalfW * 0.58);
+        ctx.ellipse(nailBaseX + segLen * 0.34, 0, segLen * 0.42, nailHalfW * 1.06, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Keratin fingernail plate tapering to a sharp claw point
+        ctx.fillStyle = '#d6c7c2';
+        ctx.strokeStyle = '#2a1e1d';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.moveTo(nailBaseX, -nailHalfW * 0.85);
+        ctx.bezierCurveTo(
+          nailBaseX + segLen * 0.35,
+          -nailHalfW,
+          nailBaseX + segLen * 0.75,
+          -nailHalfW * 0.65,
+          nailTipX,
+          0
+        );
+        ctx.bezierCurveTo(
+          nailBaseX + segLen * 0.75,
+          nailHalfW * 0.65,
+          nailBaseX + segLen * 0.35,
+          nailHalfW,
+          nailBaseX,
+          nailHalfW * 0.85
+        );
+        ctx.quadraticCurveTo(nailBaseX - segLen * 0.12, 0, nailBaseX, -nailHalfW * 0.85);
         ctx.closePath();
         ctx.fill();
         ctx.stroke();
+
+        // Darkened necrotic claw tip
+        ctx.fillStyle = '#2d2536';
+        ctx.beginPath();
+        ctx.moveTo(segLen * 0.68, -nailHalfW * 0.62);
+        ctx.quadraticCurveTo(nailTipX * 0.92, -nailHalfW * 0.22, nailTipX, 0);
+        ctx.quadraticCurveTo(nailTipX * 0.92, nailHalfW * 0.22, segLen * 0.68, nailHalfW * 0.62);
+        ctx.quadraticCurveTo(segLen * 0.78, 0, segLen * 0.68, -nailHalfW * 0.62);
+        ctx.closePath();
+        ctx.fill();
+
+        // Pale crescent lunula at the cuticle base of the nail
+        ctx.fillStyle = 'rgba(247, 250, 252, 0.72)';
+        ctx.beginPath();
+        ctx.ellipse(nailBaseX + segLen * 0.08, 0, segLen * 0.10, nailHalfW * 0.56, 0, 0, Math.PI * 2);
+        ctx.fill();
       }
     }
 
@@ -14337,6 +14863,8 @@
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
         handleVisibilityOrFocus();
+      } else {
+        resetKeyboardState(true);
       }
     });
   }
@@ -14372,6 +14900,8 @@
     if (hasEnteredGame) {
       if (touchWheelState.active) {
         updateTouchWheelTarget();
+      } else if (keyboardState.active) {
+        updateKeyboardTarget();
       }
       const idleSeconds = (now - lastUserActivityTime) / 1000;
       const maxIdleSeconds = warrior.alive ? 120 : 45;
@@ -14550,6 +15080,9 @@
         BOSS_DEFEAT_POWERUP_COUNT,
         BOSS_DIGIT_ANGLE_OFFSETS,
         BOSS_DIGIT_SEGMENT_COUNTS,
+        KEYBOARD_TARGET_DISTANCE,
+        KEYBOARD_TURN_ONLY_DISTANCE,
+        KEYBOARD_TURN_SPEED,
       },
       warrior,
       hammer,
@@ -14568,6 +15101,7 @@
       localLeaderboardRecords,
       camera,
       mouse,
+      keyboardState,
       getState: () => ({
         hasEnteredGame,
         isConnecting,
@@ -14593,6 +15127,7 @@
         animationFrameId,
         lastUserActivityTime,
         touchWheelState,
+        keyboardState,
         hitStopTimer,
         mountSoundTimer,
         enemyMotorcycleSoundTimer,
@@ -14645,6 +15180,11 @@
       updateTouchWheelPosition,
       updateTouchWheelTarget,
       resetTouchWheel,
+      normalizeMovementKey,
+      updateKeyboardTarget,
+      resetKeyboardState,
+      handleMovementKeyDown,
+      handleMovementKeyUp,
       connectMultiplayer,
       sendInputToServer,
       INPUT_SEND_INTERVAL_MS,
@@ -14771,11 +15311,13 @@
       syncBossHandAttachedSegments,
       spawnBossHand,
       checkBossSpawn,
+      getActiveBossHandCenter,
       isBossActive,
       resolveBossTargetSegment,
       checkBossSegmentDetach,
       spawnBossDefeatPowerups,
       triggerBossDefeated,
+      drawBossVignette,
       drawBossHandPart,
       triggerHammerExplosion,
       getChainRestLength,

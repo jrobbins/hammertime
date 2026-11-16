@@ -3376,13 +3376,35 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
 
     const bossHand = Array.from(api.activeBossHands.values())[0];
     assert.equal(bossHand.palm.bossPartType, 'palm');
-    assert.equal(bossHand.palm.radius, 231, 'Client boss palm radius should be 40% bigger (231 = 165 * 1.4)');
-    assert.equal(api.constants.BOSS_SEGMENT_RADIUS, 72, 'Client boss segment radius should be 3x (72)');
+    assert.equal(bossHand.palm.radius, 185, 'Client boss palm radius should be 20% smaller (185 = Math.round(231 * 0.8))');
+    assert.equal(api.constants.BOSS_SEGMENT_RADIUS, 58, 'Client boss segment radius should be 20% smaller (58 = Math.round(72 * 0.8))');
     assert.equal(api.constants.BOSS_SEGMENT_BASE_HP, 900, 'Client boss segment base HP should be 3x (900)');
     assert.equal(api.constants.BOSS_DEFEAT_SEGMENT_THRESHOLD, 14, 'Client boss defeat segment threshold should be 14');
     assert.equal(api.constants.BOSS_SPEED_MULT, 1.2, 'Client boss speed mult should be 2x (1.2)');
     assert.equal(bossHand.segments.length, 14, 'Hand should have 14 finger/thumb segments');
     assert.ok(bossHand.segments[0].maxHp >= 900, 'Client segment maxHp should be >= 900');
+
+    // Verify spooky vignette is active and centered on the boss hand
+    assert.equal(api.isBossActive(), true, 'isBossActive should be true when boss hand is active');
+    const handCenter = api.getActiveBossHandCenter();
+    assert.ok(handCenter, 'getActiveBossHandCenter should return palm world coordinates');
+    assert.equal(handCenter.x, bossHand.palm.x);
+    assert.equal(handCenter.y, bossHand.palm.y);
+
+    const vigInfo = api.drawBossVignette();
+    assert.ok(vigInfo, 'drawBossVignette should return vignette geometry when boss is active');
+    const expectedScreenX = bossHand.palm.x - api.camera.x;
+    const expectedScreenY = (bossHand.palm.y - api.camera.y) * api.constants.TILT_Y - 26;
+    assert.ok(Math.abs(vigInfo.handScreenX - expectedScreenX) < 1e-3, 'Vignette should be centered horizontally on the boss hand');
+    assert.ok(Math.abs(vigInfo.handScreenY - expectedScreenY) < 1e-3, 'Vignette should be centered vertically on the boss hand');
+    assert.ok(vigInfo.outerR > vigInfo.innerR + 200, 'Vignette outer radius should extend to map corners and edges');
+    assert.equal(vigInfo.maxHandAlpha, 0.66, 'Vignette primary hand outer alpha should be 25% less dark (0.66 = 0.88 * 0.75)');
+    assert.equal(vigInfo.maxEdgeAlpha, 0.4125, 'Vignette edge shroud outer alpha should be 25% less dark (0.4125 = 0.55 * 0.75)');
+
+    // Verify full render() draws the spooky vignette without errors while boss is active
+    assert.doesNotThrow(() => {
+      api.render();
+    });
 
     // Verify third finger ring segment (digitIndex === 3, segmentIndex === 1)
     const ringSeg = bossHand.segments.find((s) => s.digitIndex === 3 && s.segmentIndex === 1);
@@ -3464,6 +3486,8 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       0,
       'All remaining boss parts disappear after 3s blink'
     );
+    assert.equal(api.isBossActive(), false, 'isBossActive should be false once boss hand disappears');
+    assert.equal(api.drawBossVignette(), null, 'drawBossVignette should return null when no boss hand is active');
   });
 
   it('triggers boss-monster mode immediately when user types B-O-S-S cheat code during gameplay', () => {
@@ -3517,5 +3541,176 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       }
     });
     assert.ok(sentBossCheat, 'Multiplayer client should send { type: "boss_cheat" } over WebSocket when B-O-S-S is typed');
+  });
+
+  it('supports keyboard controls: Up-arrow or W walks forward along current direction, Left/Right arrows and A/D steer left/right, and S/Down-arrow are unused', () => {
+    const sandbox = loadClientGame();
+    const { api, window, elements } = sandbox;
+
+    // 1. While enter dialog is open, pressing Arrow or W/A/D keys is ignored
+    assert.equal(api.isDialogShowing(), true);
+    window.dispatchEvent({ type: 'keydown', key: 'ArrowUp' });
+    window.dispatchEvent({ type: 'keydown', key: 'w' });
+    assert.equal(api.keyboardState.active, false, 'Keyboard steering should remain inactive while dialog is showing');
+
+    // Enter active gameplay
+    elements.get('enter-modal').classList.add('hidden');
+    elements.get('game-over-modal').classList.add('hidden');
+    elements.get('victory-modal').classList.add('hidden');
+    api.initGame();
+    api.setState({ isMultiplayer: false, hasEnteredGame: true });
+
+    const resetWarriorAtCenter = (angle = 0) => {
+      api.enemies.length = 0;
+      api.blackCircles.length = 0;
+      api.warrior.mountType = null;
+      api.warrior.x = 2000;
+      api.warrior.y = 2000;
+      api.warrior.vx = 0;
+      api.warrior.vy = 0;
+      api.warrior.angle = angle;
+      api.hammer.x = 2000;
+      api.hammer.y = 2000;
+      api.hammer.vx = 0;
+      api.hammer.vy = 0;
+      api.initHammerChainNodes(api.hammer);
+      api.updateCamera();
+    };
+    resetWarriorAtCenter(0);
+    assert.equal(api.isDialogShowing(), false);
+
+    // 2. Pressing keys inside an INPUT or TEXTAREA or with Ctrl/Meta/Alt modifier is ignored
+    window.dispatchEvent({ type: 'keydown', key: 'w', target: { tagName: 'INPUT' } });
+    assert.equal(api.keyboardState.active, false, 'Typing in an INPUT should not activate keyboard movement');
+
+    window.dispatchEvent({ type: 'keydown', key: 'w', ctrlKey: true });
+    window.dispatchEvent({ type: 'keydown', key: 'a', metaKey: true });
+    window.dispatchEvent({ type: 'keydown', key: 'd', altKey: true });
+    assert.equal(api.keyboardState.active, false, 'Browser shortcuts with modifier keys should not trigger movement');
+
+    // 3. S and Down-arrow are NOT used
+    assert.equal(api.normalizeMovementKey('s'), null, 'S key should not be mapped');
+    assert.equal(api.normalizeMovementKey('S'), null, 'Uppercase S key should not be mapped');
+    assert.equal(api.normalizeMovementKey('ArrowDown'), null, 'ArrowDown should not be mapped');
+    window.dispatchEvent({ type: 'keydown', key: 's' });
+    window.dispatchEvent({ type: 'keydown', key: 'S' });
+    window.dispatchEvent({ type: 'keydown', key: 'ArrowDown' });
+    assert.equal(api.keyboardState.active, false, 'S and ArrowDown should not activate keyboard controls');
+    assert.equal(api.keyboardState.down, false, 'down state should remain false');
+
+    // 4. Up-arrow or W makes the warrior walk forward along their current direction
+    // Case A: Facing right (angle = 0) with ArrowUp
+    resetWarriorAtCenter(0);
+    let preventedDefault = false;
+    window.dispatchEvent({
+      type: 'keydown',
+      key: 'ArrowUp',
+      preventDefault: () => {
+        preventedDefault = true;
+      },
+    });
+    assert.equal(preventedDefault, true, 'ArrowUp should call preventDefault() during gameplay');
+    assert.equal(api.keyboardState.active, true);
+    assert.equal(api.keyboardState.up, true);
+    assert.equal(api.keyboardState.forward, true);
+    assert.ok(Math.abs(api.keyboardState.vectorX - 1) < 1e-4);
+    assert.ok(Math.abs(api.keyboardState.vectorY - 0) < 1e-4);
+
+    for (let i = 0; i < 15; i++) {
+      api.stepPhysics(0.016);
+    }
+    assert.ok(api.warrior.x > 2000 + 10, 'Holding ArrowUp when facing right (0 rad) should walk warrior forward (+X)');
+    assert.ok(Math.abs(api.warrior.y - 2000) < 2, 'Should walk straight along facing angle');
+
+    // Releasing ArrowUp centers target on warrior so warrior stops cleanly
+    window.dispatchEvent({ type: 'keyup', key: 'ArrowUp' });
+    assert.equal(api.keyboardState.active, false);
+    assert.ok(
+      Math.abs(api.mouse.screenX - (api.warrior.x - api.camera.x)) < 1e-3 &&
+        Math.abs(api.mouse.screenY - (api.warrior.y - api.camera.y) * api.constants.TILT_Y) < 1e-3,
+      'Releasing movement keys should center target on warrior so warrior stops cleanly'
+    );
+
+    // Case B: Facing down-left (angle = 3*PI/4) with W key
+    const diagAngle = (3 * Math.PI) / 4;
+    resetWarriorAtCenter(diagAngle);
+    window.dispatchEvent({ type: 'keydown', key: 'w' });
+    assert.equal(api.keyboardState.active, true);
+    assert.equal(api.keyboardState.up, true);
+    for (let i = 0; i < 15; i++) {
+      api.stepPhysics(0.016);
+    }
+    assert.ok(
+      api.warrior.x < 2000 - 8 && api.warrior.y > 2000 + 8,
+      'Holding W should make warrior walk forward along their current facing direction (3*PI/4)'
+    );
+    window.dispatchEvent({ type: 'keyup', key: 'w' });
+
+    // 5. Left and Right arrows and A and D keys steer left (counter-clockwise) and right (clockwise)
+    // Steer left in place with 'a' and 'ArrowLeft' (without walking forward)
+    resetWarriorAtCenter(0);
+    window.dispatchEvent({ type: 'keydown', key: 'a' });
+    assert.equal(api.keyboardState.active, true);
+    assert.equal(api.keyboardState.left, true);
+    assert.equal(api.keyboardState.up, false);
+    assert.equal(api.keyboardState.turnDir, -1);
+    for (let i = 0; i < 10; i++) {
+      api.stepPhysics(0.016);
+    }
+    assert.ok(api.warrior.angle < -0.4, `Holding A should steer warrior angle left (< -0.4), got ${api.warrior.angle}`);
+    assert.ok(
+      Math.hypot(api.warrior.x - 2000, api.warrior.y - 2000) < 2,
+      'Steering left without W/ArrowUp should rotate warrior in place without walking forward'
+    );
+    window.dispatchEvent({ type: 'keyup', key: 'a' });
+
+    // Steer right in place with 'ArrowRight' and 'D'
+    resetWarriorAtCenter(0);
+    window.dispatchEvent({ type: 'keydown', key: 'ArrowRight' });
+    assert.equal(api.keyboardState.right, true);
+    assert.equal(api.keyboardState.turnDir, 1);
+    for (let i = 0; i < 10; i++) {
+      api.stepPhysics(0.016);
+    }
+    assert.ok(api.warrior.angle > 0.4, `Holding ArrowRight should steer warrior angle right (> 0.4), got ${api.warrior.angle}`);
+    window.dispatchEvent({ type: 'keyup', key: 'ArrowRight' });
+
+    // Combined: Holding W + D walks forward while steering right in a curved path
+    resetWarriorAtCenter(0);
+    window.dispatchEvent({ type: 'keydown', key: 'W' });
+    window.dispatchEvent({ type: 'keydown', key: 'D' });
+    assert.equal(api.keyboardState.up, true);
+    assert.equal(api.keyboardState.right, true);
+    assert.equal(api.keyboardState.turnDir, 1);
+    for (let i = 0; i < 15; i++) {
+      api.stepPhysics(0.016);
+    }
+    assert.ok(api.warrior.angle > 0.5, 'Holding W+D should turn warrior angle clockwise');
+    assert.ok(api.warrior.x > 2000 + 5 && api.warrior.y > 2000 + 2, 'Holding W+D from angle 0 should curve forward and downward');
+
+    // Window blur clears held keys cleanly
+    window.dispatchEvent({ type: 'blur' });
+    assert.equal(api.keyboardState.active, false, 'Window blur should clear held keyboard keys');
+
+    // 6. Multiplayer mode: keyboard steering updates mouseWorldX / mouseWorldY along warrior's facing direction
+    api.connectMultiplayer();
+    const ws = api.getState().ws;
+    ws.readyState = 1;
+    ws.emit('open', {});
+    api.setState({ isMultiplayer: true });
+    ws.sent.length = 0;
+
+    resetWarriorAtCenter(0);
+    window.dispatchEvent({ type: 'keydown', key: 'w' });
+    api.sendInputToServer(true);
+
+    const lastSent = JSON.parse(ws.sent[ws.sent.length - 1]);
+    assert.equal(lastSent.type, 'input');
+    assert.ok(
+      Math.abs(lastSent.mouseWorldX - (2000 + api.constants.KEYBOARD_TARGET_DISTANCE)) < 1,
+      'Multiplayer input should send target ahead of warrior along current facing angle'
+    );
+    assert.ok(Math.abs(lastSent.mouseWorldY - 2000) < 1);
+    window.dispatchEvent({ type: 'keyup', key: 'w' });
   });
 });

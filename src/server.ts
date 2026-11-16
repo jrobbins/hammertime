@@ -166,8 +166,8 @@ const BOSS_KILL_INTERVAL = 200;
 const BOSS_QUAKE_DELAY = 5.0;
 const BOSS_DEFEAT_SEGMENT_THRESHOLD = 14;
 const BOSS_BLINK_DURATION = 3.0;
-const BOSS_PALM_RADIUS = 231;
-const BOSS_SEGMENT_RADIUS = 72;
+const BOSS_PALM_RADIUS = 185;
+const BOSS_SEGMENT_RADIUS = 58;
 const BOSS_SEGMENT_BASE_HP = 900;
 const BOSS_SPEED_MULT = 1.2;
 const BOSS_DETACHED_SPEED_MULT = 1.25;
@@ -2221,7 +2221,7 @@ function getBossSegmentAttachedPose(
   palm: any,
   digitIndex: number,
   segmentIndex: number,
-  segRadius: number = digitIndex === 0 ? BOSS_SEGMENT_RADIUS + 6 : BOSS_SEGMENT_RADIUS
+  segRadius: number = digitIndex === 0 ? BOSS_SEGMENT_RADIUS + 4 : BOSS_SEGMENT_RADIUS
 ) {
   const baseOffset = BOSS_DIGIT_ANGLE_OFFSETS[digitIndex] ?? 0;
   const palmAngle = palm.angle || 0;
@@ -2386,9 +2386,9 @@ function spawnBossHand(atX?: number, atY?: number) {
     traction: 4.5,
     contactDamage: 22,
     contactPush: 260,
-    skinColor: '#d6bcfa',
-    coatColor: '#553c9a',
-    shirtColor: '#805ad5',
+    skinColor: '#bfa59b',
+    coatColor: '#6e5650',
+    shirtColor: '#8c736b',
     hitCooldown: 0,
     chainHitCooldown: 0,
     contactCooldown: 0,
@@ -2413,7 +2413,7 @@ function spawnBossHand(atX?: number, atY?: number) {
     const segCount = BOSS_DIGIT_SEGMENT_COUNTS[dIdx];
     const isThumb = dIdx === 0;
     for (let sIdx = 1; sIdx <= segCount; sIdx++) {
-      const segRadius = isThumb ? BOSS_SEGMENT_RADIUS + 6 : BOSS_SEGMENT_RADIUS;
+      const segRadius = isThumb ? BOSS_SEGMENT_RADIUS + 4 : BOSS_SEGMENT_RADIUS;
       const pose = getBossSegmentAttachedPose(palm, dIdx, sIdx, segRadius);
       const seg: any = {
         id: nextEnemyId++,
@@ -2441,9 +2441,9 @@ function spawnBossHand(atX?: number, atY?: number) {
         traction: 4.5,
         contactDamage: 18,
         contactPush: 220,
-        skinColor: sIdx === segCount ? '#b794f4' : '#d6bcfa',
-        coatColor: '#553c9a',
-        shirtColor: '#9f7aea',
+        skinColor: sIdx === segCount ? '#c8b0a6' : '#bfa59b',
+        coatColor: '#6e5650',
+        shirtColor: '#8c736b',
         hitCooldown: 0,
         chainHitCooldown: 0,
         contactCooldown: 0,

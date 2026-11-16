@@ -2253,8 +2253,8 @@ describe('Boss-Monster Mode (Giant Floating Hand every 200 kills)', () => {
     const bossHand = srv.spawnBossHand(1100, 2000);
     assert.ok(bossHand, 'spawnBossHand should return bossHand instance');
     assert.equal(bossHand.palm.bossPartType, 'palm');
-    assert.equal(bossHand.palm.radius, 231, 'Palm should be 40% bigger than 165 (radius 231 = 165 * 1.4)');
-    assert.equal(srv.BOSS_SEGMENT_RADIUS, 72, 'Finger segment radius should be 3x as large (72 = 3 * 24)');
+    assert.equal(bossHand.palm.radius, 185, 'Palm should be 20% smaller than 231 (radius 185 = Math.round(231 * 0.8))');
+    assert.equal(srv.BOSS_SEGMENT_RADIUS, 58, 'Finger segment radius should be 20% smaller than 72 (58 = Math.round(72 * 0.8))');
     assert.equal(srv.BOSS_SEGMENT_BASE_HP, 900, 'Segments should have 3x as many base hitpoints (900 = 3 * 300)');
     assert.equal(srv.BOSS_DEFEAT_SEGMENT_THRESHOLD, 14, 'Warriors must destroy all 14 segments to defeat the hand');
     assert.equal(srv.BOSS_SPEED_MULT, 1.2, 'Boss hand should move 2x as fast (1.2 = 2 * 0.6)');
@@ -2265,8 +2265,8 @@ describe('Boss-Monster Mode (Giant Floating Hand every 200 kills)', () => {
     const fingerSegs = bossHand.segments.filter((s) => !s.isThumb);
     assert.equal(thumbSegs.length, 2, 'Thumb should have 2 segments');
     assert.equal(fingerSegs.length, 12, '4 fingers should have 12 segments total');
-    assert.equal(thumbSegs[0].radius, 78, 'Thumb segment radius should be 3x as large (78 = 3 * 26)');
-    assert.equal(fingerSegs[0].radius, 72, 'Finger segment radius should be 3x as large (72 = 3 * 24)');
+    assert.equal(thumbSegs[0].radius, 62, 'Thumb segment radius should be 20% smaller than 78 (62 = Math.round(78 * 0.8))');
+    assert.equal(fingerSegs[0].radius, 58, 'Finger segment radius should be 20% smaller than 72 (58 = Math.round(72 * 0.8))');
 
     // Verify ring is placed on the third finger (digitIndex === 3, segmentIndex === 1)
     const ringSegs = bossHand.segments.filter((s) => s.hasRing);
