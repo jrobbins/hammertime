@@ -166,9 +166,9 @@ const BOSS_KILL_INTERVAL = 200;
 const BOSS_QUAKE_DELAY = 5.0;
 const BOSS_DEFEAT_SEGMENT_THRESHOLD = 14;
 const BOSS_BLINK_DURATION = 3.0;
-const BOSS_PALM_RADIUS = 185;
-const BOSS_SEGMENT_RADIUS = 58;
-const BOSS_SEGMENT_BASE_HP = 900;
+const BOSS_PALM_RADIUS = 157;
+const BOSS_SEGMENT_RADIUS = 49;
+const BOSS_SEGMENT_BASE_HP = 720;
 const BOSS_SPEED_MULT = 1.2;
 const BOSS_DETACHED_SPEED_MULT = 1.25;
 const BOSS_DETACH_HP_RATIO = 0.25;
@@ -2386,9 +2386,9 @@ function spawnBossHand(atX?: number, atY?: number) {
     traction: 4.5,
     contactDamage: 22,
     contactPush: 260,
-    skinColor: '#bfa59b',
-    coatColor: '#6e5650',
-    shirtColor: '#8c736b',
+    skinColor: '#b195c4',
+    coatColor: '#5c4373',
+    shirtColor: '#7e6296',
     hitCooldown: 0,
     chainHitCooldown: 0,
     contactCooldown: 0,
@@ -2441,9 +2441,9 @@ function spawnBossHand(atX?: number, atY?: number) {
         traction: 4.5,
         contactDamage: 18,
         contactPush: 220,
-        skinColor: sIdx === segCount ? '#c8b0a6' : '#bfa59b',
-        coatColor: '#6e5650',
-        shirtColor: '#8c736b',
+        skinColor: sIdx === segCount ? '#bfa4d1' : '#b195c4',
+        coatColor: '#5c4373',
+        shirtColor: '#7e6296',
         hitCooldown: 0,
         chainHitCooldown: 0,
         contactCooldown: 0,

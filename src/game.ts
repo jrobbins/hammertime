@@ -189,9 +189,9 @@
   const BOSS_QUAKE_DELAY = 5.0;
   const BOSS_DEFEAT_SEGMENT_THRESHOLD = 14;
   const BOSS_BLINK_DURATION = 3.0;
-  const BOSS_PALM_RADIUS = 185;
-  const BOSS_SEGMENT_RADIUS = 58;
-  const BOSS_SEGMENT_BASE_HP = 900;
+  const BOSS_PALM_RADIUS = 157;
+  const BOSS_SEGMENT_RADIUS = 49;
+  const BOSS_SEGMENT_BASE_HP = 720;
   const BOSS_SPEED_MULT = 1.2;
   const BOSS_DETACHED_SPEED_MULT = 1.25;
   const BOSS_DETACH_HP_RATIO = 0.25;
@@ -4927,7 +4927,7 @@
 
     const strength = getMonsterStrength();
     const baseMoveForce = Math.round(210 * BOSS_SPEED_MULT * Math.pow(strength, 0.25));
-    const segMaxHp = Math.max(360, Math.round(BOSS_SEGMENT_BASE_HP * Math.pow(strength, 0.35)));
+    const segMaxHp = Math.max(288, Math.round(BOSS_SEGMENT_BASE_HP * Math.pow(strength, 0.35)));
     const initialAngle = Math.atan2(warrior.y - y, warrior.x - x);
 
     const palm: any = {
@@ -4951,8 +4951,8 @@
       traction: 4.5,
       contactDamage: 14,
       contactPush: 380,
-      skinColor: '#bfa59b',
-      coatColor: '#6e5650',
+      skinColor: '#b195c4',
+      coatColor: '#5c4373',
       hitCooldown: 0,
       chainHitCooldown: 0,
       contactCooldown: 0,
@@ -5002,8 +5002,8 @@
           traction: 4.5,
           contactDamage: 10,
           contactPush: 300,
-          skinColor: s === segCount ? '#c8b0a6' : '#bfa59b',
-          coatColor: '#6e5650',
+          skinColor: s === segCount ? '#bfa4d1' : '#b195c4',
+          coatColor: '#5c4373',
           hitCooldown: 0,
           chainHitCooldown: 0,
           contactCooldown: 0,
@@ -12421,7 +12421,7 @@
 
     ctx.save();
 
-    // 1. Primary spooky radial vignette centered on the boss hand to focus attention and darken map edges/corners (25% less dark)
+    // 1. Primary spooky purplish radial vignette centered on the boss hand to focus attention and tint map edges/corners (25% less dark)
     const handVig = ctx.createRadialGradient(
       handScreenX,
       handScreenY,
@@ -12431,15 +12431,20 @@
       outerR
     );
     const maxHandAlpha = 0.66; // 0.88 * 0.75
-    handVig.addColorStop(0.0, 'rgba(10, 4, 20, 0)');
-    handVig.addColorStop(0.26, 'rgba(18, 7, 34, 0.12)');
-    handVig.addColorStop(0.56, 'rgba(16, 5, 30, 0.36)');
-    handVig.addColorStop(0.82, 'rgba(8, 2, 18, 0.555)');
-    handVig.addColorStop(1.0, `rgba(3, 1, 8, ${maxHandAlpha})`);
+    const handColorStops: Array<[number, string]> = [
+      [0.0, 'rgba(68, 28, 118, 0)'],
+      [0.26, 'rgba(86, 36, 145, 0.14)'],
+      [0.56, 'rgba(72, 26, 126, 0.36)'],
+      [0.82, 'rgba(52, 16, 96, 0.555)'],
+      [1.0, `rgba(36, 10, 72, ${maxHandAlpha})`],
+    ];
+    for (let i = 0; i < handColorStops.length; i++) {
+      handVig.addColorStop(handColorStops[i][0], handColorStops[i][1]);
+    }
     ctx.fillStyle = handVig;
     ctx.fillRect(0, 0, viewportWidth, viewportHeight);
 
-    // 2. Peripheral corner & map-edge shroud with a subtle pulsing necrotic twilight rim (25% less dark)
+    // 2. Peripheral corner & map-edge shroud with a pulsing purplish twilight rim (25% less dark)
     const screenCx = viewportWidth * 0.5;
     const screenCy = viewportHeight * 0.5;
     const edgeInnerR = Math.min(viewportWidth, viewportHeight) * 0.34;
@@ -12453,10 +12458,15 @@
       edgeOuterR
     );
     const maxEdgeAlpha = 0.4125; // 0.55 * 0.75
-    const dreadAlpha = (0.18 + 0.045 * Math.sin(nowSec * 3.1)).toFixed(3);
-    edgeVig.addColorStop(0.0, 'rgba(0, 0, 0, 0)');
-    edgeVig.addColorStop(0.65, `rgba(28, 6, 38, ${dreadAlpha})`);
-    edgeVig.addColorStop(1.0, `rgba(4, 1, 10, ${maxEdgeAlpha})`);
+    const dreadAlpha = (0.20 + 0.045 * Math.sin(nowSec * 3.1)).toFixed(3);
+    const edgeColorStops: Array<[number, string]> = [
+      [0.0, 'rgba(56, 18, 98, 0)'],
+      [0.65, `rgba(92, 32, 152, ${dreadAlpha})`],
+      [1.0, `rgba(42, 12, 82, ${maxEdgeAlpha})`],
+    ];
+    for (let i = 0; i < edgeColorStops.length; i++) {
+      edgeVig.addColorStop(edgeColorStops[i][0], edgeColorStops[i][1]);
+    }
     ctx.fillStyle = edgeVig;
     ctx.fillRect(0, 0, viewportWidth, viewportHeight);
 
@@ -12469,6 +12479,8 @@
       outerR,
       maxHandAlpha,
       maxEdgeAlpha,
+      handColorStops,
+      edgeColorStops,
     };
   }
 
@@ -12530,7 +12542,7 @@
         ? '#fefcbf'
         : isBurning
         ? '#fbd38d'
-        : '#dfd1ca';
+        : '#d8c4e8';
     const baseFill =
       e.hurtFlash > 0
         ? '#ffffff'
@@ -12538,7 +12550,7 @@
         ? '#fef08a'
         : isBurning
         ? '#dd6b20'
-        : e.skinColor || '#bfa59b';
+        : e.skinColor || '#b195c4';
     const midShadowFill =
       e.hurtFlash > 0
         ? '#e2e8f0'
@@ -12546,13 +12558,13 @@
         ? '#ecc94b'
         : isBurning
         ? '#c05621'
-        : '#8c736b';
+        : '#7e6296';
     const shadeFill =
       e.hurtFlash > 0
         ? '#cbd5e0'
         : isBlinking
         ? '#d69e2e'
-        : e.coatColor || '#5c4742';
+        : e.coatColor || '#5c4373';
 
     if (e.bossPartType === 'palm') {
       const r = e.radius;
@@ -12610,14 +12622,14 @@
       palmGrad.addColorStop(0.55, baseFill);
       palmGrad.addColorStop(1.0, midShadowFill);
       ctx.fillStyle = palmGrad;
-      ctx.strokeStyle = '#2a1e1d';
+      ctx.strokeStyle = '#281c36';
       ctx.lineWidth = 3.0;
       tracePalmSilhouette(0, 0);
       ctx.fill();
       ctx.stroke();
 
       // Thenar & hypothenar anatomical muscle contour shading
-      ctx.fillStyle = 'rgba(68, 48, 44, 0.22)';
+      ctx.fillStyle = 'rgba(64, 38, 92, 0.24)';
       ctx.beginPath();
       ctx.ellipse(-r * 0.12, -r * 0.54, r * 0.36, r * 0.2, -0.25, 0, Math.PI * 2);
       ctx.fill();
@@ -12626,7 +12638,7 @@
       ctx.fill();
 
       // Subcutaneous branching dorsal veins across the back of the hand
-      ctx.strokeStyle = 'rgba(78, 56, 98, 0.38)';
+      ctx.strokeStyle = 'rgba(70, 38, 118, 0.44)';
       ctx.lineWidth = Math.max(1.6, r * 0.016);
       ctx.lineCap = 'round';
       ctx.beginPath();
@@ -12683,7 +12695,7 @@
         const originY = ky * 0.25;
 
         // Tendon shadow furrow
-        ctx.strokeStyle = 'rgba(58, 40, 38, 0.55)';
+        ctx.strokeStyle = 'rgba(56, 34, 82, 0.55)';
         ctx.lineWidth = Math.max(3.2, r * 0.042);
         ctx.beginPath();
         ctx.moveTo(originX, originY + 1.5);
@@ -12691,7 +12703,7 @@
         ctx.stroke();
 
         // Raised pale extensor tendon cord
-        ctx.strokeStyle = 'rgba(238, 224, 216, 0.62)';
+        ctx.strokeStyle = 'rgba(232, 218, 244, 0.64)';
         ctx.lineWidth = Math.max(1.8, r * 0.022);
         ctx.beginPath();
         ctx.moveTo(originX, originY);
@@ -12711,7 +12723,7 @@
         ctx.fill();
 
         // Curved dorsal skin-fold creases over the knuckle
-        ctx.strokeStyle = 'rgba(48, 32, 30, 0.58)';
+        ctx.strokeStyle = 'rgba(48, 28, 72, 0.58)';
         ctx.lineWidth = 1.5;
         ctx.beginPath();
         ctx.arc(kx, ky, knR * 0.92, aOff - 0.85, aOff + 0.85);
@@ -12780,14 +12792,14 @@
       segGrad.addColorStop(0.58, baseFill);
       segGrad.addColorStop(1.0, midShadowFill);
       ctx.fillStyle = segGrad;
-      ctx.strokeStyle = '#2a1e1d';
+      ctx.strokeStyle = '#281c36';
       ctx.lineWidth = 2.2;
       tracePhalanxSilhouette(0, 0);
       ctx.fill();
       ctx.stroke();
 
       // Cylindrical dorsal bone-ridge highlight along the phalanx shaft
-      ctx.fillStyle = 'rgba(247, 238, 232, 0.34)';
+      ctx.fillStyle = 'rgba(240, 228, 250, 0.36)';
       ctx.beginPath();
       ctx.ellipse(-segLen * 0.05, -segHalfW * 0.22, segLen * 0.62, segHalfW * 0.26, 0, 0, Math.PI * 2);
       ctx.fill();
@@ -12813,7 +12825,7 @@
       }
 
       // Realistic curved interphalangeal knuckle skin-fold creases
-      ctx.strokeStyle = 'rgba(48, 32, 30, 0.58)';
+      ctx.strokeStyle = 'rgba(48, 28, 72, 0.58)';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
       ctx.moveTo(-segLen * 0.38, -segHalfW * 0.68);
@@ -12875,14 +12887,14 @@
         const nailHalfW = distW * 0.72;
 
         // Cuticle nail fold shadow
-        ctx.fillStyle = '#3b2826';
+        ctx.fillStyle = '#38224a';
         ctx.beginPath();
         ctx.ellipse(nailBaseX + segLen * 0.34, 0, segLen * 0.42, nailHalfW * 1.06, 0, 0, Math.PI * 2);
         ctx.fill();
 
         // Keratin fingernail plate tapering to a sharp claw point
-        ctx.fillStyle = '#d6c7c2';
-        ctx.strokeStyle = '#2a1e1d';
+        ctx.fillStyle = '#cfc0db';
+        ctx.strokeStyle = '#281c36';
         ctx.lineWidth = 1.4;
         ctx.beginPath();
         ctx.moveTo(nailBaseX, -nailHalfW * 0.85);

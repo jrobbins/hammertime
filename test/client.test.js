@@ -3376,13 +3376,29 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
 
     const bossHand = Array.from(api.activeBossHands.values())[0];
     assert.equal(bossHand.palm.bossPartType, 'palm');
-    assert.equal(bossHand.palm.radius, 185, 'Client boss palm radius should be 20% smaller (185 = Math.round(231 * 0.8))');
-    assert.equal(api.constants.BOSS_SEGMENT_RADIUS, 58, 'Client boss segment radius should be 20% smaller (58 = Math.round(72 * 0.8))');
-    assert.equal(api.constants.BOSS_SEGMENT_BASE_HP, 900, 'Client boss segment base HP should be 3x (900)');
+    assert.equal(bossHand.palm.radius, 157, 'Client boss palm radius should be 15% smaller than 185 (157 = Math.round(185 * 0.85))');
+    assert.equal(api.constants.BOSS_SEGMENT_RADIUS, 49, 'Client boss segment radius should be 15% smaller than 58 (49 = Math.round(58 * 0.85))');
+    assert.equal(api.constants.BOSS_SEGMENT_BASE_HP, 720, 'Client boss segment base HP should be 20% lower (720 = 900 * 0.8)');
     assert.equal(api.constants.BOSS_DEFEAT_SEGMENT_THRESHOLD, 14, 'Client boss defeat segment threshold should be 14');
     assert.equal(api.constants.BOSS_SPEED_MULT, 1.2, 'Client boss speed mult should be 2x (1.2)');
     assert.equal(bossHand.segments.length, 14, 'Hand should have 14 finger/thumb segments');
-    assert.ok(bossHand.segments[0].maxHp >= 900, 'Client segment maxHp should be >= 900');
+    assert.equal(bossHand.segments.find((s) => s.isThumb).radius, 53, 'Client thumb segment radius should be 53');
+    assert.equal(bossHand.segments.find((s) => !s.isThumb).radius, 49, 'Client finger segment radius should be 49');
+    assert.ok(bossHand.segments[0].maxHp >= 720, 'Client segment maxHp should be >= 720');
+    assert.equal(bossHand.palm.maxHp, bossHand.segments[0].maxHp * 14, 'Client palm maxHp should equal 14 * segment maxHp');
+
+    // Verify client boss hand parts have a purplish hue (B > R > G)
+    const parseHexRgb = (hex) => [
+      parseInt(hex.slice(1, 3), 16),
+      parseInt(hex.slice(3, 5), 16),
+      parseInt(hex.slice(5, 7), 16),
+    ];
+    for (const part of [bossHand.palm, ...bossHand.segments]) {
+      for (const color of [part.skinColor, part.coatColor]) {
+        const [r, g, b] = parseHexRgb(color);
+        assert.ok(b > r && r > g, `Client boss hand color ${color} should have a purplish hue (B > R > G)`);
+      }
+    }
 
     // Verify spooky vignette is active and centered on the boss hand
     assert.equal(api.isBossActive(), true, 'isBossActive should be true when boss hand is active');
@@ -3400,6 +3416,25 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.ok(vigInfo.outerR > vigInfo.innerR + 200, 'Vignette outer radius should extend to map corners and edges');
     assert.equal(vigInfo.maxHandAlpha, 0.66, 'Vignette primary hand outer alpha should be 25% less dark (0.66 = 0.88 * 0.75)');
     assert.equal(vigInfo.maxEdgeAlpha, 0.4125, 'Vignette edge shroud outer alpha should be 25% less dark (0.4125 = 0.55 * 0.75)');
+    assert.ok(
+      Array.isArray(vigInfo.handColorStops) && vigInfo.handColorStops.length >= 5,
+      'Vignette should define radial color stops for primary hand gradient'
+    );
+    assert.ok(
+      Array.isArray(vigInfo.edgeColorStops) && vigInfo.edgeColorStops.length >= 3,
+      'Vignette should define radial color stops for peripheral edge gradient'
+    );
+    for (const [, rgbaStr] of [...vigInfo.handColorStops, ...vigInfo.edgeColorStops]) {
+      const m = rgbaStr.match(/rgba\(\s*(\d+),\s*(\d+),\s*(\d+)/);
+      assert.ok(m, `Expected rgba() stop, got ${rgbaStr}`);
+      const r = Number(m[1]);
+      const g = Number(m[2]);
+      const b = Number(m[3]);
+      assert.ok(
+        b >= 70 && b > r && r > g * 2,
+        `Boss vignette stop ${rgbaStr} should have a distinct purplish hue (B > R > 2*G, B >= 70)`
+      );
+    }
 
     // Verify full render() draws the spooky vignette without errors while boss is active
     assert.doesNotThrow(() => {
