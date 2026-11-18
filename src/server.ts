@@ -3239,7 +3239,7 @@ function stepPlayerPhysics(p, dt) {
     p.vy = Math.min(0, p.vy);
   }
 
-  // Advance each Hammer position, collide with stone columns and bounds
+  // Advance each Hammer position and collide with stone columns (hammer & chain may swing outside map edges)
   for (let hIdx = 0; hIdx < p.hammers.length; hIdx++) {
     const h = p.hammers[hIdx];
     const links = h.chainLinks || INITIAL_CHAIN_LINKS;
@@ -3264,22 +3264,6 @@ function stepPlayerPhysics(p, dt) {
           h.vy -= (1 + 0.65) * vn * ny;
         }
       }
-    }
-
-    const hPad = h.radius + 16;
-    if (h.x < hPad) {
-      h.x = hPad;
-      h.vx = Math.abs(h.vx) * 0.75;
-    } else if (h.x > WORLD_WIDTH - hPad) {
-      h.x = WORLD_WIDTH - hPad;
-      h.vx = -Math.abs(h.vx) * 0.75;
-    }
-    if (h.y < hPad) {
-      h.y = hPad;
-      h.vy = Math.abs(h.vy) * 0.75;
-    } else if (h.y > WORLD_HEIGHT - hPad) {
-      h.y = WORLD_HEIGHT - hPad;
-      h.vy = -Math.abs(h.vy) * 0.75;
     }
 
     h.chainNodes[0].x = p.x;

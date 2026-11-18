@@ -2535,4 +2535,53 @@ describe('Boss-Monster Mode (Giant Floating Hand every 200 kills)', () => {
     assert.equal(srv.activeBossHands.size, 1, 'Sending boss_cheat over WebSocket should immediately spawn boss hand');
     assert.equal(srv.getState().bossStartQuakeTimer, 5.0, 'Should start 5s opening earthquake countdown');
   });
+
+  it('allows hammer and chain to move outside map edges rather than bouncing while keeping warrior inside bounds', () => {
+    resetTestWorld();
+    const p = addTestPlayer('edge_swinger', 44, 44);
+    p.input.mouseWorldX = 44;
+    p.input.mouseWorldY = 44;
+    const h = p.hammer;
+    h.chainLinks = 6;
+    srv.initHammerChainNodes(p, h);
+
+    // Position hammer near top-left corner heading outward past both x = 0 and y = 0
+    h.x = 10;
+    h.y = 10;
+    h.vx = -600;
+    h.vy = -600;
+    for (let i = 1; i <= h.chainLinks; i++) {
+      const t = i / h.chainLinks;
+      h.chainNodes[i].x = p.x + (h.x - p.x) * t;
+      h.chainNodes[i].y = p.y + (h.y - p.y) * t;
+      h.chainNodes[i].prevX = h.chainNodes[i].x;
+      h.chainNodes[i].prevY = h.chainNodes[i].y;
+    }
+
+    srv.stepWorldPhysics(0.05);
+    assert.ok(h.x < 0, `Hammer should pass outside left map edge (x < 0), got x=${h.x}`);
+    assert.ok(h.y < 0, `Hammer should pass outside top map edge (y < 0), got y=${h.y}`);
+    assert.ok(h.vx < 0 && h.vy < 0, 'Hammer should not bounce back with reversed velocity at map edges');
+    assert.ok(
+      h.chainNodes.some((n) => n.x < 0 && n.y < 0),
+      'Chain nodes attached to hammer should also extend outside map edges'
+    );
+    assert.ok(p.x >= p.radius + 24 && p.y >= p.radius + 24, 'Warrior should remain bounded inside the map');
+
+    // Also verify bottom-right map edges (> WORLD_WIDTH, > WORLD_HEIGHT)
+    p.x = srv.WORLD_WIDTH - 44;
+    p.y = srv.WORLD_HEIGHT - 44;
+    p.input.mouseWorldX = p.x;
+    p.input.mouseWorldY = p.y;
+    h.x = srv.WORLD_WIDTH - 10;
+    h.y = srv.WORLD_HEIGHT - 10;
+    h.vx = 600;
+    h.vy = 600;
+    srv.initHammerChainNodes(p, h);
+
+    srv.stepWorldPhysics(0.05);
+    assert.ok(h.x > srv.WORLD_WIDTH, `Hammer should pass outside right map edge, got x=${h.x}`);
+    assert.ok(h.y > srv.WORLD_HEIGHT, `Hammer should pass outside bottom map edge, got y=${h.y}`);
+    assert.ok(h.vx > 0 && h.vy > 0, 'Hammer should not bounce back at bottom-right map edges');
+  });
 });

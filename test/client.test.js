@@ -3748,4 +3748,93 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
     assert.ok(Math.abs(lastSent.mouseWorldY - 2000) < 1);
     window.dispatchEvent({ type: 'keyup', key: 'w' });
   });
+
+  it('allows hammer and chain to move outside map edges without bouncing in standalone and multiplayer client physics', () => {
+    const api = loadClientGame().api;
+    api.initGame();
+    api.enemies.length = 0;
+
+    // 1. Standalone client physics: top-left edge
+    api.warrior.x = 44;
+    api.warrior.y = 44;
+    api.warrior.vx = 0;
+    api.warrior.vy = 0;
+    const h = api.warrior.hammers[0];
+    h.chainLinks = 6;
+    h.x = 10;
+    h.y = 10;
+    h.vx = -600;
+    h.vy = -600;
+    api.initHammerChainNodes(h);
+
+    api.stepPhysics(0.05);
+    assert.ok(h.x < 0, `Client hammer should pass outside left map edge (x < 0), got x=${h.x}`);
+    assert.ok(h.y < 0, `Client hammer should pass outside top map edge (y < 0), got y=${h.y}`);
+    assert.ok(h.vx < 0 && h.vy < 0, 'Client hammer should not bounce back at map edges');
+    assert.ok(
+      h.chainNodes.some((n) => n.x < 0 && n.y < 0),
+      'Client chain nodes should extend outside map edges'
+    );
+    assert.ok(api.warrior.x >= api.warrior.radius + 24 && api.warrior.y >= api.warrior.radius + 24);
+
+    // 2. Standalone client physics: bottom-right edge
+    const W = api.constants.WORLD_WIDTH;
+    const H = api.constants.WORLD_HEIGHT;
+    api.warrior.x = W - 44;
+    api.warrior.y = H - 44;
+    h.x = W - 10;
+    h.y = H - 10;
+    h.vx = 600;
+    h.vy = 600;
+    api.initHammerChainNodes(h);
+
+    api.stepPhysics(0.05);
+    assert.ok(h.x > W, `Client hammer should pass outside right map edge, got x=${h.x}`);
+    assert.ok(h.y > H, `Client hammer should pass outside bottom map edge, got y=${h.y}`);
+    assert.ok(h.vx > 0 && h.vy > 0, 'Client hammer should not bounce back at bottom-right edges');
+
+    // 3. Multiplayer reconciliation & remote player dead-reckoning do not clamp hammer to map bounds
+    h.hasServerTarget = true;
+    h.serverX = -20;
+    h.serverY = -20;
+    h.serverVx = -200;
+    h.serverVy = -200;
+    h.x = -20;
+    h.y = -20;
+    api.warrior.x = 44;
+    api.warrior.y = 44;
+    api.remotePlayers.length = 0;
+    api.remotePlayers.push({
+      id: 'remote_edge',
+      alive: true,
+      x: 44,
+      y: 44,
+      vx: 0,
+      vy: 0,
+      radius: 20,
+      hammers: [
+        {
+          x: -15,
+          y: -15,
+          targetX: -15,
+          targetY: -15,
+          vx: -250,
+          vy: -250,
+          radius: 17,
+          chainNodes: [
+            { x: 44, y: 44 },
+            { x: 15, y: 15, targetX: 15, targetY: 15 },
+            { x: -15, y: -15 },
+          ],
+        },
+      ],
+    });
+
+    api.stepMultiplayerClient(0.05);
+    assert.ok(h.serverX < -20 && h.x < -15, 'Local multiplayer hammer server reconciliation should allow x < 0');
+    assert.ok(
+      api.remotePlayers[0].hammers[0].targetX < -15 && api.remotePlayers[0].hammers[0].x < -15,
+      'Remote multiplayer hammer dead-reckoning should allow x < 0'
+    );
+  });
 });

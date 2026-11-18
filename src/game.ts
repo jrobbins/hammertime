@@ -6348,7 +6348,7 @@
       warrior.vy = Math.min(0, warrior.vy);
     }
 
-    // Integrate each Hammer position, collide with stone columns and world boundaries
+    // Integrate each Hammer position and collide with stone columns (hammer & chain may swing outside map edges)
     for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
       const h = warrior.hammers[hIdx];
       const links = h.chainLinks || INITIAL_CHAIN_LINKS;
@@ -6385,22 +6385,6 @@
             }
           }
         }
-      }
-
-      const hPad = h.radius + 16;
-      if (h.x < hPad) {
-        h.x = hPad;
-        h.vx = Math.abs(h.vx) * 0.75;
-      } else if (h.x > WORLD_WIDTH - hPad) {
-        h.x = WORLD_WIDTH - hPad;
-        h.vx = -Math.abs(h.vx) * 0.75;
-      }
-      if (h.y < hPad) {
-        h.y = hPad;
-        h.vy = Math.abs(h.vy) * 0.75;
-      } else if (h.y > WORLD_HEIGHT - hPad) {
-        h.y = WORLD_HEIGHT - hPad;
-        h.vy = -Math.abs(h.vy) * 0.75;
       }
 
       nodes[0].x = warrior.x;
@@ -6529,9 +6513,8 @@
         for (let hIdx = 0; hIdx < warrior.hammers.length; hIdx++) {
           const lh = warrior.hammers[hIdx];
           if (lh && lh.hasServerTarget && typeof lh.serverX === 'number' && typeof lh.serverY === 'number') {
-            const hPad = (lh.radius || 17) + 16;
-            lh.serverX = clamp(lh.serverX + (lh.serverVx || 0) * frameDt, hPad, WORLD_WIDTH - hPad);
-            lh.serverY = clamp(lh.serverY + (lh.serverVy || 0) * frameDt, hPad, WORLD_HEIGHT - hPad);
+            lh.serverX = lh.serverX + (lh.serverVx || 0) * frameDt;
+            lh.serverY = lh.serverY + (lh.serverVy || 0) * frameDt;
             lh.x += (lh.serverX - lh.x) * localReconBlend;
             lh.y += (lh.serverY - lh.y) * localReconBlend;
           }
@@ -6583,11 +6566,10 @@
         if (!rh) continue;
         const hvx = rh.vx || 0;
         const hvy = rh.vy || 0;
-        const hPad = (rh.radius || 17) + 16;
         const hBaseTx = typeof rh.targetX === 'number' ? rh.targetX : rh.x;
         const hBaseTy = typeof rh.targetY === 'number' ? rh.targetY : rh.y;
-        rh.targetX = clamp(hBaseTx + hvx * frameDt, hPad, WORLD_WIDTH - hPad);
-        rh.targetY = clamp(hBaseTy + hvy * frameDt, hPad, WORLD_HEIGHT - hPad);
+        rh.targetX = hBaseTx + hvx * frameDt;
+        rh.targetY = hBaseTy + hvy * frameDt;
         rh.x += (rh.targetX - rh.x) * interpBlend;
         rh.y += (rh.targetY - rh.y) * interpBlend;
         if (typeof rh.targetAngle === 'number') {
