@@ -175,10 +175,6 @@
   const STARTING_POWERUP_COUNTS = [4, 6, 8, 10, 12, 16] as const;
   const STARTING_POWERUP_RING_RADIUS = 110;
 
-  const CLOTHESLINE_DURATION = 2.0;
-  const CLOTHESLINE_TRIGGER_DIST = 42;
-  const CLOTHESLINE_BEAM_DAMAGE = 140;
-
   const HIT_STOP_DURATION = 0.030; // 30ms micro-freeze on high-damage crushing blows or multi-kills
   const HIT_STOP_DAMAGE_THRESHOLD = 350;
   const HIT_STOP_BIG_SHAKE_THRESHOLD = 425;
@@ -1941,8 +1937,6 @@
     timer: number;
     duration: number;
   }> = [];
-  const activeClotheslines = [];
-  const clotheslineCooldowns = new Map();
 
   // Multiplayer & Round State
   let ws = null;
@@ -2947,8 +2941,6 @@
         } else {
           addShockwave(ev.x, ev.y, ev.radius || 60);
         }
-      } else if (ev.type === 'clothesline_start') {
-        addParticles((ev.x1 + ev.x2) * 0.5, (ev.y1 + ev.y2) * 0.5, '#38bdf8', 16, 80, 260, 2.5);
       } else if (ev.type === 'motorcycle_wreck') {
         laidDownMotorcycles.push({
           id: ev.id,
@@ -3232,12 +3224,6 @@
         victoryInfo = msg.victoryInfo || null;
         if (Array.isArray(msg.leaderboard)) {
           syncServerLeaderboard(msg.leaderboard);
-        }
-        if (Array.isArray(msg.clotheslines)) {
-          activeClotheslines.length = 0;
-          for (let clIdx = 0; clIdx < msg.clotheslines.length; clIdx++) {
-            activeClotheslines.push({ ...msg.clotheslines[clIdx] });
-          }
         }
         if (roundState === 'victory') {
           updateHUD();
@@ -5592,128 +5578,6 @@
     }
   }
 
-  function distPointToSegment(px, py, x1, y1, x2, y2) {
-    const dx = x2 - x1;
-    const dy = y2 - y1;
-    const lenSq = dx * dx + dy * dy;
-    if (lenSq < 1e-6) return Math.hypot(px - x1, py - y1);
-    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
-    const projX = x1 + t * dx;
-    const projY = y1 + t * dy;
-    return Math.hypot(px - projX, py - projY);
-  }
-
-  function checkAndStepClotheslines(dt) {
-    // 1. Advance active clotheslines & slice enemies
-    for (let i = activeClotheslines.length - 1; i >= 0; i--) {
-      const cl = activeClotheslines[i];
-      cl.timer -= dt;
-
-      for (let eIdx = enemies.length - 1; eIdx >= 0; eIdx--) {
-        const e = enemies[eIdx];
-        if (!e || (e.isBossPart && (e.bossBlinkTimer || 0) > 0)) continue;
-        const dist = distPointToSegment(e.x, e.y, cl.x1, cl.y1, cl.x2, cl.y2);
-        if (dist <= e.radius + 18) {
-          if (e.hitCooldown <= 0) {
-            const dmgTarget = e.isBossPart ? resolveBossTargetSegment(e) : e;
-            dmgTarget.hp -= CLOTHESLINE_BEAM_DAMAGE;
-            e.hitCooldown = 0.12;
-            dmgTarget.hitCooldown = 0.12;
-            e.hurtFlash = 0.28;
-            dmgTarget.hurtFlash = 0.28;
-            if (dmgTarget.isBossPart) {
-              checkBossSegmentDetach(dmgTarget);
-            } else {
-              checkEnemyLimbLoss(dmgTarget, 0, 0);
-            }
-            if (CLOTHESLINE_BEAM_DAMAGE > maxDamageBlow) {
-              maxDamageBlow = CLOTHESLINE_BEAM_DAMAGE;
-            }
-            if (CLOTHESLINE_BEAM_DAMAGE >= HIT_STOP_DAMAGE_THRESHOLD) {
-              const cldx = cl.x2 - cl.x1;
-              const cldy = cl.y2 - cl.y1;
-              triggerHitStop(HIT_STOP_DURATION, -cldy, cldx, CLOTHESLINE_BEAM_DAMAGE);
-            }
-            addParticles(e.x, e.y, '#38bdf8', 12, 100, 280, 2.5);
-            addFloatingText(dmgTarget.x, dmgTarget.y - dmgTarget.radius - 12, `-${CLOTHESLINE_BEAM_DAMAGE}`, '#38bdf8', 1.35);
-            if (dmgTarget.hp <= 0) {
-              const dmgIdx = enemies.indexOf(dmgTarget);
-              if (dmgIdx !== -1) {
-                defeatEnemy(dmgIdx, null, 0, 0);
-                if (dmgIdx < eIdx) {
-                  eIdx--;
-                }
-              }
-            }
-          }
-        }
-      }
-
-      if (cl.timer <= 0) {
-        activeClotheslines.splice(i, 1);
-      }
-    }
-
-    // 2. Step cooldown timers
-    for (const [key, cd] of clotheslineCooldowns.entries()) {
-      const nextCd = cd - dt;
-      if (nextCd <= 0) {
-        clotheslineCooldowns.delete(key);
-      } else {
-        clotheslineCooldowns.set(key, nextCd);
-      }
-    }
-
-    // 3. In single-player/local, check warrior's hammers touching or crossing
-    if (!isMultiplayer) {
-      if (warrior.hammers.length >= 2) {
-        const ha = warrior.hammers[0];
-        const hb = warrior.hammers[1];
-        const pairKey = 'local_0_1';
-        if (!clotheslineCooldowns.has(pairKey)) {
-          const headDist = Math.hypot(ha.x - hb.x, ha.y - hb.y);
-          let crossed = headDist <= ha.radius + hb.radius + CLOTHESLINE_TRIGGER_DIST;
-
-          if (!crossed && ha.chainNodes && hb.chainNodes) {
-            for (let ni = 1; ni < ha.chainNodes.length && !crossed; ni += 2) {
-              const na = ha.chainNodes[ni];
-              for (let nj = 1; nj < hb.chainNodes.length && !crossed; nj += 2) {
-                const nb = hb.chainNodes[nj];
-                if (Math.hypot(na.x - nb.x, na.y - nb.y) <= CLOTHESLINE_TRIGGER_DIST) {
-                  crossed = true;
-                }
-              }
-            }
-          }
-
-          if (crossed) {
-            activeClotheslines.push({
-              id: pairKey,
-              x1: ha.x,
-              y1: ha.y,
-              x2: hb.x,
-              y2: hb.y,
-              timer: CLOTHESLINE_DURATION,
-            });
-            clotheslineCooldowns.set(pairKey, CLOTHESLINE_DURATION + 1.0);
-            addFloatingText((ha.x + hb.x) * 0.5, (ha.y + hb.y) * 0.5 - 20, 'CLOTHESLINE!', '#38bdf8', 1.4);
-            addParticles((ha.x + hb.x) * 0.5, (ha.y + hb.y) * 0.5, '#38bdf8', 16, 80, 260, 2.5);
-          }
-        }
-      }
-
-      for (let i = 0; i < activeClotheslines.length; i++) {
-        const cl = activeClotheslines[i];
-        if (cl.id === 'local_0_1' && warrior.hammers.length >= 2) {
-          cl.x1 = warrior.hammers[0].x;
-          cl.y1 = warrior.hammers[0].y;
-          cl.x2 = warrior.hammers[1].x;
-          cl.y2 = warrior.hammers[1].y;
-        }
-      }
-    }
-  }
-
   // --- Reset / Initialize Game ---
   function initGame() {
     resetKeyboardState(false);
@@ -5829,8 +5693,6 @@
     particles.length = 0;
     floatingTexts.length = 0;
     shockwaves.length = 0;
-    activeClotheslines.length = 0;
-    clotheslineCooldowns.clear();
 
     kills = 0;
     maxDamageBlow = 0;
@@ -5844,6 +5706,10 @@
 
     for (let i = 0; i < INITIAL_ENEMY_COUNT; i++) {
       spawnEnemy(false);
+    }
+
+    if (hasEnteredGame) {
+      spawnStartingPowerupsForPlayer(warrior);
     }
 
     updateHUD();
@@ -5916,7 +5782,7 @@
       : warrior.mountType === 'horse'
       ? 2.0
       : warrior.mountType === 'tortoise'
-      ? 0.25
+      ? 0.5
       : warrior.mountType === 'elephant'
       ? 1.0
       : warrior.mountType === 'motorcycle'
@@ -6742,7 +6608,6 @@
       }
     }
     const isBulldozer = stepLocalWarriorAndHammers(dt, false);
-    checkAndStepClotheslines(dt);
 
     // 5. Update Enemies & Collisions (Hammers, Chains, and Warrior)
     for (let i = enemies.length - 1; i >= 0; i--) {
@@ -7780,7 +7645,7 @@
           addFloatingText(
             warrior.x,
             warrior.y - warrior.radius - 16,
-            `GIANT TORTOISE! (${warrior.mountHp} HP, 1/4x SPD, 20x FRIC)`,
+            `GIANT TORTOISE! (${warrior.mountHp} HP, 1/2x SPD, 20x FRIC)`,
             '#68d391',
             1.2
           );
@@ -9176,47 +9041,6 @@
         drawWarrior(item.ref, item.isLocal);
       } else if (item.type === 'hammer') {
         drawHammer(item.ref, item.trail);
-      }
-    }
-
-    // 9b. Active Clothesline (Tandem Wire) Electric Beams
-    if (activeClotheslines.length > 0) {
-      const nowSec = performance.now() * 0.001;
-      for (let clIdx = 0; clIdx < activeClotheslines.length; clIdx++) {
-        const cl = activeClotheslines[clIdx];
-        const x1 = cl.x1;
-        const y1 = cl.y1 * TILT_Y - 16;
-        const x2 = cl.x2;
-        const y2 = cl.y2 * TILT_Y - 16;
-        const dist = Math.hypot(x2 - x1, y2 - y1);
-        if (dist < 1) continue;
-
-        ctx.save();
-        ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
-        ctx.lineWidth = 8.5;
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
-
-        ctx.strokeStyle = '#ffffff';
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        ctx.moveTo(x1, y1);
-        const segments = Math.max(3, Math.min(8, Math.floor(dist / 32)));
-        for (let s = 1; s < segments; s++) {
-          const t = s / segments;
-          const px = x1 + (x2 - x1) * t;
-          const py = y1 + (y2 - y1) * t;
-          const jitterPhase = nowSec * 28 + s * 1.7;
-          const perpX = -(y2 - y1) / dist;
-          const perpY = (x2 - x1) / dist;
-          const jitterMag = Math.sin(jitterPhase) * 6.5;
-          ctx.lineTo(px + perpX * jitterMag, py + perpY * jitterMag);
-        }
-        ctx.lineTo(x2, y2);
-        ctx.stroke();
-        ctx.restore();
       }
     }
 
@@ -15040,9 +14864,6 @@
         WHIRLWIND_GUST_DAMAGE,
         STARTING_POWERUP_COUNTS,
         STARTING_POWERUP_RING_RADIUS,
-        CLOTHESLINE_DURATION,
-        CLOTHESLINE_TRIGGER_DIST,
-        CLOTHESLINE_BEAM_DAMAGE,
         ZOMBIE_ATTACK_VARIATIONS,
         HURT_SOUNDS,
         HURT_NOISES,
@@ -15090,7 +14911,6 @@
       enemyGhosts,
       laidDownMotorcycles,
       bulldozerTracks,
-      activeClotheslines,
       remotePlayers,
       localLeaderboardRecords,
       camera,
@@ -15213,9 +15033,7 @@
       setHitStopTimer: (v: number) => {
         hitStopTimer = v;
       },
-      checkAndStepClotheslines,
       updateHammerWhirlwind,
-      distPointToSegment,
       updateWarriorBroadphaseBounds,
       stepLocalWarriorAndHammers,
       stepMultiplayerClient,

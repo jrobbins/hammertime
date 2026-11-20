@@ -465,7 +465,7 @@ describe('Rare Powerups: Extra Hammer (60s), Mounts (Horse, Tortoise, Elephant),
     assert.equal(p.hammers.length, 1);
   });
 
-  it('handles Warhorse, Giant Tortoise (1/4 speed, 20x traction), and War Elephant (1x speed, 10x traction) mounts', () => {
+  it('handles Warhorse, Giant Tortoise (1/2 speed, 20x traction), and War Elephant (1x speed, 10x traction) mounts', () => {
     const p = addTestPlayer('p1', 2100, 2100);
     p.hp = 85;
 
@@ -500,13 +500,14 @@ describe('Rare Powerups: Extra Hammer (60s), Mounts (Horse, Tortoise, Elephant),
     assert.equal(p.mountHp, 85);
     assert.equal(p.radius, 36);
 
-    // Measure tortoise speed vs elephant speed
+    // Measure tortoise speed vs elephant speed (using physics substep dt = 0.004)
     p.angle = 0;
     p.vx = 0;
     p.vy = 0;
+    p.strideCharge = 1;
     p.input.mouseWorldX = p.x + 1200;
     p.input.mouseWorldY = p.y;
-    for (let i = 0; i < 40; i++) srv.stepPlayerPhysics(p, 0.016);
+    for (let i = 0; i < 80; i++) srv.stepPlayerPhysics(p, 0.004);
     const tortoiseSpeed = Math.hypot(p.vx, p.vy);
 
     // War Elephant can upgrade from tortoise
@@ -518,13 +519,15 @@ describe('Rare Powerups: Extra Hammer (60s), Mounts (Horse, Tortoise, Elephant),
 
     p.vx = 0;
     p.vy = 0;
+    p.strideCharge = 1;
     p.input.mouseWorldX = p.x + 1200;
     p.input.mouseWorldY = p.y;
-    for (let i = 0; i < 40; i++) srv.stepPlayerPhysics(p, 0.016);
+    for (let i = 0; i < 80; i++) srv.stepPlayerPhysics(p, 0.004);
     const elephantSpeed = Math.hypot(p.vx, p.vy);
+    const speedRatio = elephantSpeed / tortoiseSpeed;
     assert.ok(
-      elephantSpeed > tortoiseSpeed * 2.5,
-      `Expected elephant speed (${elephantSpeed}) > 2.5x tortoise speed (${tortoiseSpeed})`
+      tortoiseSpeed > 100 && speedRatio > 1.8 && speedRatio < 2.4,
+      `Expected elephant speed (${elephantSpeed.toFixed(1)}) to be ~2x tortoise speed (${tortoiseSpeed.toFixed(1)}), got ratio ${speedRatio.toFixed(2)}`
     );
 
     // War Elephant deals 40 hitpoints of damage and pushes back enemies, while the elephant itself also takes damage
@@ -2583,5 +2586,44 @@ describe('Boss-Monster Mode (Giant Floating Hand every 200 kills)', () => {
     assert.ok(h.x > srv.WORLD_WIDTH, `Hammer should pass outside right map edge, got x=${h.x}`);
     assert.ok(h.y > srv.WORLD_HEIGHT, `Hammer should pass outside bottom map edge, got y=${h.y}`);
     assert.ok(h.vx > 0 && h.vy > 0, 'Hammer should not bounce back at bottom-right map edges');
+  });
+
+  it('spawns a ring of powerups around each warrior whenever they enter or re-enter the game (new round / reset)', () => {
+    resetTestWorld();
+    const mockSocket = { writable: true, write: () => {} };
+    const p1 = srv.createPlayer('reenter_1', mockSocket);
+    srv.players.set(p1.id, p1);
+    const p2 = srv.createPlayer('reenter_2', mockSocket);
+    srv.players.set(p2.id, p2);
+
+    // First entry spawned rings for both players
+    assert.equal(srv.blackCircles.length, 8, 'Two joining players at t=0 should each receive a ring of 4 powerups (8 total)');
+
+    // Clear pickups and start a new round via resetGameWorld (e.g. after defeat, victory, or Play Again)
+    srv.blackCircles.length = 0;
+    srv.resetGameWorld();
+
+    assert.equal(
+      srv.blackCircles.length,
+      8,
+      'Re-entering on a new round should spawn a fresh ring of 4 powerups around each warrior (8 total)'
+    );
+
+    const p1Ring = srv.blackCircles.slice(0, 4);
+    const p2Ring = srv.blackCircles.slice(4, 8);
+    for (const c of p1Ring) {
+      const dist = Math.hypot(c.x - p1.x, c.y - p1.y);
+      assert.ok(
+        Math.abs(dist - srv.STARTING_POWERUP_RING_RADIUS) <= 2,
+        `Expected pickup in p1 ring at radius ${srv.STARTING_POWERUP_RING_RADIUS}, got ${dist.toFixed(1)}`
+      );
+    }
+    for (const c of p2Ring) {
+      const dist = Math.hypot(c.x - p2.x, c.y - p2.y);
+      assert.ok(
+        Math.abs(dist - srv.STARTING_POWERUP_RING_RADIUS) <= 2,
+        `Expected pickup in p2 ring at radius ${srv.STARTING_POWERUP_RING_RADIUS}, got ${dist.toFixed(1)}`
+      );
+    }
   });
 });

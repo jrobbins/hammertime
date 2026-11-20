@@ -2722,6 +2722,7 @@ function resetGameWorld() {
       players.delete(pid);
     } else {
       resetPlayerForNewRound(p);
+      spawnStartingPowerupsForPlayer(p);
     }
   }
 
@@ -2820,7 +2821,7 @@ function stepPlayerPhysics(p, dt) {
     : p.mountType === 'horse'
     ? 2.0
     : p.mountType === 'tortoise'
-    ? 0.25
+    ? 0.5
     : p.mountType === 'elephant'
     ? 1.0
     : p.mountType === 'motorcycle'
@@ -3434,7 +3435,7 @@ function stepPlayerPhysics(p, dt) {
         p.mountMaxHp = Math.max(1, Math.round(p.hp));
         p.mountHp = p.mountMaxHp;
         p.radius = TORTOISE_RADIUS;
-        label = 'GIANT TORTOISE MOUNTED! (1/4x SPEED, 20x GRIP)';
+        label = 'GIANT TORTOISE MOUNTED! (1/2x SPEED, 20x GRIP)';
         color = '#68d391';
       } else if (pType === 'elephant') {
         p.mountType = 'elephant';

@@ -3837,4 +3837,100 @@ describe('Client Game (game.js) Constants, Physics, Events & 2.5D Rendering', ()
       'Remote multiplayer hammer dead-reckoning should allow x < 0'
     );
   });
+
+  it('doubles Giant Tortoise speed (1/2x normal) and has completely removed clothesline effects', () => {
+    const api = loadClientGame().api;
+    api.initGame();
+    api.enemies.length = 0;
+
+    // 1. Verify clothesline constants, state, and functions are completely removed
+    assert.equal(api.constants.CLOTHESLINE_DURATION, undefined);
+    assert.equal(api.constants.CLOTHESLINE_TRIGGER_DIST, undefined);
+    assert.equal(api.constants.CLOTHESLINE_BEAM_DAMAGE, undefined);
+    assert.equal(api.activeClotheslines, undefined);
+    assert.equal(api.checkAndStepClotheslines, undefined);
+
+    // Placing two hammers right next to each other with an enemy between them should not create a CLOTHESLINE! effect
+    api.warrior.x = 2000;
+    api.warrior.y = 2000;
+    api.blackCircles.push({ x: 2000, y: 2000, radius: 10, pulse: 0, type: 'hammer' });
+    api.stepPhysics(0.016);
+    assert.equal(api.warrior.hammers.length, 2);
+    api.floatingTexts.length = 0;
+    api.warrior.hammers[0].x = 2060;
+    api.warrior.hammers[0].y = 2000;
+    api.warrior.hammers[1].x = 2070;
+    api.warrior.hammers[1].y = 2000;
+    api.stepPhysics(0.05);
+    assert.equal(
+      api.floatingTexts.some((ft) => String(ft.text || '').includes('CLOTHESLINE')),
+      false,
+      'Crossing two hammers should not trigger any clothesline text or effect'
+    );
+
+    // 2. Verify Giant Tortoise moves at 1/2x Elephant (normal) speed on client (using substep dt = 0.004)
+    api.warrior.mountType = 'tortoise';
+    api.warrior.mountHp = 100;
+    api.warrior.mountMaxHp = 100;
+    api.warrior.angle = 0;
+    api.warrior.vx = 0;
+    api.warrior.vy = 0;
+    api.warrior.strideCharge = 1;
+    api.mouse.screenX = api.warrior.x - api.camera.x + 1200;
+    api.mouse.screenY = (api.warrior.y - api.camera.y) * api.constants.TILT_Y;
+    for (let i = 0; i < 80; i++) api.stepPhysics(0.004);
+    const tortoiseSpeed = Math.hypot(api.warrior.vx, api.warrior.vy);
+
+    api.warrior.mountType = 'elephant';
+    api.warrior.mountHp = 250;
+    api.warrior.mountMaxHp = 250;
+    api.warrior.angle = 0;
+    api.warrior.vx = 0;
+    api.warrior.vy = 0;
+    api.warrior.strideCharge = 1;
+    api.mouse.screenX = api.warrior.x - api.camera.x + 1200;
+    api.mouse.screenY = (api.warrior.y - api.camera.y) * api.constants.TILT_Y;
+    for (let i = 0; i < 80; i++) api.stepPhysics(0.004);
+    const elephantSpeed = Math.hypot(api.warrior.vx, api.warrior.vy);
+    const ratio = elephantSpeed / tortoiseSpeed;
+    assert.ok(
+      tortoiseSpeed > 100 && ratio > 1.8 && ratio < 2.4,
+      `Expected client elephant speed (${elephantSpeed.toFixed(1)}) to be ~2x tortoise speed (${tortoiseSpeed.toFixed(1)}), got ratio ${ratio.toFixed(2)}`
+    );
+  });
+
+  it('creates a ring of powerups around the warrior whenever they enter or re-enter the game (Play Again / idle rejoin)', () => {
+    const { api, window } = loadClientGame();
+    window.location.protocol = 'file:';
+
+    // 1. First entry into standalone game
+    api.blackCircles.length = 0;
+    const entered = api.enterGame('Sir Restart');
+    assert.equal(entered, true);
+    assert.equal(api.blackCircles.length, 4, 'First entry should spawn a ring of 4 powerups around warrior');
+    for (const c of api.blackCircles) {
+      const dist = Math.hypot(c.x - api.warrior.x, c.y - api.warrior.y);
+      assert.ok(Math.abs(dist - api.constants.STARTING_POWERUP_RING_RADIUS) <= 2);
+    }
+
+    // 2. Re-entering via Play Again / Next Round (initGame while hasEnteredGame === true)
+    api.blackCircles.length = 0;
+    api.initGame();
+    assert.equal(api.blackCircles.length, 4, 'Re-entering via initGame (Play Again) should spawn a new ring of 4 powerups around warrior');
+    for (const c of api.blackCircles) {
+      const dist = Math.hypot(c.x - api.warrior.x, c.y - api.warrior.y);
+      assert.ok(Math.abs(dist - api.constants.STARTING_POWERUP_RING_RADIUS) <= 2);
+    }
+
+    // 3. Re-entering after idle pause (pauseForIdle -> enterGame)
+    api.pauseForIdle('Idle pause');
+    api.blackCircles.length = 0;
+    const rejoined = api.enterGame('Sir Restart');
+    assert.equal(rejoined, true);
+    assert.equal(api.blackCircles.length, 4, 'Rejoining after idle pause should spawn a ring of 4 powerups around warrior');
+    for (const c of api.blackCircles) {
+      const dist = Math.hypot(c.x - api.warrior.x, c.y - api.warrior.y);
+      assert.ok(Math.abs(dist - api.constants.STARTING_POWERUP_RING_RADIUS) <= 2);
+    }
+  });
 });
